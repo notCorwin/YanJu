@@ -27,6 +27,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/
 import { ArchiveBrowser } from './archive-browser'
 import { Interactions } from './interactions'
 import { TaskResult } from './task-results'
+import { RequestHistory } from './request-history'
 import { downloadText } from '@/lib/download'
 import type { Notify } from './managers'
 import { Square, Search, Download } from 'lucide-react'
@@ -528,6 +529,7 @@ export function Studio({
               <p className="text-sm text-muted-foreground">
                 {sortedTasks.length} 项任务 · 部分内容只用于预览与恢复，完整结果通过校验后才能应用。
               </p>
+              <RequestHistory archiveId={archive.id} />
               {featured && result(featured)}
               {sortedTasks
                 .filter((t) => t.id !== featured?.id)

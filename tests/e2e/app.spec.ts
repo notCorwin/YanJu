@@ -179,6 +179,7 @@ async function prepare(
         storyStates: [],
         storyEvents: [],
         tasks: [],
+        requests: [],
       })
       await db.persistence.flush()
     },
@@ -642,11 +643,15 @@ test('工作台档案、独立手机、日记日历、自然语言搜索和来�
   await studio.getByRole('tab', { name: '档案', exact: true }).click()
   await studio.getByRole('textbox', { name: '自然语言剧情搜索' }).fill('搜索宴雎的阅读事件')
   await studio.getByRole('button', { name: '搜索剧情' }).click()
-  await expect(studio.getByText(narrativeFixture.effects.events[0].title, { exact: true })).toBeVisible()
+  await expect(
+    studio.getByText(narrativeFixture.effects.events[0].title, { exact: true }),
+  ).toBeVisible()
   await studio.getByRole('button', { name: '查看来源' }).first().click()
   await expect(page).toHaveURL(/message=.*&block=b1/)
   await expect(page.getByRole('dialog', { name: '剧情工作台' })).toHaveCount(0)
-  await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toContain('source-block-')
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.id))
+    .toContain('source-block-')
   await page.reload()
   await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
 })

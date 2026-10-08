@@ -47,6 +47,7 @@ beforeEach(async () => {
     storyStates: [],
     storyEvents: [],
     tasks: [],
+    requests: [],
   })
   await db.channels.update('channel-1', {
     capability: { fingerprint: channelFingerprint(channelFixture), ok: true, testedAt: 0 },
@@ -276,5 +277,101 @@ describe('辅助任务完整链路', () => {
     })
     expect(bad.status).toBe('failed')
     expect(bad.error).toContain('未知')
+  })
+})
+
+describe('独立交互与请求恢复边界', () => {
+  it('收到部分输出后取消，用户原文与部分回复保留且不应用', async () => {
+    const controller = new AbortController()
+    const task = await executeAuxiliary(
+      archive.id,
+      'phoneReply',
+      ' 保留原文 ',
+      'character-shendu',
+      {
+        fetcher: fake('phoneReply'),
+        signal: controller.signal,
+        onPartial: () => controller.abort(),
+      },
+    )
+    expect(task.status).toBe('cancelled')
+    expect(task.input.text).toBe(' 保留原文 ')
+    expect(task.partial).toBeTruthy()
+    expect((await db.storyStates.get(archive.id))!.phones[0].messages).toHaveLength(4)
+    const request = (await db.requests.toArray()).find((r) => r.ownerId === task.id)!
+    expect(request.status).toBe('cancelled')
+    expect(request.partial).toBeTruthy()
+    const retry = await executeAuxiliary(
+      archive.id,
+      task.kind,
+      task.input.text,
+      task.input.targetId,
+      { fetcher: fake('phoneReply') },
+    )
+    expect(retry.applied).toBe(true)
+  })
+  it('独立聊天可编辑结构化字段，修改后重建投影并失效后续记录', async () => {
+    const task = await executeAuxiliary(archive.id, 'phoneReply', '你好', 'character-shendu', {
+      fetcher: fake('phoneReply'),
+    })
+    const message = (await db.messages.get(`task:${task.id}`))!
+    const interaction = { ...message.interaction!, userText: '编辑后的原文' }
+    await appendMessage(messageFixture('after-phone', 'user', '后续消息', message.sequence + 1))
+    await editMessage(message.id, JSON.stringify(interaction))
+    expect((await db.storyStates.get(archive.id))!.phones[0].messages.at(-2)?.text).toBe(
+      '编辑后的原文',
+    )
+    expect((await db.messages.get('after-phone'))?.stale).toBe(true)
+    await expect(
+      editMessage(message.id, JSON.stringify({ ...interaction, contactRef: 'unknown' })),
+    ).rejects.toThrow(/不存在/)
+    expect((await db.messages.get(message.id))!.interaction?.userText).toBe('编辑后的原文')
+  })
+  it('校验纠正的两次完整请求可重放，导出不包含认证头或 Key', async () => {
+    let attempt = 0
+    const task = await executeAuxiliary(archive.id, 'persona', '生成读者', null, {
+      fetcher: fake('persona', (value) =>
+        ++attempt === 1 ? { ...(value as object), name: '' } : value,
+      ),
+    })
+    expect(task.status).toBe('complete')
+    const records = (await db.requests.toArray())
+      .filter((r) => r.ownerId === task.id)
+      .sort((a, b) => a.attempt - b.attempt)
+    expect(records).toHaveLength(2)
+    expect(records[0].status).toBe('failed')
+    expect(records[1].status).toBe('complete')
+    expect(records[1].request.messages.slice(0, records[0].request.messages.length)).toEqual(
+      records[0].request.messages,
+    )
+    expect(records[1].request.messages.at(-1)?.content).toContain('校验失败')
+    expect(JSON.stringify(records)).not.toContain(channelFixture.apiKey)
+    const exported = await exportSave()
+    await importSave(exported)
+    expect((await exportSave()).requests).toEqual(exported.requests)
+  })
+  it('资料入口拒绝旧应用存档；非法来源段落不产生资料记录', async () => {
+    await expect(
+      executeAuxiliary(
+        archive.id,
+        'contentImport',
+        JSON.stringify({ version: 2, archives: [] }),
+        null,
+        { fetcher: fake('contentImport') },
+      ),
+    ).rejects.toThrow(/应用存档/)
+    const task = await executeAuxiliary(archive.id, 'contentImport', '人物资料', null, {
+      fetcher: fake('contentImport', (value) => {
+        const v = structuredClone(value) as {
+          effects: { entities: { sourceBlockId: string | null }[] }
+        }
+        v.effects.entities[0].sourceBlockId = 'missing'
+        return v
+      }),
+    })
+    expect(task.status).toBe('failed')
+    expect((await db.storyStates.get(archive.id))!.entities.some((e) => e.name === '陆明')).toBe(
+      false,
+    )
   })
 })

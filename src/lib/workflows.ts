@@ -3,6 +3,7 @@ import { channelIsReady, friendlyError, summarize } from './provider'
 import { runStructuredTask } from './task-runner'
 import {
   taskDefinitions,
+  taskInputSchema,
   validateTask,
   type AuxiliaryKind,
   type TaskOutput,
@@ -113,14 +114,23 @@ function validateAuxiliary<K extends AuxiliaryKind>(
       )
         invalid('检查引用的消息或段落不存在')
       if (!messageText(m!).includes(issue.evidence)) invalid('检查证据没有出现在引用的原文中')
+      if (issue.source.blockId !== null && m!.reply?.kind === 'narrative') {
+        const block = m!.reply.value.blocks.find((b) => b.id === issue.source.blockId)!
+        if (!`${block.text}\n${block.translation}`.includes(issue.evidence))
+          invalid('检查证据与引用段落不匹配')
+      }
     }
   }
   if (kind === 'chapters') {
     const seen = new Set<string>()
+    let previous = -1
     for (const chapter of (value as TaskOutput<'chapters'>).chapters) {
       if (!chapter.messageIds.length) invalid('章节至少引用一条消息')
       for (const id of chapter.messageIds) {
         if (!history.some((m) => m.id === id) || seen.has(id)) invalid('章节引用未知或重复消息')
+        const sequence = history.find((m) => m.id === id)!.sequence
+        if (sequence < previous) invalid('章节须按原始消息顺序整理')
+        previous = sequence
         seen.add(id)
       }
     }
@@ -191,6 +201,21 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     fetcher?: typeof fetch
   } = {},
 ): Promise<TaskRun> {
+  if (kind === 'contentImport') {
+    let material: unknown
+    try {
+      material = JSON.parse(text)
+    } catch {
+      /* Plain text is also supported. */
+    }
+    if (
+      material &&
+      typeof material === 'object' &&
+      'version' in material &&
+      ('archives' in material || 'messages' in material)
+    )
+      throw new Error('应用存档请通过存档管理导入；资料提取不处理应用存档。')
+  }
   const archive = await db.archives.get(archiveId)
   const settings = await db.settings.get('app')
   const channel = settings?.activeChannelId
@@ -211,7 +236,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     targetId,
     context: {
       archive: { id: archive.id, name: archive.name, summary: archive.summary?.value },
-      persona,
+      persona: persona ?? null,
       story: storyContext(story),
       target: target?.reply?.value ?? null,
       phone: story.phones.find((p) => p.id === targetId) ?? null,
@@ -231,6 +256,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
       })),
     },
   }
+  taskInputSchema.parse(input)
   const task: TaskRun = {
     id: crypto.randomUUID(),
     archiveId,
@@ -263,20 +289,23 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
         messages: history,
         signal: options.signal ?? new AbortController().signal,
         force: true,
-        summarize: (value, signal) => summarize(channel, value, signal, options.fetcher),
+        summarize: (value, signal) =>
+          summarize(channel, value, signal, options.fetcher, archive.id),
         commit: (value) => commitSummary(archive.id, archive.revision, value),
       })
       if (summary) {
         input.context.archive = { id: archive.id, name: archive.name, summary: summary.value }
         const covered = history.findIndex((m) => m.id === summary.coveredThroughId)
         if (kind !== 'chapters' && kind !== 'consistency')
-          input.context.history = (input.context.history as { id: string }[]).filter(
+          input.context.history = input.context.history.filter(
             (m) => history.findIndex((source) => source.id === m.id) > covered,
           )
         await db.tasks.update(task.id, { input })
       }
     }
     const result = await runStructuredTask({
+      archiveId,
+      ownerId: task.id,
       kind,
       channel,
       input,
@@ -298,6 +327,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
       },
     })
     await checkpoint
+    if (options.signal?.aborted) throw new DOMException('已取消', 'AbortError')
     Object.assign(task, {
       output: result.value,
       usage: result.usage,
@@ -311,6 +341,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
       result.usage?.estimatedInput ?? estimate(),
     )
     if (calibration) await db.channels.update(channel.id, { calibration })
+    if (options.signal?.aborted) throw new DOMException('已取消', 'AbortError')
     if (kind === 'phoneReply' || kind === 'forumReply') await applyTask(task.id)
     await db.persistence.flush()
     return (await db.tasks.get(task.id))!

@@ -72,15 +72,13 @@ export function ArchiveBrowser({
       info: '知情范围',
       entities: [e.entityRef],
     })),
-    events: [...story.events]
-      .reverse()
-      .map((e) => ({
-        ...e,
-        title: e.title,
-        text: e.description,
-        info: `${e.time ?? '日期未知'} · ${names(e.participants)}${e.locationRef ? ` · ${entityName(story, e.locationRef)}` : ''}`,
-        entities: [...e.participants, ...(e.locationRef ? [e.locationRef] : [])],
-      })),
+    events: [...story.events].reverse().map((e) => ({
+      ...e,
+      title: e.title,
+      text: e.description,
+      info: `${e.time ?? '日期未知'} · ${names(e.participants)}${e.locationRef ? ` · ${entityName(story, e.locationRef)}` : ''}`,
+      entities: [...e.participants, ...(e.locationRef ? [e.locationRef] : [])],
+    })),
     memories: story.memories.map((e) => ({
       ...e,
       title: e.kind === 'preference' ? '偏好' : '长期事实',

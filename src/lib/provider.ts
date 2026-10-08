@@ -75,6 +75,7 @@ export async function summarize(
   input: CompressionInput,
   signal: AbortSignal,
   fetcher?: typeof fetch,
+  archiveId?: string,
 ) {
   const result = await runStructuredTask({
     kind: 'compression',
@@ -85,6 +86,7 @@ export async function summarize(
     maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
     temperature: 0.3,
     fetcher,
+    archiveId,
   })
   return result.value
 }
@@ -95,6 +97,8 @@ export interface GenerationResult {
   correction?: string
 }
 interface GenerateOptions {
+  archiveId?: string
+  ownerId?: string
   channel: Channel
   kind: RequestKind
   instructions: string

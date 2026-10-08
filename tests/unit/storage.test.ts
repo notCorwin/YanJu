@@ -35,6 +35,7 @@ const save = (messages = [messageFixture('m-0', 'user', '开始阅读', 0)]) => 
   storyStates: [],
   storyEvents: [],
   tasks: [],
+  requests: [],
 })
 
 describe('v3 IndexedDB 与独立存档协议', () => {

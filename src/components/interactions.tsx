@@ -161,7 +161,9 @@ export function Interactions({
                   e.preventDefault()
                   if (text.trim() && !busy) {
                     const original = text
-                    void onRun('phoneReply', original, contact.id).then((success) => { if (success) setText((current) => current === original ? '' : current) })
+                    void onRun('phoneReply', original, contact.id).then((success) => {
+                      if (success) setText((current) => (current === original ? '' : current))
+                    })
                   }
                 }}
               >
@@ -268,7 +270,9 @@ export function Interactions({
                     e.preventDefault()
                     if (text.trim() && !busy) {
                       const original = text
-                      void onRun('forumReply', original, target).then((success) => { if (success) setText((current) => current === original ? '' : current) })
+                      void onRun('forumReply', original, target).then((success) => {
+                        if (success) setText((current) => (current === original ? '' : current))
+                      })
                     }
                   }}
                 >

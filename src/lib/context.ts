@@ -145,7 +145,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     }
     for (const message of pending) {
       const raw = serializeMessage(message)
-      // Split exceptionally large legacy messages. No prefix is committed until every segment succeeds.
+      // Split exceptionally large messages. No prefix is committed until every segment succeeds.
       const charBudget = Math.max(
         128,
         Math.floor(

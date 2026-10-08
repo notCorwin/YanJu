@@ -287,7 +287,7 @@ export function applyMessage(story: StoryState, message: StoredMessage) {
       replyTo: `${message.id}:user`,
       source,
     })
-  } else if (message.effects) applyEffects(story, message.effects, message)
+  } else if (message.effects) applyEffects(story, message.effects, message, [])
 }
 
 export function rebuildStory(

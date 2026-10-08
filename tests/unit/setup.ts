@@ -12,6 +12,7 @@ afterEach(async () => {
     db.storyStates.clear(),
     db.storyEvents.clear(),
     db.tasks.clear(),
+    db.requests.clear(),
   ])
   localStorage.clear()
 })

@@ -36,7 +36,6 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
       data: sanitizePartial('forum', message.partial.value),
     })
   else if (message.kind === 'notice') parts.push({ type: 'data-notice', data: message.content })
-  else if (message.legacy) parts.push({ type: 'data-legacy', data: message.legacy })
   else parts.push({ type: 'text', text: message.content })
   return {
     id: message.id,
@@ -142,7 +141,7 @@ export async function compressArchive(
       signal,
       force,
       onProgress: progress,
-      summarize: (input, s) => summarize(channel, input, s),
+      summarize: (input, s) => summarize(channel, input, s, undefined, archive.id),
       commit: (s) => commitSummary(archive.id, archive.revision, s),
     })
   } catch (error) {
@@ -292,6 +291,8 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               throw new Error('压缩后仍没有足够上下文，请调整渠道容量或输出上限。')
             status(writer, 'generating', '正在生成严格结构化回复…')
             const result = await generateReply({
+              archiveId: snapshot.id,
+              ownerId: base.id,
               channel,
               kind,
               instructions: buildInstructions(persona, kind),

@@ -95,3 +95,8 @@ export function countdown(clock: TurnEffects['clock']) {
     ),
   )
 }
+
+export function formatMinor(amount: number, currency: string) {
+  const format = new Intl.NumberFormat('zh-CN', { style: 'currency', currency })
+  return format.format(amount / 10 ** (format.resolvedOptions().maximumFractionDigits ?? 2))
+}

@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import type { Persona } from './types'
+import type { StoryState } from './story'
+import type { ModelMessage } from 'ai'
 import { effectsSchema } from './domain-schema'
 import {
   compressionSchema,
@@ -87,7 +90,48 @@ export type TaskOutput<K extends TaskKind> = z.infer<(typeof taskSchemas)[K]>
 export interface TaskInput {
   text: string
   targetId: string | null
-  context: Record<string, unknown>
+  context: {
+    archive: { id: string; name: string; summary?: TaskOutput<'compression'> }
+    persona: Persona | null
+    story: Pick<
+      StoryState,
+      | 'entities'
+      | 'clock'
+      | 'states'
+      | 'relationships'
+      | 'knowledge'
+      | 'memories'
+      | 'goals'
+      | 'events'
+    >
+    target: TaskOutput<'narrative'> | TaskOutput<'forum'> | null
+    phone: StoryState['phones'][number] | null
+    forum: StoryState['forums'][number] | null
+    archives: { id: string; name: string }[]
+    tracks: { id: string; name: string }[]
+    history: {
+      id: string
+      role: 'user' | 'assistant'
+      text: string
+      blocks: { id: string; text: string }[]
+    }[]
+  }
+}
+
+/** Input contracts are owned by the program; only each task's independent output schema is sent as response_format. */
+export type TaskInputs = {
+  narrative: { instructions: string; messages: ModelMessage[] }
+  forum: { instructions: string; messages: ModelMessage[] }
+  compression: {
+    previous?: TaskOutput<'compression'>
+    messages: { role: string; content: string }[]
+    targetTokens: number
+  }
+  capability: { test: string }
+} & {
+  [K in AuxiliaryKind]: K extends 'phoneReply' | 'forumReply' | 'rewrite' | 'media'
+    ? TaskInput & { targetId: string }
+    : TaskInput
 }
 
 export const taskDefinitions: Record<
@@ -259,3 +303,82 @@ export function validateTask<K extends TaskKind>(kind: K, input: unknown): TaskO
   if (issues.length) throw new ContentValidationError(issues)
   return value
 }
+
+const sourceInputSchema = object({ messageId: text, blockId: nullable })
+const storedEffect = <S extends z.ZodRawShape>(shape: S) =>
+  object({ ...shape, id: text, source: sourceInputSchema })
+export const taskInputSchema = object({
+  text,
+  targetId: nullable,
+  context: object({
+    archive: object({ id: text, name: text, summary: compressionSchema.optional() }),
+    persona: object({
+      id: text,
+      name: text,
+      gender: text,
+      identity: text,
+      prefer: text,
+      force: text,
+      createdAt: z.number(),
+    }).nullable(),
+    story: object({
+      entities: z.array(
+        storedEffect(
+          effectsSchema.shape.entities.element.omit({ ref: true, sourceBlockId: true }).shape,
+        ),
+      ),
+      clock: effectsSchema.shape.clock,
+      states: z.array(
+        storedEffect(effectsSchema.shape.states.element.omit({ sourceBlockId: true }).shape),
+      ),
+      relationships: z.array(
+        storedEffect(
+          effectsSchema.shape.relationships.element.omit({ ref: true, sourceBlockId: true }).shape,
+        ),
+      ),
+      knowledge: z.array(
+        storedEffect(
+          effectsSchema.shape.knowledge.element.omit({ ref: true, sourceBlockId: true }).shape,
+        ),
+      ),
+      events: z.array(
+        storedEffect(
+          effectsSchema.shape.events.element.omit({ ref: true, sourceBlockId: true }).shape,
+        ),
+      ),
+      memories: z.array(
+        storedEffect(
+          effectsSchema.shape.memories.element.omit({ ref: true, sourceBlockId: true }).shape,
+        ),
+      ),
+      goals: z.array(
+        storedEffect(
+          effectsSchema.shape.goals.element.omit({ ref: true, sourceBlockId: true }).shape,
+        ),
+      ),
+    }),
+    target: z.union([narrativeSchema, forumSchema]).nullable(),
+    phone: object({
+      id: text,
+      contactRef: text,
+      contact: text,
+      messages: z.array(storedEffect({ speaker: text, time: text, text })),
+    }).nullable(),
+    forum: object({
+      id: text,
+      source: sourceInputSchema,
+      post: forumSchema.shape.post,
+      answers: z.array(storedEffect(forumSchema.shape.answers.element.shape)),
+    }).nullable(),
+    archives: z.array(object({ id: text, name: text })),
+    tracks: z.array(object({ id: text, name: text })),
+    history: z.array(
+      object({
+        id: text,
+        role: z.enum(['user', 'assistant']),
+        text,
+        blocks: z.array(object({ id: text, text })),
+      }),
+    ),
+  }),
+})

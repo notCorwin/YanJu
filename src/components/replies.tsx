@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import type { DeepPartial } from 'ai'
 import type { ForumReply, NarrativeReply } from '@/lib/schemas'
-import type { LegacyContent } from '@/lib/types'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from './ui/card'
 import { Bubble, BubbleContent } from './ui/bubble'
@@ -386,43 +385,6 @@ export function ForumView({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  )
-}
-export function LegacyView({
-  value,
-  onSend,
-  disabled,
-}: {
-  value: LegacyContent
-  onSend: (text: string) => void
-  disabled?: boolean
-}) {
-  if (value.forum) return <ForumView reply={value.forum} onSend={onSend} disabled={disabled} />
-  return (
-    <div className="flex flex-col gap-6">
-      {value.scene && (
-        <SceneCard scene={{ ...value.scene, characters: [value.scene.characters] }} />
-      )}
-      <Prose text={value.body} />
-      {value.panels.length > 0 && (
-        <Accordion type="multiple">
-          {value.panels.map((p, i) => (
-            <AccordionItem value={String(i)} key={i}>
-              <AccordionTrigger>{p.title}</AccordionTrigger>
-              <AccordionContent>
-                <div className="flex flex-col gap-5 py-3">
-                  {p.sections.map((s, j) => (
-                    <Section key={j} title={s.heading}>
-                      <Prose text={s.text} />
-                    </Section>
-                  ))}
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          ))}
-        </Accordion>
-      )}
     </div>
   )
 }

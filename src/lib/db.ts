@@ -15,8 +15,8 @@ import { validateNarrative, validateForum, compressionSchema } from './schemas'
 import { z } from 'zod'
 import { OpfsPersistence } from './opfs'
 import { rebuildStory, type StoryState, type StoryEvent } from './story'
-import type { TaskRun } from './types'
-import { taskSchemas, validateTask, type TaskKind } from './tasks'
+import type { TaskRun, RequestRecord } from './types'
+import { taskSchemas, taskInputSchema, validateTask, type TaskKind } from './tasks'
 import { effectsSchema } from './domain-schema'
 
 export class YanJuDatabase extends Dexie {
@@ -28,6 +28,7 @@ export class YanJuDatabase extends Dexie {
   storyStates!: Table<StoryState, string>
   storyEvents!: Table<StoryEvent, string>
   tasks!: Table<TaskRun, string>
+  requests!: Table<RequestRecord, string>
   readonly persistence: OpfsPersistence
   constructor(name = 'yanju-v3') {
     super(name)
@@ -42,6 +43,7 @@ export class YanJuDatabase extends Dexie {
       storyEvents: 'id,archiveId,[archiveId+sequence]',
       tasks: 'id,archiveId,createdAt',
     })
+    this.version(2).stores({ requests: 'id,archiveId,kind,createdAt,[archiveId+createdAt]' })
     this.use({
       stack: 'dbcore',
       name: 'opfs-persistence',
@@ -168,6 +170,43 @@ export async function editMessage(id: string, content: string) {
             ? { kind: 'narrative', value: validateNarrative(parsed) }
             : { kind: 'forum', value: validateForum(parsed) },
       }
+    } else if (message.interaction) {
+      const text = z.string().refine((value) => !!value.trim(), '内容不能为空')
+      const interaction = z
+        .discriminatedUnion('kind', [
+          z.strictObject({
+            kind: z.literal('phone'),
+            contactRef: text,
+            userText: text,
+            speaker: text,
+            time: text,
+            text,
+          }),
+          z.strictObject({
+            kind: z.literal('forum'),
+            postId: text,
+            replyTo: text,
+            userText: text,
+            author: text,
+            time: text,
+            content: text,
+          }),
+        ])
+        .parse(JSON.parse(content))
+      const user = message.userName ?? archive.userName ?? '你'
+      next = {
+        ...next,
+        interaction,
+        content:
+          interaction.kind === 'phone'
+            ? `${user}：${interaction.userText}\n${interaction.speaker}：${interaction.text}`
+            : `${user}：${interaction.userText}\n${interaction.author}：${interaction.content}`,
+      }
+    } else if (message.effects) {
+      const material = z
+        .strictObject({ content: z.string().min(1), effects: effectsSchema })
+        .parse(JSON.parse(content))
+      next = { ...next, ...material }
     } else if (message.role === 'assistant') next = { ...next, kind: message.kind }
     rebuildStory(archive, [
       ...(await archiveMessages(archive.id)).filter((m) => m.sequence < next.sequence),
@@ -211,6 +250,7 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     'storyStates',
     'storyEvents',
     'tasks',
+    'requests',
   ])
     z.array(z.unknown()).parse(raw[key])
   const channels: Channel[] = list(raw.channels).map((value) => {
@@ -316,10 +356,7 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     )
       throw new Error('任务类型或篇章无效')
     if (t.status === 'complete') validateTask(t.kind as TaskKind, t.output)
-    const taskInput = record(t.input)
-    z.string().parse(taskInput.text)
-    z.string().nullable().parse(taskInput.targetId)
-    record(taskInput.context)
+    taskInputSchema.parse(t.input)
     z.string().min(1).parse(t.channelId)
     if (t.applied !== undefined) z.boolean().parse(t.applied)
     return {
@@ -330,7 +367,41 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       status: z.enum(['complete', 'partial', 'failed', 'cancelled']).parse(t.status),
     } as unknown as TaskRun
   })
-  for (const [name, values] of Object.entries({ archives, messages, channels, masks, tasks }))
+  const requests: RequestRecord[] = list(raw.requests).map((value) => {
+    const r = record(value)
+    const request = record(r.request)
+    if (!Object.hasOwn(taskSchemas, str(r.kind))) throw new Error('未知请求类型')
+    if (r.status === 'complete') validateTask(r.kind as TaskKind, r.output)
+    if (r.archiveId !== null && !archives.some((a) => a.id === r.archiveId))
+      throw new Error('请求的篇章不存在')
+    z.string().nullable().parse(r.archiveId)
+    z.string().nullable().parse(r.ownerId)
+    z.string().parse(request.instructions)
+    z.array(
+      z.object({ role: z.enum(['system', 'user', 'assistant', 'tool']), content: z.unknown() }),
+    ).parse(request.messages)
+    z.number().int().positive().parse(request.maxOutputTokens)
+    z.number().min(0).max(2).parse(request.temperature)
+    z.object({ id: z.string(), name: z.string(), baseUrl: z.string(), model: z.string() }).parse(
+      r.channel,
+    )
+    return {
+      ...r,
+      id: z.string().min(1).parse(r.id),
+      createdAt: z.number().parse(r.createdAt),
+      estimatedInput: z.number().nonnegative().parse(r.estimatedInput),
+      attempt: z.number().int().min(0).max(1).parse(r.attempt),
+      status: z.enum(['complete', 'partial', 'failed', 'cancelled']).parse(r.status),
+    } as unknown as RequestRecord
+  })
+  for (const [name, values] of Object.entries({
+    archives,
+    messages,
+    channels,
+    masks,
+    tasks,
+    requests,
+  }))
     if (new Set(values.map((v) => v.id)).size !== values.length)
       throw new Error(`${name} 存在重复 ID，导入未执行。`)
   const storyStates: StoryState[] = []
@@ -381,6 +452,7 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     storyStates,
     storyEvents,
     tasks,
+    requests,
   }
 }
 
@@ -404,6 +476,7 @@ export async function importSave(input: unknown, database = db, restore = false)
       database.storyStates,
       database.storyEvents,
       database.tasks,
+      database.requests,
     ],
     async () => {
       await Promise.all([
@@ -414,12 +487,14 @@ export async function importSave(input: unknown, database = db, restore = false)
         database.storyStates.clear(),
         database.storyEvents.clear(),
         database.tasks.clear(),
+        database.requests.clear(),
       ])
       await database.archives.bulkPut(data.archives)
       await database.messages.bulkPut(data.messages)
       await database.storyStates.bulkPut(data.storyStates)
       await database.storyEvents.bulkPut(data.storyEvents)
       await database.tasks.bulkPut(data.tasks)
+      await database.requests.bulkPut(data.requests)
       await database.channels.bulkPut(data.channels)
       await database.personas.bulkPut(data.masks)
       await database.settings.put(data.settings)
@@ -439,6 +514,7 @@ export async function exportSave(database = db): Promise<SaveFile> {
       database.storyStates,
       database.storyEvents,
       database.tasks,
+      database.requests,
     ],
     async () => ({
       version: 3,
@@ -451,6 +527,7 @@ export async function exportSave(database = db): Promise<SaveFile> {
       storyStates: await database.storyStates.toArray(),
       storyEvents: await database.storyEvents.toArray(),
       tasks: await database.tasks.toArray(),
+      requests: await database.requests.toArray(),
     }),
   )
 }
@@ -483,6 +560,9 @@ export function initializeStorage(database = db) {
     await database.tasks
       .filter((t) => t.status === 'partial')
       .modify({ status: 'cancelled', error: '上次任务已中断，可重试。' })
+    await database.requests
+      .filter((r) => r.status === 'partial')
+      .modify({ status: 'cancelled', error: '上次请求已中断。' })
     await database.persistence.start()
   })().catch((error) => {
     initializing.delete(database)

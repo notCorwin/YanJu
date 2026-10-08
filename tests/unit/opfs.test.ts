@@ -11,6 +11,7 @@ const save: SaveFile = {
   storyStates: [],
   storyEvents: [],
   tasks: [],
+  requests: [],
   archives: [{ id: 'archive-1', name: '篇章', createdAt: 1, updatedAt: 1, revision: 1, draft: '' }],
   messages: [
     {

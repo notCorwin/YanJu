@@ -753,13 +753,18 @@ export function ArchivesSheet({
           title="删除存档？"
           detail="将删除这个篇章的全部消息和摘要。建议先导出。"
           onConfirm={async () => {
-            await db.transaction('rw', [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks], async () => {
-              await db.messages.where('archiveId').equals(removeId).delete()
-              await db.archives.delete(removeId)
-              await db.storyStates.delete(removeId)
-              await db.storyEvents.where('archiveId').equals(removeId).delete()
-              await db.tasks.where('archiveId').equals(removeId).delete()
-            })
+            await db.transaction(
+              'rw',
+              [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
+              async () => {
+                await db.messages.where('archiveId').equals(removeId).delete()
+                await db.archives.delete(removeId)
+                await db.storyStates.delete(removeId)
+                await db.storyEvents.where('archiveId').equals(removeId).delete()
+                await db.tasks.where('archiveId').equals(removeId).delete()
+                await db.requests.where('archiveId').equals(removeId).delete()
+              },
+            )
             const next = await db.archives.toCollection().first()
             if (removeId === activeId) onSelect(next?.id || (await createArchive()).id)
           }}

@@ -1,8 +1,8 @@
-import type { DeepPartial, UIMessage } from 'ai'
+import type { DeepPartial, UIMessage, ModelMessage } from 'ai'
 import type { CompressionResult, ForumReply, NarrativeReply, Reply, RequestKind } from './schemas'
 import type { TurnEffects } from './domain-schema'
 import type { StoryState, StoryEvent } from './story'
-import type { AuxiliaryKind, TaskInput } from './tasks'
+import type { AuxiliaryKind, TaskInput, TaskKind } from './tasks'
 
 export interface Channel {
   id: string
@@ -70,23 +70,6 @@ export interface Archive {
   description?: string
   keywords?: string[]
 }
-export interface LegacyPanel {
-  title: string
-  sections: { heading: string; text: string }[]
-}
-export interface LegacyContent {
-  body: string
-  scene?: {
-    time: string
-    location: string
-    characters: string
-    quoteZh: string
-    quoteEn: string
-    source: string
-  }
-  panels: LegacyPanel[]
-  forum?: ForumReply
-}
 export type MessageStatus = 'complete' | 'partial' | 'failed' | 'cancelled'
 export interface StoredMessage {
   id: string
@@ -95,13 +78,12 @@ export interface StoredMessage {
   content: string
   createdAt: number
   sequence: number
-  kind: RequestKind | 'legacy' | 'notice' | 'opening' | 'material' | 'interaction'
+  kind: RequestKind | 'notice' | 'opening' | 'material' | 'interaction'
   status: MessageStatus
   reply?: Reply
   partial?:
     | { kind: 'narrative'; value: DeepPartial<NarrativeReply> }
     | { kind: 'forum'; value: DeepPartial<ForumReply> }
-  legacy?: LegacyContent
   rawContent?: string
   /** A user message already sent to correct this generation, replayed before the assistant reply. */
   correction?: string
@@ -147,6 +129,29 @@ export interface TaskRun {
   usage?: Usage
   applied?: boolean
 }
+export interface RequestRecord {
+  id: string
+  archiveId: string | null
+  ownerId: string | null
+  kind: TaskKind
+  attempt: number
+  createdAt: number
+  channel: { id: string; name: string; baseUrl: string; model: string }
+  request: {
+    instructions: string
+    messages: ModelMessage[]
+    schema: unknown
+    maxOutputTokens: number
+    temperature: number
+  }
+  estimatedInput: number
+  status: MessageStatus
+  output?: unknown
+  partial?: unknown
+  raw?: string
+  error?: string
+  usage?: Usage
+}
 export interface MessageMeta {
   createdAt: number
   kind: StoredMessage['kind']
@@ -158,7 +163,6 @@ export type ChatMessage = UIMessage<
   {
     narrative: DeepPartial<NarrativeReply>
     forum: DeepPartial<ForumReply>
-    legacy: LegacyContent
     notice: string
     status: {
       phase: 'compressing' | 'generating' | 'correcting' | 'complete' | 'failed' | 'cancelled'
@@ -178,6 +182,7 @@ export interface SaveFile {
   storyStates: StoryState[]
   storyEvents: StoryEvent[]
   tasks: TaskRun[]
+  requests: RequestRecord[]
 }
 
 export const defaults: Settings = {

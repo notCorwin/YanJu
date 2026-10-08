@@ -46,7 +46,7 @@ import {
 } from './ui/dialog'
 import { Textarea } from './ui/textarea'
 import { Field, FieldLabel } from './ui/field'
-import { NarrativeView, ForumView, LegacyView } from './replies'
+import { NarrativeView, ForumView } from './replies'
 import { ConfirmDialog, IconButton, Prose } from './shared'
 import type { Notify } from './managers'
 import {
@@ -238,11 +238,15 @@ function ChatRunner({
       const element = document.getElementById(
         sourceBlock ? `source-block-${sourceMessage}-${sourceBlock}` : `message-${sourceMessage}`,
       )
-      element?.scrollIntoView({ block: 'center' })
+      if (!element) {
+        notify('这条消息已被重说替换，可在工作台的请求记录中查看原结果。', true)
+        return
+      }
+      element.scrollIntoView({ block: 'center' })
       element?.focus({ preventScroll: true })
     })
     return () => cancelAnimationFrame(frame)
-  }, [sourceMessage, sourceBlock, busy])
+  }, [sourceMessage, sourceBlock, busy, notify])
   const replyToForum = async (id: string, text: string) => {
     if (busy || lock.current) return
     lock.current = true
@@ -357,7 +361,7 @@ function ChatRunner({
         ? source.reply.value.blocks
             .map((b) => b.text + (b.translation ? `\n「${b.translation}」` : ''))
             .join('\n\n')
-        : source?.legacy?.body || source?.content || JSON.stringify(message.parts)
+        : source?.content || JSON.stringify(message.parts)
     void navigator.clipboard.writeText(text).then(
       () => notify('消息已复制。'),
       () => notify('复制失败，请使用浏览器的文本选择功能。', true),
@@ -448,15 +452,6 @@ function ChatRunner({
                                       onSend={(text) => void send(text, 'forum')}
                                     />
                                   )
-                                if (p.type === 'data-legacy')
-                                  return (
-                                    <LegacyView
-                                      key={j}
-                                      value={p.data}
-                                      disabled={busy}
-                                      onSend={(text) => void send(text, 'forum')}
-                                    />
-                                  )
                                 if (p.type === 'data-notice')
                                   return (
                                     <img
@@ -493,7 +488,15 @@ function ChatRunner({
                                   setEditText(
                                     m.reply
                                       ? JSON.stringify(m.reply.value, null, 2)
-                                      : m.rawContent || m.content,
+                                      : m.interaction
+                                        ? JSON.stringify(m.interaction, null, 2)
+                                        : m.effects
+                                          ? JSON.stringify(
+                                              { content: m.content, effects: m.effects },
+                                              null,
+                                              2,
+                                            )
+                                          : m.rawContent || m.content,
                                   )
                                 }
                               }}
@@ -667,7 +670,7 @@ function ChatRunner({
           <DialogHeader>
             <DialogTitle>编辑消息</DialogTitle>
             <DialogDescription>
-              {editing?.reply
+              {editing?.reply || editing?.interaction || editing?.effects
                 ? '回复保存为 JSON 内容。修改后会检查结构；已覆盖这条消息的摘要会失效并在需要时重建。'
                 : '修改后保留这条消息的时间和所属存档；后续剧情会标记失效并重建状态。'}
             </DialogDescription>
@@ -716,15 +719,12 @@ function ChatRunner({
           const data = createArchiveData()
           await db.transaction(
             'rw',
-            db.messages,
-            db.archives,
-            db.storyStates,
-            db.storyEvents,
-            db.tasks,
+            [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
             async () => {
               await db.messages.where('archiveId').equals(archive.id).delete()
               await db.messages.put({ ...data.opening, archiveId: archive.id })
               await db.tasks.where('archiveId').equals(archive.id).delete()
+              await db.requests.where('archiveId').equals(archive.id).delete()
               const updated = { ...revise(archive, true), draft: '' }
               await db.archives.put(updated)
               await refreshStory(db, updated)
