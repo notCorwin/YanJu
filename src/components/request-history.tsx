@@ -14,7 +14,7 @@ export function RequestHistory({ archiveId }: { archiveId: string }) {
     useLiveQuery(
       () =>
         db.requests
-          .filter((r) => r.archiveId === archiveId || r.kind === 'capability')
+          .filter((r) => r.archiveId === archiveId || r.archiveId === null)
           .sortBy('createdAt'),
       [archiveId],
     ) ?? []
@@ -77,6 +77,11 @@ export function RequestHistory({ archiveId }: { archiveId: string }) {
                     </p>
                   )}
                   {record.error && <p className="text-sm text-destructive">{record.error}</p>}
+                  {record.archiveId === null && record.kind !== 'capability' && (
+                    <p className="text-sm text-muted-foreground">
+                      原篇章已删除；收到的结果仍可导出。
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             ))}

@@ -5,7 +5,7 @@ import { estimateTokens, serializeRequest } from './context'
 import { estimatedProtocol } from './channels'
 import { taskDefinitions, taskSchemas, validateTask, type TaskKind, type TaskOutput } from './tasks'
 import { ContentValidationError, sanitizeSchemaPartial } from './schemas'
-import { db } from './db'
+import { saveRequestRecord } from './db'
 import type { ApiProtocol, Channel, Usage, RequestRecord } from './types'
 
 export interface StructuredOptions<K extends TaskKind> {
@@ -111,7 +111,7 @@ export async function runStructuredTask<K extends TaskKind>(
         streaming,
       },
     }
-    await db.requests.put(record)
+    await saveRequestRecord(record)
     let checkpoint = Promise.resolve()
     let lastCheckpoint = 0
     let streamError: unknown
@@ -155,7 +155,7 @@ export async function runStructuredTask<K extends TaskKind>(
           if (Date.now() - lastCheckpoint >= 500) {
             lastCheckpoint = Date.now()
             const snapshot = structuredClone(record)
-            checkpoint = checkpoint.then(() => db.requests.put(snapshot)).then(() => undefined)
+            checkpoint = checkpoint.then(() => saveRequestRecord(snapshot))
           }
         }
         const finish = await stream.finishReason
@@ -171,12 +171,12 @@ export async function runStructuredTask<K extends TaskKind>(
       const value = validateTask(kind, generated)
       options.validate?.(value)
       await checkpoint
-      await db.requests.put({ ...record, status: 'complete', output: value, usage })
+      await saveRequestRecord({ ...record, status: 'complete', output: value, usage })
       return { value, correction, usage }
     } catch (error) {
       const failure = streamError ?? error
       await checkpoint.catch(() => undefined)
-      await db.requests.put({
+      await saveRequestRecord({
         ...record,
         status: signal?.aborted ? 'cancelled' : 'failed',
         usage,

@@ -95,6 +95,42 @@ function fake(
   })
 }
 describe('辅助任务完整链路', () => {
+  it('生成期间删除篇章不会重建任务或产生无法导入的孤立请求', async () => {
+    const fetcher = fake('phoneReply')
+    const task = await executeAuxiliary(
+      archive.id,
+      'phoneReply',
+      '保留收到的结果',
+      'character-shendu',
+      {
+        fetcher: async (url, init) => {
+          const output = await fetcher(url, init)
+          await db.transaction(
+            'rw',
+            [db.archives, db.messages, db.storyStates, db.storyEvents, db.tasks, db.requests],
+            async () => {
+              await db.archives.delete(archive.id)
+              await db.messages.where('archiveId').equals(archive.id).delete()
+              await db.storyStates.delete(archive.id)
+              await db.storyEvents.where('archiveId').equals(archive.id).delete()
+              await db.tasks.where('archiveId').equals(archive.id).delete()
+              await db.requests.where('archiveId').equals(archive.id).delete()
+            },
+          )
+          return output
+        },
+      },
+    )
+    expect(task.status).toBe('failed')
+    expect(await db.archives.get(archive.id)).toBeUndefined()
+    expect(await db.tasks.count()).toBe(0)
+    expect(await db.messages.count()).toBe(0)
+    const saved = await exportSave()
+    expect(saved.requests.at(-1)?.archiveId).toBeNull()
+    expect(saved.requests.at(-1)?.output).toBeTruthy()
+    expect((await importSave(saved)).version).toBe(3)
+    expect((await exportSave()).requests).toEqual(saved.requests)
+  })
   it.each([
     'phoneReply',
     'forumReply',

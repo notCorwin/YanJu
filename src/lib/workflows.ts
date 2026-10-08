@@ -30,6 +30,15 @@ import { taskSchemas } from './tasks'
 const invalid = (text: string): never => {
   throw new ContentValidationError([text])
 }
+async function saveTaskProgress(task: TaskRun, create = false) {
+  return db.transaction('rw', [db.archives, db.tasks], async () => {
+    const archive = await db.archives.get(task.archiveId)
+    if (!archive || (create ? archive.revision !== task.revision : !(await db.tasks.get(task.id))))
+      return false
+    await db.tasks.put(task)
+    return true
+  })
+}
 export function messageText(message: StoredMessage) {
   if (message.reply?.kind === 'narrative')
     return message.reply.value.blocks.map((b) => `${b.text}\n${b.translation}`).join('\n\n')
@@ -274,7 +283,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     createdAt: Date.now(),
     status: 'partial',
   }
-  await db.tasks.put(task)
+  if (!(await saveTaskProgress(task, true))) throw new Error('篇章已变更，请重新生成后保存。')
   let checkpoint = Promise.resolve()
   let checkpointAt = 0
   try {
@@ -328,7 +337,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
         if (Date.now() - checkpointAt > 500) {
           checkpointAt = Date.now()
           const snapshot = structuredClone(task)
-          checkpoint = checkpoint.then(() => db.tasks.put(snapshot)).then(() => undefined)
+          checkpoint = checkpoint.then(() => saveTaskProgress(snapshot)).then(() => undefined)
         }
       },
       onCorrection: (_detail, correction) => {
@@ -343,7 +352,8 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
       correction: result.correction,
       status: 'complete',
     })
-    await db.tasks.put(task)
+    if (!(await saveTaskProgress(task)))
+      throw new Error('篇章已删除或资料已替换，收到的结果保留在请求记录中。')
     const calibration = calibrate(
       channel,
       result.usage?.input,
@@ -358,7 +368,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     await checkpoint.catch(() => undefined)
     task.status = options.signal?.aborted ? 'cancelled' : 'failed'
     task.error = friendlyError(error)
-    await db.tasks.put(task)
+    await saveTaskProgress(task)
     await db.persistence.flush()
     return task
   }
