@@ -4,7 +4,14 @@ import { defaults } from '../../src/lib/types'
 import { channelFingerprint } from '../../src/lib/provider'
 import { BrowserChatTransport, toChatMessage } from '../../src/lib/transport'
 import { modelMessages } from '../../src/lib/prompts'
-import { channelFixture, compressionFixture, messageFixture, narrativeFixture } from '../fixtures'
+import * as context from '../../src/lib/context'
+import {
+  channelFixture,
+  compressionFixture,
+  forumFixture,
+  messageFixture,
+  narrativeFixture,
+} from '../fixtures'
 
 const mock = vi.hoisted(() => ({ generate: vi.fn(), summarize: vi.fn() }))
 vi.mock('../../src/lib/provider', async (importOriginal) => ({
@@ -162,5 +169,95 @@ describe('浏览器 ChatTransport 与持久化', () => {
     await run()
     expect(await archiveMessages('other')).toHaveLength(0)
     expect((await archiveMessages('archive-1')).at(-1)?.reply).toBeDefined()
+  })
+  it.each(['narrative', 'forum'] as const)('%s 回复结束前等待最终 OPFS 同步', async (kind) => {
+    await db.messages.update('m4', { kind })
+    mock.generate.mockResolvedValue({
+      reply:
+        kind === 'narrative' ? { kind, value: narrativeFixture } : { kind, value: forumFixture },
+    })
+    let flushed = false
+    const flush = vi.spyOn(db.persistence, 'flush').mockImplementation(async () => {
+      const saved = (await archiveMessages('archive-1')).at(-1)!
+      expect(saved.status).toBe('complete')
+      expect(saved.reply?.kind).toBe(kind)
+      flushed = true
+      return { phase: 'saved', persistent: true }
+    })
+    const chunks = await run()
+    expect(flushed).toBe(true)
+    expect(flush).toHaveBeenCalled()
+    expect(chunks.find((c) => c.type === 'finish')).toMatchObject({
+      messageMetadata: { status: 'complete' },
+    })
+  })
+  it('完成后压缩尚未返回时流已结束，存档可立即读取', async () => {
+    vi.spyOn(context, 'contextBudget')
+      .mockReturnValueOnce({ estimated: 25000, percent: 0.2, mustCompress: false })
+      .mockReturnValueOnce({ estimated: 120000, percent: 0.9, mustCompress: true })
+    let resolveCompaction!: () => void
+    const pending = new Promise<undefined>((resolve) => {
+      resolveCompaction = () => resolve(undefined)
+    })
+    const compact = vi
+      .spyOn(context, 'compactContext')
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(pending)
+    mock.generate.mockResolvedValue({ reply: { kind: 'narrative', value: narrativeFixture } })
+    const chunks = await run()
+    await vi.waitFor(() => expect(compact).toHaveBeenCalledTimes(2))
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', messageMetadata: { status: 'complete' } })
+    expect((await archiveMessages('archive-1')).at(-1)?.status).toBe('complete')
+    resolveCompaction()
+    await pending
+  })
+  it('完成后的压缩失败不会把已保存回复标成失败', async () => {
+    vi.spyOn(context, 'contextBudget')
+      .mockReturnValueOnce({ estimated: 25000, percent: 0.2, mustCompress: false })
+      .mockReturnValueOnce({ estimated: 120000, percent: 0.9, mustCompress: true })
+    vi.spyOn(context, 'compactContext')
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('后台压缩失败'))
+    mock.generate.mockResolvedValue({ reply: { kind: 'narrative', value: narrativeFixture } })
+    const chunks = await run()
+    await vi.waitFor(async () => {
+      expect((await db.archives.get('archive-1'))?.compactionError).toBe('后台压缩失败')
+    })
+    expect(chunks.find((c) => c.type === 'finish')).toMatchObject({
+      messageMetadata: { status: 'complete' },
+    })
+    expect((await archiveMessages('archive-1')).at(-1)?.status).toBe('complete')
+  })
+  it('OPFS 同步失败时回复仍完成，保留可导出的记录并说明原因', async () => {
+    vi.spyOn(db.persistence, 'flush').mockResolvedValue({
+      phase: 'error',
+      persistent: false,
+      error: '磁盘已满',
+    })
+    mock.generate.mockResolvedValue({ reply: { kind: 'narrative', value: narrativeFixture } })
+    const chunks = await run()
+    expect(chunks.find((c) => c.type === 'finish')).toMatchObject({
+      messageMetadata: { status: 'complete' },
+    })
+    expect(
+      chunks.find((c) => c.type === 'data-status' && c.data.phase === 'complete'),
+    ).toMatchObject({
+      data: { detail: expect.stringContaining('OPFS 同步失败') },
+    })
+    expect((await archiveMessages('archive-1')).at(-1)?.reply?.value).toEqual(narrativeFixture)
+  })
+  it('并发修改导致最终提交冲突时保留完整收到的内容和另一窗口的修改', async () => {
+    mock.generate.mockImplementation(async () => {
+      await db.archives.update('archive-1', { revision: 5, name: '另一窗口的篇章' })
+      return { reply: { kind: 'narrative', value: narrativeFixture } }
+    })
+    await run()
+    const archive = await db.archives.get('archive-1')
+    expect(archive?.name).toBe('另一窗口的篇章')
+    expect(archive?.revision).toBe(6)
+    expect((await archiveMessages('archive-1')).at(-1)).toMatchObject({
+      status: 'failed',
+      partial: { kind: 'narrative', value: narrativeFixture },
+    })
   })
 })

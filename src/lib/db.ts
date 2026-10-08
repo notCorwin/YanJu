@@ -14,6 +14,7 @@ import {
 } from './types'
 import { validateNarrative, validateForum, compressionSchema } from './schemas'
 import { z } from 'zod'
+import { OpfsPersistence } from './opfs'
 
 export class YanJuDatabase extends Dexie {
   archives!: Table<Archive, string>
@@ -21,14 +22,31 @@ export class YanJuDatabase extends Dexie {
   channels!: Table<Channel, string>
   personas!: Table<Persona, string>
   settings!: Table<Settings, string>
+  readonly persistence: OpfsPersistence
   constructor(name = 'yanju-v2') {
     super(name)
+    this.persistence = new OpfsPersistence(name, () => exportSave(this))
     this.version(1).stores({
       archives: 'id,updatedAt',
       messages: 'id,archiveId,[archiveId+sequence]',
       channels: 'id,createdAt',
       personas: 'id,createdAt',
       settings: 'id',
+    })
+    this.use({
+      stack: 'dbcore',
+      name: 'opfs-persistence',
+      create: (core) => ({
+        ...core,
+        transaction: (stores, mode, options) => {
+          const transaction = core.transaction(stores, mode, options)
+          if (mode === 'readwrite')
+            (transaction as IDBTransaction).addEventListener('complete', () =>
+              this.persistence.markDirty(),
+            )
+          return transaction
+        },
+      }),
     })
   }
 }
@@ -53,13 +71,19 @@ export function createArchiveData(name = '新的篇章'): { archive: Archive; op
   }
   return { archive, opening: msg }
 }
-export async function createArchive(name?: string) {
+export async function createArchive(name?: string, database = db) {
   const data = createArchiveData(name)
-  await db.transaction('rw', db.archives, db.messages, db.settings, async () => {
-    await db.archives.add(data.archive)
-    await db.messages.add(data.opening)
-    await db.settings.update('app', { activeArchiveId: data.archive.id })
-  })
+  await database.transaction(
+    'rw',
+    database.archives,
+    database.messages,
+    database.settings,
+    async () => {
+      await database.archives.add(data.archive)
+      await database.messages.add(data.opening)
+      await database.settings.update('app', { activeArchiveId: data.archive.id })
+    },
+  )
   return data.archive
 }
 
@@ -136,7 +160,7 @@ const str = (v: unknown, fallback = '') => (typeof v === 'string' ? v : fallback
 const record = (v: unknown): Record<string, unknown> => z.record(z.string(), z.unknown()).parse(v)
 const list = (v: unknown) => z.array(z.unknown()).parse(v ?? [])
 
-export function normalizeImport(input: unknown): SaveFile {
+export function normalizeImport(input: unknown, restore = false): SaveFile {
   const raw = record(input)
   if (raw.version !== 1 && raw.version !== 2)
     throw new Error('仅支持版本 1 和版本 2 的盐焗 JSON 存档。')
@@ -153,6 +177,7 @@ export function normalizeImport(input: unknown): SaveFile {
       contextWindow: numeric(c.contextWindow, 32768),
       createdAt: numeric(c.createdAt, Date.now()),
       calibration: raw.version === 2 ? (c.calibration as Channel['calibration']) : undefined,
+      capability: restore ? (c.capability as Channel['capability']) : undefined,
     }
   })
   const masks: Persona[] = list(raw.masks).map((value) => {
@@ -218,6 +243,7 @@ export function normalizeImport(input: unknown): SaveFile {
       draft: str(a.draft),
       summary,
       lastUsage: a.lastUsage as Archive['lastUsage'],
+      compactionError: str(a.compactionError) || undefined,
     }
   })
   if (raw.version === 2) {
@@ -289,8 +315,8 @@ export function normalizeImport(input: unknown): SaveFile {
   }
 }
 
-export async function importSave(input: unknown, database = db) {
-  const data = normalizeImport(input)
+export async function importSave(input: unknown, database = db, restore = false) {
+  const data = normalizeImport(input, restore)
   await database.transaction(
     'rw',
     database.archives,
@@ -334,12 +360,21 @@ export async function exportSave(database = db): Promise<SaveFile> {
   )
 }
 
-let initializing: Promise<void> | undefined
-export function initializeStorage() {
-  if (initializing) return initializing
-  initializing = (async () => {
-    await db.open()
-    if (!(await db.settings.get('app'))) {
+const initializing = new WeakMap<YanJuDatabase, Promise<void>>()
+export function initializeStorage(database = db) {
+  const pending = initializing.get(database)
+  if (pending) return pending
+  const initialization = (async () => {
+    await database.open()
+    if (!(await database.settings.get('app')) && !(await database.archives.count())) {
+      try {
+        const saved = await database.persistence.read()
+        if (saved) await importSave(saved, database, true)
+      } catch (error) {
+        database.persistence.preserveUnreadableSave(error)
+      }
+    }
+    if (!(await database.settings.get('app'))) {
       const get = (key: string, fallback: unknown) => {
         const value = localStorage.getItem(`yanju_${key}`)
         if (!value) return fallback
@@ -360,21 +395,23 @@ export function initializeStorage() {
         data.settings.activeArchiveId = str(get('archive_cur', data.settings.activeArchiveId))
         data.settings.activeChannelId = str(get('channel_cur', data.settings.activeChannelId))
         data.settings.activePersonaId = str(get('mask_cur', data.settings.activePersonaId))
-        await importSave(data)
-      } else await db.settings.put({ ...defaults, migrated: true })
+        await importSave(data, database)
+      } else await database.settings.put({ ...defaults, migrated: true })
     }
-    if (!(await db.personas.count())) {
+    if (!(await database.personas.count())) {
       const persona = newPersona()
-      await db.personas.add(persona)
-      await db.settings.update('app', { activePersonaId: persona.id })
+      await database.personas.add(persona)
+      await database.settings.update('app', { activePersonaId: persona.id })
     }
-    if (!(await db.archives.count())) await createArchive()
-    await db.messages
+    if (!(await database.archives.count())) await createArchive(undefined, database)
+    await database.messages
       .filter((m) => m.status === 'partial')
       .modify({ status: 'cancelled', error: '上次生成已中断，已保留收到的内容，可重试。' })
+    await database.persistence.start()
   })().catch((error) => {
-    initializing = undefined
+    initializing.delete(database)
     throw error
   })
-  return initializing
+  initializing.set(database, initialization)
+  return initialization
 }

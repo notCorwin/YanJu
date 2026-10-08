@@ -7,6 +7,37 @@ import {
   narrativeFixture,
   sse,
 } from '../fixtures'
+import type { SaveFile } from '../../src/lib/types'
+
+async function readOpfs(page: Page): Promise<SaveFile | undefined> {
+  return page.evaluate(async () => {
+    try {
+      const root = await navigator.storage.getDirectory()
+      const directory = await root.getDirectoryHandle('yanju-v2')
+      const handle = await directory.getFileHandle('save.json')
+      return JSON.parse(await (await handle.getFile()).text())
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') return undefined
+      throw error
+    }
+  })
+}
+
+function lastSavedMessage(data: SaveFile | undefined) {
+  return data?.messages
+    .filter((message) => message.archiveId === 'archive-1')
+    .sort((a, b) => a.sequence - b.sequence)
+    .at(-1)
+}
+
+async function expectArchiveAvailable(page: Page) {
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.getByRole('button', { name: '存档管理' }).click()
+  await expect(page.getByRole('button', { name: '当前存档', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '载入', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '导出全部', exact: true })).toBeEnabled()
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+}
 
 type Body = {
   model: string
@@ -153,6 +184,11 @@ test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) 
   await page.getByRole('textbox', { name: '聊天输入' }).fill('一起读书吧。')
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
   await expect(page.getByText('SCENE / 场景')).toBeVisible()
+  await expectArchiveAvailable(page)
+  expect(lastSavedMessage(await readOpfs(page))?.reply).toEqual({
+    kind: 'narrative',
+    value: narrativeFixture,
+  })
   await expect(page.getByRole('button', { name: /STATE \/ INTERNAL/ })).toBeVisible()
   await page.getByRole('button', { name: /DEVICE \/ INTERFACE/ }).click()
   await expect(page.getByRole('heading', { name: '备忘录' })).toBeVisible()
@@ -164,12 +200,19 @@ test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) 
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
   await expect(page.getByText('今天该读哪一本书？')).toBeVisible()
   await expect(page.getByText(/50\/50 回答/)).toBeVisible()
+  await expectArchiveAvailable(page)
+  expect(lastSavedMessage(await readOpfs(page))?.reply).toEqual({
+    kind: 'forum',
+    value: forumFixture,
+  })
   await page.getByRole('button', { name: /展开更多回答/ }).click()
   await expect(page.getByText('读者20', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '回复', exact: true }).first().click()
   await page.getByRole('textbox', { name: '内容', exact: true }).fill('谢谢推荐。')
   await page.getByRole('dialog').getByRole('button', { name: '发送', exact: true }).click()
   await expect.poll(() => requests.filter((r) => r.stream).length).toBe(3)
+  await expectArchiveAvailable(page)
+  expect((await readOpfs(page))?.messages.filter((m) => m.reply).length).toBe(3)
   expect(
     requests.every(
       (r) => r.response_format.type === 'json_schema' && r.response_format.json_schema.strict,
@@ -346,10 +389,17 @@ test('截断保留收到的内容，并可重试', async ({ page }) => {
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
   await expect(page.getByText('可恢复的部分正文')).toBeVisible()
   await expect(page.getByRole('button', { name: '重试回复', exact: true })).toBeVisible()
+  await expectArchiveAvailable(page)
+  expect(lastSavedMessage(await readOpfs(page))).toMatchObject({
+    status: 'failed',
+    partial: { kind: 'narrative', value: { blocks: [{ text: '可恢复的部分正文' }] } },
+  })
   expect(requests.filter((r) => r.stream)).toHaveLength(1)
   await page.getByRole('button', { name: '重试回复', exact: true }).click()
   await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
   await expect(page.getByRole('button', { name: '重试回复', exact: true })).toHaveCount(0)
+  await expectArchiveAvailable(page)
+  expect(lastSavedMessage(await readOpfs(page))?.status).toBe('complete')
   await page.reload()
   await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
 })
@@ -390,6 +440,8 @@ test('取消保存部分内容，停止后可继续聊天', async ({ page }) => 
   await expect(page.getByText('停止前收到的内容')).toBeVisible()
   await page.getByRole('button', { name: '停止生成' }).click()
   await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeVisible()
+  await expectArchiveAvailable(page)
+  expect(lastSavedMessage(await readOpfs(page))?.status).toBe('cancelled')
   await page.reload()
   await expect(page.getByText('停止前收到的内容')).toBeVisible()
   await expect(page.getByRole('button', { name: '重试回复', exact: true })).toBeVisible()
@@ -406,4 +458,96 @@ test('不支持严格结构化的渠道不能用于聊天', async ({ page }) => 
   await expect(page.getByText(/渠道未能完成严格结构化请求/).first()).toBeVisible()
   expect(requests).toHaveLength(1)
   expect(requests[0].response_format.type).toBe('json_schema')
+})
+
+test('只保留 OPFS 文件时仍恢复完整聊天、草稿、人设与已测试渠道', async ({ page, context }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('验证 OPFS 恢复。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expectArchiveAvailable(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('未发送的草稿')
+  await expect
+    .poll(async () => (await readOpfs(page))?.archives.find((a) => a.id === 'archive-1')?.draft)
+    .toBe('未发送的草稿')
+  await page.goto('about:blank')
+
+  const recovered = await context.newPage()
+  await recovered.route('**/storage-reset', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>存储恢复测试</title>' }),
+  )
+  await recovered.goto('./storage-reset')
+  await recovered.evaluate(async () => {
+    localStorage.clear()
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase('yanju-v2')
+      request.onsuccess = () => resolve()
+      request.onerror = () => reject(request.error)
+      request.onblocked = () => reject(new Error('工作数据库仍有连接'))
+    })
+  })
+  await recovered.goto('./#/chat/archive-1')
+  await expect(recovered.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+  await expect(recovered.getByRole('textbox', { name: '聊天输入' })).toHaveValue('未发送的草稿')
+  await expect(recovered.getByRole('combobox', { name: '当前渠道' })).toContainText('测试渠道')
+  await expect(recovered.getByText('宴雎 / 测试读者', { exact: true })).toBeVisible()
+  await expectArchiveAvailable(recovered)
+  expect(lastSavedMessage(await readOpfs(recovered))?.reply?.value).toEqual(narrativeFixture)
+})
+
+test('OPFS 写入失败后存档仍可载入和导出，并可重试同步', async ({ page }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  await page.evaluate(() => {
+    const original = FileSystemFileHandle.prototype.createWritable
+    let failing = true
+    FileSystemFileHandle.prototype.createWritable = function (...args) {
+      if (failing) return Promise.reject(new DOMException('测试磁盘已满', 'QuotaExceededError'))
+      return original.apply(this, args)
+    }
+    Object.defineProperty(window, 'allowOpfsWrites', {
+      value: () => {
+        failing = false
+      },
+    })
+  })
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('磁盘错误后仍可存档。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expectArchiveAvailable(page)
+  await page.getByRole('button', { name: '存档管理' }).click()
+  await expect(page.getByText(/OPFS 同步失败：测试磁盘已满/)).toBeVisible()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出全部' }).click()
+  const downloaded = await downloadPromise
+  const stream = await downloaded.createReadStream()
+  const bytes = []
+  for await (const chunk of stream!) bytes.push(chunk)
+  const exported = JSON.parse(Buffer.concat(bytes).toString()) as SaveFile
+  expect(lastSavedMessage(exported)?.status).toBe('complete')
+  expect(lastSavedMessage(exported)?.reply?.value).toEqual(narrativeFixture)
+  await page.evaluate(() =>
+    (window as typeof window & { allowOpfsWrites: () => void }).allowOpfsWrites(),
+  )
+  await page.getByRole('button', { name: '重试存档同步' }).click()
+  await expect(page.getByText(/已同步 OPFS 存档/)).toBeVisible()
+  expect(lastSavedMessage(await readOpfs(page))?.reply?.value).toEqual(narrativeFixture)
+  await page.getByRole('button', { name: '载入', exact: true }).click()
+  await expect(page.getByText('第二篇章的开场。')).toBeVisible()
+})
+
+test('没有部分内容的模型错误结束后仍可管理和导出存档', async ({ page }) => {
+  await prepare(page, (body) =>
+    body.response_format.json_schema.name === 'ChannelCapability'
+      ? { value: { ready: true, echo: 'YanJu strict output' } }
+      : { status: 401, value: { error: { message: '模型凭据无效', type: 'invalid_api_key' } } },
+  )
+  await enableChannel(page)
+  await enter(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('验证失败后的存档。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: '重试回复', exact: true })).toBeVisible()
+  await expectArchiveAvailable(page)
+  expect(lastSavedMessage(await readOpfs(page))?.status).toBe('failed')
 })

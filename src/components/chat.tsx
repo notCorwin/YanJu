@@ -184,8 +184,12 @@ function ChatRunner({
       notify(friendlyError(e), true)
     } finally {
       lock.current = false
-      setMessages((await archiveMessages(archive.id)).map(toChatMessage))
       onBusy(false)
+      try {
+        setMessages((await archiveMessages(archive.id)).map(toChatMessage))
+      } catch (e) {
+        notify(friendlyError(e), true)
+      }
       inputRef.current?.focus()
     }
   }
@@ -215,8 +219,12 @@ function ChatRunner({
       notify(friendlyError(e), true)
     } finally {
       lock.current = false
-      setMessages((await archiveMessages(archive.id)).map(toChatMessage))
       onBusy(false)
+      try {
+        setMessages((await archiveMessages(archive.id)).map(toChatMessage))
+      } catch (e) {
+        notify(friendlyError(e), true)
+      }
     }
   }
   const compress = async () => {
@@ -249,13 +257,15 @@ function ChatRunner({
   const stopGeneration = async () => {
     controller.current?.abort()
     try {
-      if (!compressing) await persistCancelledMessage(archive.id, messages.at(-1))
-    } catch (error) {
-      notify(friendlyError(error), true)
-    } finally {
       await stop()
+      if (!compressing) await persistCancelledMessage(archive.id, messages.at(-1))
+      await db.persistence.flush()
+      setMessages((await archiveMessages(archive.id)).map(toChatMessage))
+    } catch (e) {
+      notify(friendlyError(e), true)
+    } finally {
+      onBusy(false)
     }
-    setMessages((await archiveMessages(archive.id)).map(toChatMessage))
   }
   const budget = channel
     ? contextBudget(

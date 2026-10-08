@@ -13,6 +13,8 @@ import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } f
 import type { ForumReply, NarrativeReply, RequestKind } from './schemas'
 import { sanitizePartial } from './schemas'
 
+const supersededCompaction = Symbol('supersededCompaction')
+
 export function toChatMessage(message: StoredMessage): ChatMessage {
   const parts: ChatMessage['parts'] = []
   if (message.role === 'user') parts.push({ type: 'text', text: message.content })
@@ -99,6 +101,21 @@ async function saveGenerated(message: StoredMessage, revision: number, regenerat
   })
 }
 
+async function saveRecovery(message: StoredMessage) {
+  await db.transaction('rw', db.archives, db.messages, async () => {
+    const archive = await db.archives.get(message.archiveId)
+    if (!archive) throw new Error('存档不存在，收到的内容仍保留在当前回复中。')
+    const all = await archiveMessages(archive.id)
+    const previous = all.find((m) => m.id === message.id)
+    if (previous?.status === 'complete') return
+    await db.messages.put({
+      ...message,
+      sequence: previous?.sequence ?? (all.at(-1)?.sequence ?? -1) + 1,
+    })
+    await db.archives.put(revise(archive))
+  })
+}
+
 export async function compressArchive(
   archive: Archive,
   channel: Channel,
@@ -123,13 +140,49 @@ export async function compressArchive(
       commit: (s) => commitSummary(archive.id, archive.revision, s),
     })
   } catch (error) {
-    await db.archives.update(archive.id, { compactionError: friendlyError(error) })
+    if (signal.reason !== supersededCompaction)
+      await db.transaction('rw', db.archives, async () => {
+        const current = await db.archives.get(archive.id)
+        if (current?.revision === archive.revision)
+          await db.archives.update(archive.id, { compactionError: friendlyError(error) })
+      })
     throw error
   }
 }
 
 export class BrowserChatTransport implements ChatTransport<ChatMessage> {
+  private compaction?: AbortController
+
+  private async compactAfterReply(
+    archiveId: string,
+    revision: number,
+    channel: Channel,
+    persona: Persona | undefined,
+    kind: RequestKind,
+  ) {
+    const controller = new AbortController()
+    this.compaction = controller
+    try {
+      const archive = await db.archives.get(archiveId)
+      if (!archive || archive.revision !== revision || controller.signal.aborted) return
+      await compressArchive(
+        archive,
+        channel,
+        persona,
+        await archiveMessages(archiveId),
+        controller.signal,
+        kind,
+      )
+    } catch {
+      // Compaction errors live on the archive; the completed reply stays complete and usable.
+    } finally {
+      if (this.compaction === controller) this.compaction = undefined
+      await db.persistence.flush()
+    }
+  }
+
   async sendMessages(options: Parameters<ChatTransport<ChatMessage>['sendMessages']>[0]) {
+    this.compaction?.abort(supersededCompaction)
     const settings = await db.settings.get('app')
     let archive = await db.archives.get(options.chatId)
     const channel = settings?.activeChannelId
@@ -184,6 +237,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     let committed = false
     let checkpointAt = 0
     let pendingCheckpoint = Promise.resolve()
+    let completedChannel: Channel | undefined
     const status = (
       writer: UIMessageStreamWriter<ChatMessage>,
       phase: 'compressing' | 'generating' | 'correcting' | 'complete' | 'failed' | 'cancelled',
@@ -209,7 +263,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
             committed = true
             writer.write({ type: 'data-notice', data: notice.content })
           } else {
-            let summary = await compressArchive(
+            const summary = await compressArchive(
               snapshot,
               channel,
               persona,
@@ -274,41 +328,51 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               usage: result.usage,
               correction: result.correction ?? correction,
             }
+            partial = result.reply
             await saveGenerated(complete, snapshot.revision, regen)
             committed = true
             if (result.reply.kind === 'narrative')
               writer.write({ type: 'data-narrative', id: 'reply', data: result.reply.value })
             else writer.write({ type: 'data-forum', id: 'reply', data: result.reply.value })
             const calibration = calibrate(channel, result.usage?.input, estimate.estimated)
-            if (calibration) await db.channels.update(channel.id, { calibration })
-            const updated = await db.archives.get(snapshot.id)
-            if (updated && !signal.aborted) {
-              const history = await archiveMessages(snapshot.id)
+            completedChannel = { ...channel, calibration: calibration ?? channel.calibration }
+            if (calibration)
               try {
-                summary = await compressArchive(
-                  updated,
-                  { ...channel, calibration },
-                  persona,
-                  history,
-                  signal,
-                  kind,
-                  (d) => status(writer, 'compressing', d),
-                )
+                await db.channels.update(channel.id, { calibration })
               } catch (error) {
-                // A completed reply remains committed even if the following compaction fails.
-                status(writer, 'failed', `回复已保存；${friendlyError(error)}`)
+                status(writer, 'complete', `回复已保存；用量校正未保存：${friendlyError(error)}`)
               }
-            }
+            if (
+              !contextBudget(completedChannel, persona, kind, [...messages, complete], summary)
+                .mustCompress
+            )
+              completedChannel = undefined
           }
-          status(writer, 'complete', '回复已保存')
+          const storage = await db.persistence.flush()
+          status(
+            writer,
+            'complete',
+            storage.phase === 'error'
+              ? `回复已保存到浏览器数据库；OPFS 同步失败：${storage.error}`
+              : '回复已保存',
+          )
           writer.write({
             type: 'finish',
             finishReason: 'stop',
             messageMetadata: { createdAt, kind, status: 'complete' },
           })
+          // End the UI stream before optional post-reply LLM compaction, which may be slow.
+          if (completedChannel)
+            void this.compactAfterReply(
+              snapshot.id,
+              snapshot.revision + 1,
+              completedChannel,
+              persona,
+              kind,
+            ).catch((error) => db.persistence.reportError(error))
         } catch (error) {
           await pendingCheckpoint
-          const detail = friendlyError(error)
+          let detail = friendlyError(error)
           const cancelled = signal.aborted
           if (!committed) {
             const recovery: StoredMessage = {
@@ -322,23 +386,25 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
             }
             // Regeneration failures append recovery data; the old branch is still intact.
             try {
-              await appendMessage(recovery, snapshot.revision)
-            } catch {
-              /* Concurrent edits are left intact; the stream still contains recoverable data. */
+              await saveRecovery(recovery)
+            } catch (storageError) {
+              detail += `；恢复记录保存失败：${friendlyError(storageError)}`
             }
           }
-          status(writer, cancelled ? 'cancelled' : 'failed', detail)
+          await db.persistence.flush()
+          const outcome = committed ? 'complete' : cancelled ? 'cancelled' : 'failed'
+          status(writer, outcome, committed ? `回复已保存；${detail}` : detail)
           writer.write({
             type: 'finish',
-            finishReason: 'error',
+            finishReason: committed ? 'stop' : 'error',
             messageMetadata: {
               createdAt,
               kind,
-              status: cancelled ? 'cancelled' : 'failed',
-              error: detail,
+              status: outcome,
+              error: committed ? undefined : detail,
             },
           })
-          if (!cancelled) writer.write({ type: 'error', errorText: detail })
+          if (!cancelled && !committed) writer.write({ type: 'error', errorText: detail })
         }
       },
       onError: friendlyError,

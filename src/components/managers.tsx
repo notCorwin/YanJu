@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import {
   db,
   createArchive,
@@ -618,6 +618,7 @@ export function ArchivesSheet({
   const [renameId, setRenameId] = useState('')
   const [name, setName] = useState('')
   const [pendingImport, setPendingImport] = useState<unknown>(null)
+  const storage = useSyncExternalStore(db.persistence.subscribe, db.persistence.getStatus)
   const importRef = useRef<HTMLInputElement>(null)
   const download = async () => {
     try {
@@ -640,7 +641,25 @@ export function ArchivesSheet({
       <SheetContent className="w-full sm:panel-width">
         <SheetHeader>
           <SheetTitle>存档</SheetTitle>
-          <SheetDescription>每个篇章独立保存完整聊天与压缩摘要。</SheetDescription>
+          <SheetDescription>
+            每个篇章独立保存完整聊天与压缩摘要。
+            <span className="block" role={storage.phase === 'error' ? 'alert' : 'status'}>
+              {storage.phase === 'saved'
+                ? storage.persistent
+                  ? '已同步 OPFS 存档 · 已获准持久保存'
+                  : '已同步 OPFS 存档 · 可导出备份'
+                : storage.phase === 'error'
+                  ? `OPFS 同步失败：${storage.error}。资料保留在浏览器数据库中，可导出或重试。`
+                  : storage.phase === 'unavailable'
+                    ? '当前浏览器不支持 OPFS，资料已使用浏览器数据库保存。'
+                    : '正在同步 OPFS 存档…'}
+            </span>
+          </SheetDescription>
+          {storage.phase === 'error' && (
+            <Button variant="outline" onClick={() => void db.persistence.flush()}>
+              重试存档同步
+            </Button>
+          )}
         </SheetHeader>
         <div className="flex flex-wrap gap-2 px-4">
           <Button
@@ -769,6 +788,7 @@ export function ArchivesSheet({
             try {
               const data = await importSave(pendingImport)
               await initializeStorage()
+              await db.persistence.flush()
               onSelect(data.settings.activeArchiveId || (await createArchive()).id)
               notify('存档导入完成。渠道须重新测试。')
               onClose()
