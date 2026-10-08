@@ -250,10 +250,7 @@ function ChatRunner({
                             )}
                           </span>
                         </MessageHeader>
-                        <RecoveryBoundary
-                          resetKey={`${message.id}:${archive.revision}`}
-                          title="这条消息暂时无法显示"
-                        >
+                        <RecoveryBoundary resetKey={message.parts} title="这条消息暂时无法显示">
                           {message.role === 'user' ? (
                             <Bubble variant="secondary" align="end">
                               <BubbleContent>

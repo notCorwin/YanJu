@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 export class RecoveryBoundary extends Component<
   {
     children: ReactNode
-    resetKey?: string
+    resetKey?: unknown
     title?: string
   },
   { failed: boolean; exportError: string }

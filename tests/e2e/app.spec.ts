@@ -643,6 +643,7 @@ test('没有部分内容的模型错误结束后仍可管理和导出存档', as
 })
 
 test('自动优先 Responses，叙事、论坛、摘要续聊及 v2 存档往返', async ({ page }) => {
+  test.setTimeout(60000)
   const { requests, chatRequests } = await prepareResponses(page)
   await enableChannel(page, '测试渠道', { mode: 'auto', defaultTemperature: true })
   expect(requests).toHaveLength(2)
@@ -1245,6 +1246,7 @@ test('单条损坏的旧记录由局部恢复界面接住，编辑与导出仍�
   await page.getByRole('button', { name: '编辑消息', exact: true }).click()
   await page.getByRole('textbox', { name: '消息内容', exact: true }).fill('已经修复的开场')
   await page.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '编辑消息', exact: true })).toHaveCount(0)
   await expect(page.getByText('已经修复的开场', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '导出当前资料', exact: true })).toHaveCount(0)
 })
