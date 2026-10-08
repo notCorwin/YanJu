@@ -5,7 +5,7 @@ import {
   generateReply,
   testChannel,
 } from '../../src/lib/provider'
-import { narrativeFixture, channelFixture, completion, sse } from '../fixtures'
+import { narrativeFixture, channelFixture, completion, sse, capabilityFixture } from '../fixtures'
 import type { DeepPartial } from 'ai'
 import type { NarrativeReply } from '../../src/lib/schemas'
 
@@ -29,7 +29,11 @@ describe('OpenAI-compatible 严格协议', () => {
   it('能力测试发送 json_schema / strict true，不使用 json_object', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(Response.json(completion({ ready: true, echo: 'YanJu strict output' })))
+      .mockImplementation(async (_url, init) =>
+        JSON.parse(String(init?.body)).stream
+          ? streaming(capabilityFixture)
+          : Response.json(completion(capabilityFixture)),
+      )
     const capability = await testChannel(channelFixture, undefined, fetcher)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.response_format.type).toBe('json_schema')
@@ -95,19 +99,17 @@ describe('OpenAI-compatible 严格协议', () => {
     expect(fetcher).toHaveBeenCalledOnce()
   })
   it('不支持结构化的渠道直接拒绝，不降级请求', async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        Response.json(
-          {
-            error: {
-              message: 'response_format json_schema unsupported',
-              type: 'invalid_request_error',
-            },
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json(
+        {
+          error: {
+            message: 'response_format json_schema unsupported',
+            type: 'invalid_request_error',
           },
-          { status: 400 },
-        ),
-      )
+        },
+        { status: 400 },
+      ),
+    )
     await expect(generateReply(request(fetcher))).rejects.toThrow()
     expect(fetcher).toHaveBeenCalledOnce()
   })

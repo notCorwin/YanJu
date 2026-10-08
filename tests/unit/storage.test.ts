@@ -22,6 +22,34 @@ const archive: Archive = {
   draft: '',
 }
 describe('IndexedDB 与存档迁移', () => {
+  it('v2 渠道协议和模型默认温度往返保留，导入清除能力缓存', async () => {
+    await importSave({
+      version: 2,
+      archives: [],
+      messages: [],
+      masks: [],
+      channels: [
+        {
+          ...channelFixture,
+          apiMode: 'responses',
+          temperature: null,
+          capability: { ok: true, protocol: 'responses', fingerprint: 'untrusted', testedAt: 1 },
+        },
+      ],
+    })
+    const exported = await exportSave()
+    expect(exported.version).toBe(2)
+    expect(exported.channels[0]).toMatchObject({ apiMode: 'responses', temperature: null })
+    expect(exported.channels[0].capability).toBeUndefined()
+    await importSave(JSON.parse(JSON.stringify(exported)))
+    expect((await exportSave()).channels).toEqual(exported.channels)
+    expect(() =>
+      normalizeImport({ version: 2, channels: [{ ...channelFixture, apiMode: 'unknown' }] }),
+    ).toThrow('API 模式')
+    expect(() =>
+      normalizeImport({ version: 2, channels: [{ ...channelFixture, apiMode: ['responses'] }] }),
+    ).toThrow('API 模式')
+  })
   it('v1 保留消息、渠道、人设、时间与外观，升级为 v2', async () => {
     const v1 = {
       version: 1,

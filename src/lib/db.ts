@@ -26,7 +26,7 @@ export class YanJuDatabase extends Dexie {
   constructor(name = 'yanju-v2') {
     super(name)
     this.persistence = new OpfsPersistence(name, () => exportSave(this))
-    this.version(1).stores({
+    this.version(2).stores({
       archives: 'id,updatedAt',
       messages: 'id,archiveId,[archiveId+sequence]',
       channels: 'id,createdAt',
@@ -166,13 +166,17 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     throw new Error('仅支持版本 1 和版本 2 的盐焗 JSON 存档。')
   const channels: Channel[] = list(raw.channels).map((value) => {
     const c = record(value)
+    const apiMode = c.apiMode
+    if (typeof apiMode !== 'string' || !['auto', 'chat-completions', 'responses'].includes(apiMode))
+      throw new Error('存档包含未知的渠道 API 模式，导入未执行。')
     return {
       id: str(c.id) || crypto.randomUUID(),
       name: str(c.name, '导入渠道'),
       baseUrl: str(c.baseUrl),
       apiKey: str(c.apiKey),
       model: str(c.model),
-      temperature: numeric(c.temperature, 0.9),
+      apiMode: apiMode as Channel['apiMode'],
+      temperature: c.temperature === null ? null : numeric(c.temperature, 0.9),
       maxOutputTokens: numeric(c.maxOutputTokens ?? c.maxTokens, 4096),
       contextWindow: numeric(c.contextWindow, 32768),
       createdAt: numeric(c.createdAt, Date.now()),
