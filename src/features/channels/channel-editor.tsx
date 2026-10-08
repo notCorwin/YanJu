@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import {
   Select,
   SelectContent,
@@ -239,9 +240,16 @@ export function ChannelEditor({
             <FieldGroup>
               <Field data-invalid={!!errors.providerId}>
                 <FieldLabel htmlFor={`provider-${draft.id}`}>Provider</FieldLabel>
-                <Select
+                <SearchableSelect
+                  id={`provider-${draft.id}`}
+                  aria-invalid={!!errors.providerId}
                   value={draft.providerId}
                   disabled={busy || saving || disabled || !catalog}
+                  options={providers.map((p) => ({ value: p.id, label: p.name }))}
+                  placeholder={catalog ? '选择服务商' : '正在加载 Models.dev…'}
+                  searchLabel="搜索提供商"
+                  searchPlaceholder="搜索提供商名称或 ID…"
+                  emptyMessage="未找到匹配的提供商。"
                   onValueChange={(id) => {
                     const next = catalog?.[id]
                     const model = next && Object.values(next.models)[0]
@@ -250,33 +258,23 @@ export function ChannelEditor({
                       setErrors({})
                     }
                   }}
-                >
-                  <SelectTrigger
-                    id={`provider-${draft.id}`}
-                    aria-invalid={!!errors.providerId}
-                    className="w-full"
-                  >
-                    <SelectValue placeholder={catalog ? '选择服务商' : '正在加载 Models.dev…'} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {providers.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>
-                          {p.name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                />
                 {errors.providerId && (
                   <FieldDescription role="alert">{errors.providerId}</FieldDescription>
                 )}
               </Field>
               <Field data-invalid={!!errors.model}>
                 <FieldLabel htmlFor={`model-${draft.id}`}>模型</FieldLabel>
-                <Select
+                <SearchableSelect
+                  id={`model-${draft.id}`}
+                  aria-invalid={!!errors.model}
                   value={draft.model}
                   disabled={busy || saving || disabled || !provider}
+                  options={models.map((m) => ({ value: m.id, label: `${m.name} · ${m.id}` }))}
+                  placeholder="选择模型"
+                  searchLabel="搜索模型"
+                  searchPlaceholder="搜索模型名称或 ID…"
+                  emptyMessage="未找到匹配的模型。"
                   onValueChange={(id) => {
                     const model = provider?.models[id]
                     if (provider && model) {
@@ -284,24 +282,7 @@ export function ChannelEditor({
                       setErrors({})
                     }
                   }}
-                >
-                  <SelectTrigger
-                    id={`model-${draft.id}`}
-                    aria-invalid={!!errors.model}
-                    className="w-full"
-                  >
-                    <SelectValue placeholder="选择模型" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {models.map((m) => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.name} · {m.id}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                />
                 <FieldDescription>
                   仅列出支持 Structured Outputs 的文本模型。
                   {selectedModel &&
