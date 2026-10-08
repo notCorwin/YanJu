@@ -12,6 +12,11 @@ export default defineConfig({
   use: { baseURL, trace: 'retain-on-failure' },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'firefox',
+      testMatch: ['**/provider-cors.spec.ts', '**/providers.spec.ts'],
+      use: { ...devices['Desktop Firefox'] },
+    },
     { name: 'mobile', use: { ...devices['iPhone 13'], defaultBrowserType: 'chromium' } },
     { name: 'mobile-safari', use: { ...devices['iPhone 13'] } },
   ],

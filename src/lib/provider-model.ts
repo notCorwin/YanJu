@@ -1,6 +1,7 @@
 import { wrapLanguageModel, type LanguageModel } from 'ai'
 import type { LanguageModelV4 } from '@ai-sdk/provider'
 import { catalogSelection, type ModelCatalog } from './model-catalog'
+import { createBrowserFetch } from './browser-fetch'
 import type { ApiProtocol } from './types'
 
 type Provider = {
@@ -158,10 +159,11 @@ export async function createProviderModel(
       ? credential.accessToken
       : credentialApiKey(provider.env, credential)
   const api = resolveCatalogApi(selected.api, credential)
+  const browserFetch = createBrowserFetch(fetcher)
   const options: Record<string, unknown> = {
     apiKey,
     ...(api ? { baseURL: api } : {}),
-    ...(fetcher ? { fetch: fetcher } : {}),
+    fetch: browserFetch,
   }
   const auth = (key: string, env: string, fallback?: string) =>
     credential[key] ?? credential[env] ?? fallback
@@ -246,7 +248,7 @@ export async function createProviderModel(
         // The MaaS SDK inserts a hard-coded output cap for some models. The service owns capacity.
         delete body.max_tokens
         if (body.stream) body.stream_options = { include_usage: true }
-        return (fetcher ?? fetch)(input, { ...init, body: JSON.stringify(body) })
+        return browserFetch(input, { ...init, body: JSON.stringify(body) })
       },
     }).languageModel(modelId)
     Object.assign(native, { supportsStructuredOutputs: true })
@@ -268,7 +270,7 @@ export async function createProviderModel(
     native = createAiGateway({
       binding: {
         run: (data, { signal } = {}) =>
-          (fetcher ?? fetch)(
+          browserFetch(
             `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(String(account))}/${encodeURIComponent(String(gateway))}`,
             {
               method: 'POST',

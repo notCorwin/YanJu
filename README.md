@@ -21,6 +21,8 @@ pnpm dev
 
 OpenAI SDK 渠道可通过下拉列表选择自动探测、Responses 或 Chat Completions；自动探测优先 Responses。其他 SDK 使用服务商原生协议。测试检查非流式和流式的嵌套严格 schema；正式请求使用通过测试的协议，失败不降级到 JSON Mode。Responses 请求设置 `store: false`，上下文由本地完整管理。
 
+所有 Provider 共用浏览器 Fetch 适配，移除 SDK 附加的 `User-Agent`，由浏览器管理该请求头，避免 Firefox 和 Safari 因额外跨域预检而连接失败。认证、原生协议请求头、取消信号和流式响应保持完整。
+
 Provider 必须通过 CORS 允许本站来源以及其认证和内容请求头；浏览器也必须允许访问目标网络。纯前端无法绕过服务商拒绝的 CORS。SDK 覆盖和协议测试不代表任意账户、地区或网络下的服务必然可用；真实连接由用户凭据、服务商授权和应用内测试共同确认。
 
 仅需要单个 Key 的服务商直接粘贴 Key。需要云账户信息的服务商在同一 API Key 字段粘贴凭据 JSON，认证字段使用 Models.dev 的 `env` 名称，或以下服务商导出的凭据结构；不增加自定义地址设置：
@@ -105,12 +107,12 @@ IndexedDB 作为工作数据库保存消息、存档、渠道、人设、外观�
 ## 本地验收
 
 ```sh
-pnpm exec playwright install chromium webkit
+pnpm exec playwright install chromium firefox webkit
 pnpm setup:hooks
 pnpm verify
 ```
 
-`verify` 顺序执行 Token 检查、ESLint、TypeScript、Vitest、生产构建及桌面 Chrome、移动 Chromium、移动 Safari Playwright。测试使用模拟模型与真实 SDK 协议，不需要真实密钥。真实渠道由用户配置后在应用内执行能力测试。
+`verify` 顺序执行 Token 检查、ESLint、TypeScript、Vitest、生产构建及桌面 Chrome、移动 Chromium、移动 Safari Playwright，并使用 Firefox 验证渠道协议和真实跨域预检。测试使用模拟模型与真实 SDK 协议，不需要真实密钥。真实渠道由用户配置后在应用内执行能力测试。
 
 `pnpm verify` 的 Playwright 启动当前工作目录的独立生产预览服务，不复用已有服务，避免多个 worktree 之间误测其他版本。`pnpm setup:hooks` 安装推送前钩子，每次推送执行完整本地验收。默认使用 5173 端口；端口已被占用时，可用 `YANJU_E2E_PORT=5174 pnpm verify` 指定其他端口。
 

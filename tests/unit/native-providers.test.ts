@@ -102,6 +102,7 @@ describe('原生 SDK 与浏览器连接', () => {
       maxRetries: 0,
     })
     expect(result.output).toEqual(value)
+    expect(new Headers(fetcher.mock.calls[0][1]?.headers).has('user-agent')).toBe(false)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     if (sdk === '@ai-sdk/anthropic') {
       expect(body.max_tokens).toBe(128000)
@@ -148,6 +149,7 @@ describe('原生 SDK 与浏览器连接', () => {
     })
     expect(body.max_tokens).toBeUndefined()
     expect(body.max_completion_tokens).toBeUndefined()
+    expect(new Headers(fetcher.mock.calls[0][1]?.headers).has('user-agent')).toBe(false)
   })
 
   it.each(['@ai-sdk/openai', '@ai-sdk/azure', '@ai-sdk/xai', '@ai-sdk/gateway'])(
@@ -192,6 +194,7 @@ describe('原生 SDK 与浏览器连接', () => {
               ? 'api.x.ai'
               : 'ai-gateway.vercel.sh',
       )
+      expect(new Headers(fetcher.mock.calls[0][1]?.headers).has('user-agent')).toBe(false)
     },
   )
 
