@@ -342,12 +342,15 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               result.reply.value.diary.countdownDays = displayCountdown(projected)
             } else {
               const lines = lastUser.content.split('\n')
-              const title = lines.find((l) => /^标题[：:]/.test(l))
+              const title =
+                lines[0] === '$发送帖子' && /^标题[：:]/.test(lines[1] ?? '') ? lines[1] : undefined
               result.reply.value.post.author = persona?.name ?? snapshot.userName ?? '沈辞玉'
               if (title) result.reply.value.post.title = title.replace(/^标题[：:]\s*/, '')
-              result.reply.value.post.content = lines
-                .filter((l) => l !== '$发送帖子' && !/^标题[：:]/.test(l))
-                .join('\n')
+              result.reply.value.post.content = title
+                ? lines.slice(2).join('\n')
+                : lines[0] === '$发送帖子'
+                  ? lines.slice(1).join('\n')
+                  : lastUser.content
             }
             await pendingCheckpoint
             const complete: StoredMessage = {

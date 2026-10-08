@@ -70,7 +70,12 @@ export async function testChannel(channel: Channel, signal?: AbortSignal, fetche
   return { fingerprint: channelFingerprint(channel), testedAt: Date.now(), ok: true }
 }
 
-export async function summarize(channel: Channel, input: CompressionInput, signal: AbortSignal) {
+export async function summarize(
+  channel: Channel,
+  input: CompressionInput,
+  signal: AbortSignal,
+  fetcher?: typeof fetch,
+) {
   const result = await runStructuredTask({
     kind: 'compression',
     channel,
@@ -79,6 +84,7 @@ export async function summarize(channel: Channel, input: CompressionInput, signa
     instructions: compressionInstructions,
     maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
     temperature: 0.3,
+    fetcher,
   })
   return result.value
 }

@@ -14,11 +14,11 @@ phone.conversations 每组包含对应的 contactRef。购买记录 amountMinor 
 diary.text 为至少 300 字的本轮日记，countdownDays 填 null，由程序根据剧情日期计算，explanation 为角色解释。
 effects 只记录本轮正文明确支持的新事实和变化，所有 sourceBlockId 为实际段落 id 或 null。entities、states、relationships、knowledge、events、memories、goals 无变化时返回 []；新实体和新记录使用 new:名称 引用，既有实体/记录使用冻结剧情档案中的真实 ID。先声明新实体，再在其他模块引用。
 clock.dateTime 为带时区的 ISO 剧情时间，proposalDate 为 YYYY-MM-DD 的目标日期，未知或不改变时填 null。不能凭空猜测日期、关系、用户偏好和承诺，不得把角色猜测写成事实。knowledge 区分角色已知的信息。
-所有正文字符串必须有实际内容，禁止占位或写“略”。核心叙事和角色规则继续有效。不要输出短期、中期、长期记忆。
+所有正文字符串必须有实际内容，禁止占位或写“略”。核心叙事和角色规则继续有效。不生成额外记忆面板；确认的事实与偏好只写入 effects.memories。
 旧规则中的格式/HTML/单行图片输出要求已由这个协议替换；本地程序处理角色拦截，不需要模型生成界面。`
 const forumProtocol = `只返回 ForumReply 根对象，禁止 HTML、XML、CSS、脚本或 Markdown 代码块。
 post 有 id、title、author、time、content、tags、views、followers。answers 必须完整输出 50 条回答，每条有唯一 id、author、time、content、非负整数 likes 和 replyTo（没有回复对象时填空字符串）。
-处理本轮发布/回复意图，让帖子和回答延续此前论坛内容。文字须完整且非空，不要生成场景、手机、日记、状态栏或任何记忆档案。`
+仅为本轮用户原文建立一个新帖，不重建此前帖子。后续论坛回复使用独立任务增量追加。文字须完整且非空，不要生成场景、手机、日记、状态栏或任何记忆档案。`
 
 export function buildInstructions(persona: Persona | undefined, kind: RequestKind) {
   const identity = persona
@@ -51,7 +51,7 @@ export function modelMessages(messages: StoredMessage[], summary?: Summary): Mod
         ]
       : []),
     ...history.flatMap((m): ModelMessage[] => [
-      ...(m.role === 'assistant' && m.correction
+      ...(!m.stale && m.role === 'assistant' && m.correction
         ? [{ role: 'user' as const, content: m.correction }]
         : []),
       ...(!m.stale && (m.role === 'user' || m.status === 'complete')

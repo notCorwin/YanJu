@@ -133,6 +133,8 @@ export async function appendMessage(message: StoredMessage, expectedRevision?: n
         .count()
     )
       throw new Error('消息序号已被其他窗口占用，请重新载入后重试。')
+    if (message.reply?.kind === 'narrative')
+      rebuildStory(archive, [...(await archiveMessages(archive.id)), message])
     await db.messages.put(message)
     const updated = revise(archive)
     if (message.usage) updated.lastUsage = message.usage
@@ -167,6 +169,10 @@ export async function editMessage(id: string, content: string) {
             : { kind: 'forum', value: validateForum(parsed) },
       }
     } else if (message.role === 'assistant') next = { ...next, kind: message.kind }
+    rebuildStory(archive, [
+      ...(await archiveMessages(archive.id)).filter((m) => m.sequence < next.sequence),
+      next,
+    ])
     await db.messages.put(next)
     const all = await archiveMessages(archive.id)
     const coveredIndex = all.findIndex((m) => m.id === archive.summary?.coveredThroughId)

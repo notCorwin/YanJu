@@ -201,6 +201,7 @@ export function applyMessage(story: StoryState, message: StoredMessage) {
     v.blocks.forEach((b) => {
       if (b.speakerRef !== null) resolve(b.speakerRef, 'character')
     })
+    v.diary.countdownDays = countdown(story.clock)
     for (const [i, text] of v.phone.memos.entries())
       put(story.memos, {
         id: `${message.id}:memo:${i}`,
