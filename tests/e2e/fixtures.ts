@@ -1,3 +1,4 @@
+import { catalogFixture } from '../model-catalog-fixture'
 import { test as base } from '@playwright/test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -45,6 +46,9 @@ export const test = base.extend({
         : await browser.newContext(options)
       try {
         // Business acceptance must not wait for external font delivery.
+        await context.route('https://models.dev/api.json', (route) =>
+          route.fulfill({ json: catalogFixture() }),
+        )
         await context.route('https://fonts.googleapis.com/**', (route) =>
           route.fulfill({ contentType: 'text/css', body: '' }),
         )

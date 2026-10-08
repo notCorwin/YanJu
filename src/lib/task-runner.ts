@@ -19,7 +19,6 @@ export interface StructuredOptions<K extends TaskKind> {
   messages?: ModelMessage[]
   signal?: AbortSignal
   estimatedInput?: number
-  maxOutputTokens?: number
   temperature?: number | null
   protocol?: ApiProtocol
   streaming?: boolean
@@ -66,7 +65,6 @@ export async function runStructuredTask<K extends TaskKind>(
   const messages = options.messages ?? [
     { role: 'user' as const, content: JSON.stringify(options.input ?? {}) },
   ]
-  const maxOutputTokens = options.maxOutputTokens ?? channel.maxOutputTokens
   const temperature = options.temperature === undefined ? channel.temperature : options.temperature
   const protocol = options.protocol ?? estimatedProtocol(channel)
   const streaming = options.streaming !== false
@@ -92,7 +90,7 @@ export async function runStructuredTask<K extends TaskKind>(
       ),
       channel.calibration?.ratio,
     )
-    if (estimated + maxOutputTokens > channel.contextWindow)
+    if (estimated > (channel.inputLimit ?? channel.contextWindow))
       throw new Error('任务超出渠道上下文预算，请增加容量、缩短输入或先压缩剧情。')
     const record: RequestRecord = {
       id: `${executionId}:${attempt}`,
@@ -114,7 +112,6 @@ export async function runStructuredTask<K extends TaskKind>(
         instructions,
         messages: structuredClone(requestMessages),
         schema: jsonSchema,
-        maxOutputTokens,
         temperature,
         streaming,
       },
@@ -124,16 +121,31 @@ export async function runStructuredTask<K extends TaskKind>(
     let lastCheckpoint = 0
     let streamError: unknown
     let usage: Usage | undefined
+    const requestController = new AbortController()
+    const requestSignal = signal
+      ? AbortSignal.any([signal, requestController.signal])
+      : requestController.signal
+    let waitTimer: ReturnType<typeof setTimeout> | undefined
+    const resetWait = () => {
+      clearTimeout(waitTimer)
+      const milliseconds = channel.requestTimeoutMs ?? 300_000
+      if (milliseconds && !requestSignal.aborted)
+        waitTimer = setTimeout(
+          () => requestController.abort(new DOMException('等待内容超时', 'TimeoutError')),
+          milliseconds,
+        )
+    }
     try {
+      // Some SDKs await the first event inside doStream, before AI SDK's firstChunkMs timer starts.
+      if (streaming) resetWait()
       const request = {
-        ...channelRequest(channel, trace.fetch, protocol),
+        ...(await channelRequest(channel, trace.fetch, protocol)),
         instructions,
         allowSystemInMessages: true,
         messages: requestMessages,
         output: Output.object({ schema, name: taskDefinitions[kind].name }),
-        maxOutputTokens,
         ...(temperature === null ? {} : { temperature }),
-        abortSignal: signal,
+        abortSignal: requestSignal,
         maxRetries: 0,
         timeout: requestTimeout(channel, streaming),
       }
@@ -150,7 +162,10 @@ export async function runStructuredTask<K extends TaskKind>(
         const stream = streamText({
           ...request,
           onChunk: ({ chunk }) => {
-            if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') trace.chunk()
+            if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') {
+              trace.chunk()
+              resetWait()
+            }
           },
           onError: ({ error }) => {
             streamError = error
@@ -212,6 +227,8 @@ export async function runStructuredTask<K extends TaskKind>(
         )
       correction = `上次回复校验失败：${friendlyError(failure)}。请纠正并重新输出同一 schema 的完整对象，保留本轮意图，不省略必填模块。`
       options.onCorrection?.('回复未通过完整校验，正在使用相同 schema 纠正一次。', correction)
+    } finally {
+      clearTimeout(waitTimer)
     }
   }
   throw new Error('结构化结果校验失败')

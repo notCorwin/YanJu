@@ -19,8 +19,8 @@ import { estimatedProtocol } from './channels'
 export const COMPRESSION_THRESHOLD = 0.85
 export const COMPRESSION_TARGET = 0.7
 export const RETAIN_TURNS = 4
-export const shouldCompact = (inputTokens: number, contextWindow: number, outputTokens: number) =>
-  inputTokens >= contextWindow * COMPRESSION_THRESHOLD || inputTokens + outputTokens > contextWindow
+export const shouldCompact = (inputTokens: number, inputLimit: number) =>
+  inputTokens >= inputLimit * COMPRESSION_THRESHOLD
 
 /** A conservative mixed CJK/Latin estimate, calibrated per model from provider usage. */
 export function estimateTokens(text: string, ratio = 1) {
@@ -85,8 +85,8 @@ export function contextBudget(
   const estimated = estimateTokens(serialized, channel.calibration?.ratio)
   return {
     estimated,
-    percent: estimated / channel.contextWindow,
-    mustCompress: shouldCompact(estimated, channel.contextWindow, channel.maxOutputTokens),
+    percent: estimated / (channel.inputLimit ?? channel.contextWindow),
+    mustCompress: shouldCompact(estimated, channel.inputLimit ?? channel.contextWindow),
   }
 }
 export function calibrate(channel: Channel, actual: number | undefined, estimated: number) {
@@ -159,11 +159,9 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     ),
   )
   const batchBudget =
-    Math.floor(channel.contextWindow * COMPRESSION_TARGET) -
-    Math.min(channel.maxOutputTokens, 4096) -
-    overhead
+    Math.floor((channel.inputLimit ?? channel.contextWindow) * COMPRESSION_TARGET) - overhead
   if (batchBudget < 256)
-    throw new Error('渠道上下文容量不足以执行压缩，请增加 contextWindow 或降低输出上限。')
+    throw new Error('渠道上下文容量不足以执行压缩，请选择上下文容量更大的模型。')
   const targetTokens = Math.max(256, Math.min(2048, Math.floor(channel.contextWindow * 0.08)))
 
   for (let keep = Math.max(1, Math.min(RETAIN_TURNS, completeStarts.length)); keep >= 1; keep--) {
@@ -211,7 +209,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
         )
           await flush()
         if (estimate(JSON.stringify({ previous: value, messages: [segment] })) > batchBudget)
-          throw new Error('摘要或历史分段仍超出预算，请增大渠道上下文容量。原记录未改变。')
+          throw new Error('摘要或历史分段仍超出预算，请选择上下文容量更大的模型。原记录未改变。')
         batch.push(segment)
       }
     }
@@ -247,6 +245,6 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     }
   }
   throw new Error(
-    '角色设定、最新一轮和当前输入已占满上下文。请增大渠道 contextWindow、缩短当前输入或降低输出上限；历史和原摘要均已保留。',
+    '角色设定、最新一轮和当前输入已占满上下文。请选择上下文容量更大的模型或缩短当前输入；历史和原摘要均已保留。',
   )
 }

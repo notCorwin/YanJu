@@ -52,11 +52,11 @@ describe('上下文预算与压缩事务', () => {
     )
     expect(modelMessages(history, summary)[0].content).toContain(compressionFixture.summary)
   })
-  it('85% 精确边界与输出预留', () => {
-    expect(shouldCompact(8499, 10000, 1000)).toBe(false)
-    expect(shouldCompact(8500, 10000, 1000)).toBe(true)
-    expect(shouldCompact(7000, 10000, 4000)).toBe(true)
-    expect(shouldCompact(7000, 10000, 3000)).toBe(false)
+  it('85% 精确边界，以模型输入容量为准', () => {
+    expect(shouldCompact(8499, 10000)).toBe(false)
+    expect(shouldCompact(8500, 10000)).toBe(true)
+    expect(shouldCompact(7000, 10000)).toBe(false)
+    expect(shouldCompact(7000, 10000)).toBe(false)
   })
   it('预算计入角色、人设、schema、历史和摘要', () => {
     const channel = { ...channelFixture, contextWindow: 32768 }
@@ -64,7 +64,7 @@ describe('上下文预算与压缩事务', () => {
     const user = messageFixture('user', 'user', '你好', 1)
     const initial = contextBudget(channel, undefined, 'narrative', [opening, user])
     expect(initial.estimated).toBeGreaterThan(20000)
-    expect(initial.estimated + channel.maxOutputTokens).toBeLessThan(channel.contextWindow)
+    expect(initial.estimated).toBeLessThan(channel.contextWindow)
     const withPersona = contextBudget(
       channel,
       {

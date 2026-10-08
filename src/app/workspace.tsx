@@ -96,6 +96,7 @@ export function Workspace() {
     if (settings) applyAppearance({ ...settings, bgImage: background })
   }, [settings, background])
   const routeId = archiveIdFromRoute(route)
+  const [restoreEpoch, setRestoreEpoch] = useState(0)
   const archive = archives.find((a) => a.id === (routeId || settings?.activeArchiveId))
   const channel = channels.find((c) => c.id === settings?.activeChannelId)
   const persona = personas.find((p) => p.id === settings?.activePersonaId)
@@ -292,7 +293,7 @@ export function Workspace() {
             </IconButton>
           </div>
           <ChatSession
-            key={archive.id}
+            key={`${archive.id}:${restoreEpoch}`}
             archive={archive}
             channel={channel}
             persona={persona}
@@ -443,6 +444,7 @@ export function Workspace() {
         onClose={() => setDialog(null)}
         archives={archives}
         activeId={archive?.id || ''}
+        onRestored={() => setRestoreEpoch((value) => value + 1)}
         onSelect={selectArchive}
         notify={notify}
         disabled={busy}

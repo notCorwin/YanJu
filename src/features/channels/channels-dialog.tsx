@@ -159,7 +159,7 @@ export function ChannelsDialog({
                 </EmptyMedia>
                 <EmptyTitle>连接你的第一个渠道</EmptyTitle>
                 <EmptyDescription>
-                  点击「新建渠道」，填写服务商提供的地址、Key 和模型。通过测试后即可开始聊天。
+                  点击「新建渠道」，选择 Provider 和模型，填写 API Key。通过测试后即可开始聊天。
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>

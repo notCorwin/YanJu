@@ -334,7 +334,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
             )
             const estimate = contextBudget(channel, persona, kind, messages, summary)
             if (estimate.mustCompress)
-              throw new Error('压缩后仍没有足够上下文，请调整渠道容量或输出上限。')
+              throw new Error('压缩后仍没有足够上下文，请选择上下文容量更大的模型或缩短输入。')
             status(writer, 'generating', '正在生成严格结构化回复…')
             const result = await generateReply({
               archiveId: snapshot.id,

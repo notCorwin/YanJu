@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { catalogFixture } from '../model-catalog-fixture'
 import { expect, type Page } from '@playwright/test'
 import { test } from './fixtures'
 import {
@@ -94,6 +95,9 @@ async function prepare(
   respond?: (body: Body) => { value: unknown; finish?: string; status?: number },
   seed: { historyTurns?: number; historyRepeats?: number; contextWindow?: number } = {},
 ) {
+  await page.route('https://models.dev/api.json', (route) =>
+    route.fulfill({ json: catalogFixture(seed.contextWindow) }),
+  )
   const requests: Body[] = []
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
@@ -299,6 +303,95 @@ async function enter(page: Page) {
   await page.getByRole('button', { name: '进入聊天' }).click()
   await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
 }
+
+test('OPFS Checkpoint 创建、导出、导入、恢复和删除贯通，恢复重置当前草稿', async ({ page }) => {
+  await prepare(page)
+  await enter(page)
+  const input = page.getByRole('textbox', { name: '聊天输入' })
+  await input.fill('Checkpoint 中的阅读进度')
+  await expect
+    .poll(async () => (await readOpfs(page))?.archives.find((a) => a.id === 'archive-1')?.draft)
+    .toBe('Checkpoint 中的阅读进度')
+  const open = async () => {
+    await page.getByRole('button', { name: '存档管理', exact: true }).click()
+    await page.getByRole('button', { name: 'Checkpoint', exact: true }).click()
+    return page.getByRole('dialog', { name: 'Checkpoint', exact: true })
+  }
+  const dialog = await open()
+  await dialog.getByRole('button', { name: '创建 Checkpoint', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(1)
+  const opfs = () =>
+    page.evaluate(async () => {
+      const read = async () => {
+        const root = await navigator.storage.getDirectory()
+        const dir = await (
+          await root.getDirectoryHandle('yanju-v3', { create: true })
+        ).getDirectoryHandle('checkpoints', { create: true })
+        const result = []
+        for await (const [name, handle] of dir.entries())
+          if (handle.kind === 'file') {
+            try {
+              result.push({ name, value: JSON.parse(await (await handle.getFile()).text()) })
+            } catch (error) {
+              throw new Error(`读取 ${name}：${String(error)}`, { cause: error })
+            }
+          }
+        return result
+      }
+      return navigator.locks.request('yanju-checkpoints', read)
+    })
+  const stored = (await opfs())[0]
+  expect(stored.name).toBe(`${stored.value.id}.json`)
+  expect(stored.value.data.archives[0].draft).toBe('Checkpoint 中的阅读进度')
+  const downloaded = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: /^导出 Checkpoint / }).click()
+  const path = (await (await downloaded).path())!
+  const exported = JSON.parse(await readFile(path, 'utf8'))
+  expect(exported.format).toBe('yanju-checkpoint-v1')
+  expect(exported.data.channels[0].apiKey).toBe(channelFixture.apiKey)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '存档', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await input.fill('创建 Checkpoint 后的新草稿')
+  await expect
+    .poll(async () => (await readOpfs(page))?.archives.find((a) => a.id === 'archive-1')?.draft)
+    .toBe('创建 Checkpoint 后的新草稿')
+  await open()
+  await dialog.getByLabel('导入 Checkpoint 文件').setInputFiles(path)
+  await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(2)
+  expect(new Set((await opfs()).map((item) => item.value.id)).size).toBe(2)
+  expect((await readOpfs(page))?.archives[0].draft).toBe('创建 Checkpoint 后的新草稿')
+  await dialog.getByRole('button', { name: '恢复', exact: true }).first().click()
+  await page
+    .getByRole('dialog', { name: '恢复 Checkpoint？', exact: true })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect(page.getByText('Checkpoint 已恢复，渠道须重新测试。')).toBeVisible()
+  await page
+    .getByRole('dialog', { name: '存档', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await expect(input).toHaveValue('Checkpoint 中的阅读进度')
+  expect((await readOpfs(page))?.channels[0].capability).toBeUndefined()
+  await page.reload()
+  await expect(input).toHaveValue('Checkpoint 中的阅读进度')
+  await open()
+  await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(2)
+  for (let remaining = 1; remaining >= 0; remaining--) {
+    await dialog
+      .getByRole('button', { name: /^删除 Checkpoint / })
+      .first()
+      .click()
+    await page
+      .getByRole('dialog', { name: '删除 Checkpoint？', exact: true })
+      .getByRole('button', { name: '确认', exact: true })
+      .click()
+    await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(remaining)
+    expect(await opfs()).toHaveLength(remaining)
+  }
+})
 
 test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) => {
   const requests = await prepare(page)
@@ -1160,7 +1253,8 @@ test('手动协议、取消重测保留结果，配置修改使缓存失效', as
   await page.reload()
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
   await expect(page.getByText(/当前协议：Chat Completions/)).toBeVisible()
-  await page.getByRole('textbox', { name: '模型', exact: true }).fill('new-model')
+  await page.getByRole('combobox', { name: '模型', exact: true }).click()
+  await page.getByRole('option', { name: 'new-model · new-model', exact: true }).click()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
 })
 
@@ -1192,9 +1286,13 @@ for (const action of ['修改', '删除']) {
     await page.getByRole('button', { name: '测试全部', exact: true }).click()
     await expect.poll(() => pending).toBe(true)
     if (action === '修改') {
+      await other.getByRole('combobox', { name: '模型', exact: true }).click()
       await other
-        .getByRole('textbox', { name: '模型', exact: true })
-        .fill('new-model-from-other-tab')
+        .getByRole('option', {
+          name: 'new-model-from-other-tab · new-model-from-other-tab',
+          exact: true,
+        })
+        .click()
       await other.getByRole('button', { name: '保存渠道', exact: true }).click()
       await expect(other.getByText('渠道已保存；通过测试后可用于聊天。')).toBeVisible()
     } else {
@@ -1218,9 +1316,9 @@ for (const action of ['修改', '删除']) {
     if (action === '修改') {
       await other
         .getByRole('navigation', { name: '渠道列表' })
-        .getByRole('button', { name: '测试渠道', exact: true })
+        .getByRole('button', { name: /new-model-from-other-tab/ })
         .click()
-      await expect(other.getByRole('textbox', { name: '模型', exact: true })).toHaveValue(
+      await expect(other.getByRole('combobox', { name: '模型', exact: true })).toContainText(
         'new-model-from-other-tab',
       )
       await expect(other.getByRole('button', { name: '使用此渠道', exact: true })).toBeDisabled()
@@ -1258,7 +1356,9 @@ for (const terminal of ['incomplete', 'missing']) {
     await expect(page.getByText('Responses 部分正文')).toBeVisible()
     await expect(page.getByRole('button', { name: '重试回复', exact: true })).toBeVisible()
     await expect(
-      page.getByText(terminal === 'incomplete' ? /回复达到输出上限/ : /未返回完整终止事件/).first(),
+      page
+        .getByText(terminal === 'incomplete' ? /回复达到模型自身容量/ : /未返回完整终止事件/)
+        .first(),
     ).toBeVisible()
     expect(generations).toBe(1)
     await page.reload()

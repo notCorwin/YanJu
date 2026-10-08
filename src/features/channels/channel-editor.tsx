@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { loadModelCatalog, selectCatalogModel, type ModelCatalog } from '@/lib/model-catalog'
 import { channelFingerprint, protocolLabels } from '@/lib/channels'
 import { formatDate } from '@/lib/format-date'
 import type { Notify } from '@/lib/notify'
@@ -49,12 +50,39 @@ export function ChannelEditor({
   onDirtyChange: (dirty: boolean) => void
 }) {
   const [draft, setDraft] = useState<
-    Omit<Channel, 'temperature' | 'maxOutputTokens' | 'contextWindow'> & {
-      temperature: number | string | null
-      maxOutputTokens: number | string
-      contextWindow: number | string
-    }
+    Omit<Channel, 'temperature'> & { temperature: number | string | null }
   >(channel)
+  const [catalog, setCatalog] = useState<ModelCatalog>()
+  const [catalogError, setCatalogError] = useState('')
+  const [loadingCatalog, setLoadingCatalog] = useState(false)
+  const refreshCatalog = async () => {
+    setLoadingCatalog(true)
+    try {
+      setCatalog(await loadModelCatalog(true))
+      setCatalogError('')
+    } catch (error) {
+      setCatalogError(friendlyError(error))
+    } finally {
+      setLoadingCatalog(false)
+    }
+  }
+  useEffect(() => {
+    let mounted = true
+    void loadModelCatalog()
+      .then((value) => {
+        if (mounted) setCatalog(value)
+      })
+      .catch((error) => {
+        if (mounted) setCatalogError(friendlyError(error))
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+  const provider = catalog?.[draft.providerId]
+  const selectedModel = provider?.models[draft.model]
+  const providers = Object.values(catalog ?? {}).sort((a, b) => a.name.localeCompare(b.name))
+  const models = Object.values(provider?.models ?? {}).sort((a, b) => a.name.localeCompare(b.name))
   const [errors, setErrors] = useState<Partial<Record<keyof Channel, string>>>({})
   const [saving, setSaving] = useState(false)
   const [showKey, setShowKey] = useState(false)
@@ -62,8 +90,6 @@ export function ChannelEditor({
   const value: Channel = {
     ...draft,
     temperature: draft.temperature === null ? null : Number(draft.temperature),
-    maxOutputTokens: Number(draft.maxOutputTokens),
-    contextWindow: Number(draft.contextWindow),
   }
   const dirty =
     JSON.stringify({ ...draft, capability: undefined, calibration: undefined }) !==
@@ -94,7 +120,21 @@ export function ChannelEditor({
       apiKey: value.apiKey.trim(),
       model: value.model.trim(),
     }
-    const issues = channelValidationErrors(next)
+    const resolved =
+      provider && selectedModel
+        ? {
+            ...selectCatalogModel(next, provider, selectedModel),
+            apiMode: next.apiMode,
+            name: next.name,
+          }
+        : next
+    if (channelFingerprint(resolved) === channelFingerprint(next)) {
+      resolved.capability = next.capability
+      resolved.calibration = next.calibration
+    }
+    const issues = channelValidationErrors(resolved)
+    if (!provider) issues.providerId = '请选择 Models.dev 中的 Provider。'
+    if (!selectedModel) issues.model = '请选择支持 Structured Outputs 的模型。'
     setErrors(issues)
     if (Object.keys(issues).length) {
       requestAnimationFrame(() =>
@@ -102,7 +142,7 @@ export function ChannelEditor({
       )
       return undefined
     }
-    return next
+    return resolved
   }
   const save = async (showFeedback = true) => {
     const next = validated()
@@ -190,32 +230,114 @@ export function ChannelEditor({
             <CardTitle>{draft.name.trim() || '未命名渠道'}</CardTitle>
             {active && <Badge>当前渠道</Badge>}
           </div>
-          <CardDescription>填写服务商提供的连接信息，测试通过后即可开始聊天。</CardDescription>
+          <CardDescription>
+            从 Models.dev 选择服务商与模型，填写 API Key 后测试连接。
+          </CardDescription>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4">
           <fieldset disabled={busy || saving || disabled} className="flex min-w-0 flex-col gap-5">
             <FieldGroup>
-              <FormField
-                label="渠道名称"
-                name="name"
-                error={errors.name}
-                value={draft.name}
-                onChange={(v) => update('name', v)}
-                autoComplete="off"
-              />
-              <FormField
-                label="Base URL"
-                name="baseUrl"
-                error={errors.baseUrl}
-                value={draft.baseUrl}
-                onChange={(v) => update('baseUrl', v)}
-                placeholder="https://example.com/v1"
-                type="url"
-                help="填写 API 根地址（通常以 /v1 结尾），不含 /responses 或 /chat/completions。"
-                autoComplete="url"
-              />
+              <Field data-invalid={!!errors.providerId}>
+                <FieldLabel htmlFor={`provider-${draft.id}`}>Provider</FieldLabel>
+                <Select
+                  value={draft.providerId}
+                  disabled={busy || saving || disabled || !catalog}
+                  onValueChange={(id) => {
+                    const next = catalog?.[id]
+                    const model = next && Object.values(next.models)[0]
+                    if (next && model) {
+                      setDraft(selectCatalogModel(value, next, model))
+                      setErrors({})
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    id={`provider-${draft.id}`}
+                    aria-invalid={!!errors.providerId}
+                    className="w-full"
+                  >
+                    <SelectValue placeholder={catalog ? '选择服务商' : '正在加载 Models.dev…'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {providers.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                {errors.providerId && (
+                  <FieldDescription role="alert">{errors.providerId}</FieldDescription>
+                )}
+              </Field>
+              <Field data-invalid={!!errors.model}>
+                <FieldLabel htmlFor={`model-${draft.id}`}>模型</FieldLabel>
+                <Select
+                  value={draft.model}
+                  disabled={busy || saving || disabled || !provider}
+                  onValueChange={(id) => {
+                    const model = provider?.models[id]
+                    if (provider && model) {
+                      setDraft(selectCatalogModel(value, provider, model))
+                      setErrors({})
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    id={`model-${draft.id}`}
+                    aria-invalid={!!errors.model}
+                    className="w-full"
+                  >
+                    <SelectValue placeholder="选择模型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {models.map((m) => (
+                        <SelectItem key={m.id} value={m.id}>
+                          {m.name} · {m.id}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  仅列出支持 Structured Outputs 的文本模型。
+                  {selectedModel &&
+                    `上下文 ${selectedModel.limit.context.toLocaleString()} tokens · SDK ${selectedModel.provider?.npm ?? provider?.npm}`}
+                </FieldDescription>
+                {errors.model && <FieldDescription role="alert">{errors.model}</FieldDescription>}
+              </Field>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={loadingCatalog || busy || saving || disabled}
+                onClick={() => void refreshCatalog()}
+              >
+                {loadingCatalog && (
+                  <LoaderCircle data-icon="inline-start" className="animate-spin" />
+                )}
+                刷新模型目录
+              </Button>
+              {catalogError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {catalogError}
+                </p>
+              )}
               <FormField
                 label="API Key"
+                help={
+                  provider &&
+                  (provider.env.length > 1 ||
+                    [
+                      '@ai-sdk/google-vertex',
+                      '@ai-sdk/google-vertex/anthropic',
+                      '@jerome-benoit/sap-ai-provider-v2',
+                    ].includes(provider.npm))
+                    ? `云服务可在此粘贴完整凭据 JSON，包含 Models.dev 所列认证字段：${provider.env.join('、')}。详见服务商凭据文档。`
+                    : undefined
+                }
                 name="apiKey"
                 error={errors.apiKey}
                 value={draft.apiKey}
@@ -233,43 +355,40 @@ export function ChannelEditor({
                 }
                 autoComplete="off"
               />
-              <FormField
-                label="模型"
-                name="model"
-                error={errors.model}
-                value={draft.model}
-                onChange={(v) => update('model', v)}
-                placeholder="填写渠道提供的模型 ID"
-                autoComplete="off"
-              />
-              <Field>
-                <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 协议</FieldLabel>
-                <Select
-                  value={draft.apiMode}
-                  disabled={busy || saving || disabled}
-                  onValueChange={(value) => update('apiMode', value as ApiMode)}
-                >
-                  <SelectTrigger id={`api-mode-${draft.id}`} className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="auto">自动探测（Responses 优先）</SelectItem>
-                      <SelectItem value="responses">Responses</SelectItem>
-                      <SelectItem value="chat-completions">Chat Completions</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <FieldDescription>
-                  自动测试两种协议的非流式和流式严格输出，最多发送 4
-                  个短请求。正式生成使用测试选定的协议。
-                </FieldDescription>
-              </Field>
+              {!['ai-gateway-provider', '@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(
+                provider?.npm ?? '',
+              ) &&
+                ['@ai-sdk/openai', '@ai-sdk/openai-compatible'].includes(draft.sdk) &&
+                !selectedModel?.provider?.shape && (
+                  <Field>
+                    <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 协议</FieldLabel>
+                    <Select
+                      value={draft.apiMode}
+                      disabled={busy || saving || disabled}
+                      onValueChange={(v) => update('apiMode', v as ApiMode)}
+                    >
+                      <SelectTrigger id={`api-mode-${draft.id}`} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {draft.sdk === '@ai-sdk/openai' && (
+                            <SelectItem value="auto">自动探测（Responses 优先）</SelectItem>
+                          )}
+                          {draft.sdk === '@ai-sdk/openai' && (
+                            <SelectItem value="responses">Responses</SelectItem>
+                          )}
+                          <SelectItem value="chat-completions">Chat Completions</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                )}
               <Field>
                 <FieldLabel htmlFor={`temperature-mode-${draft.id}`}>温度设置</FieldLabel>
                 <Select
                   value={draft.temperature === null ? 'default' : 'custom'}
-                  disabled={busy || saving || disabled}
+                  disabled={busy || saving || disabled || !selectedModel?.temperature}
                   onValueChange={(value) => update('temperature', value === 'default' ? null : 0.9)}
                 >
                   <SelectTrigger id={`temperature-mode-${draft.id}`} className="w-full">
@@ -286,52 +405,48 @@ export function ChannelEditor({
                   模型默认会省略温度参数，适用于不接受自定义温度的模型。
                 </FieldDescription>
               </Field>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {draft.temperature !== null && (
-                  <FormField
-                    label="温度"
-                    name="temperature"
-                    error={errors.temperature}
-                    type="number"
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    value={draft.temperature}
-                    onChange={(v) => update('temperature', v)}
-                  />
-                )}
+              {draft.temperature !== null && selectedModel?.temperature && (
                 <FormField
-                  label="输出上限（tokens）"
-                  name="maxOutputTokens"
-                  error={errors.maxOutputTokens}
+                  label="温度"
+                  name="temperature"
+                  error={errors.temperature}
                   type="number"
-                  min={128}
-                  step={128}
-                  value={draft.maxOutputTokens}
-                  onChange={(v) => update('maxOutputTokens', v)}
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={draft.temperature}
+                  onChange={(v) => update('temperature', v)}
                 />
-              </div>
-              <FormField
-                label="上下文容量（tokens）"
-                name="contextWindow"
-                error={errors.contextWindow}
-                value={draft.contextWindow}
-                onChange={(v) => update('contextWindow', v)}
-                type="number"
-                min={1024}
-                step={1024}
-                help="默认 32,768；按模型实际容量填写。输入占用达到 85% 或输出空间不足时自动压缩。"
-              />
-              <FormField
-                label="请求等待上限（秒）"
-                name="requestTimeoutMs"
-                error={errors.requestTimeoutMs}
-                type="number"
-                min={0}
-                value={(draft.requestTimeoutMs ?? 300000) / 1000}
-                onChange={(v) => update('requestTimeoutMs', Number(v) * 1000)}
-                help="限制首个内容和后续内容的等待时间；持续返回内容的长回复可继续生成。0 表示不限。"
-              />
+              )}
+              <Field>
+                <FieldLabel htmlFor={`timeout-${draft.id}`}>请求等待上限</FieldLabel>
+                <Select
+                  value={String(draft.requestTimeoutMs ?? 300000)}
+                  disabled={busy || saving || disabled}
+                  onValueChange={(v) => update('requestTimeoutMs', Number(v))}
+                >
+                  <SelectTrigger id={`timeout-${draft.id}`} className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {[
+                        [0, '不限'],
+                        [45000, '45 秒'],
+                        [300000, '5 分钟'],
+                        [900000, '15 分钟'],
+                      ].map(([ms, label]) => (
+                        <SelectItem key={ms} value={String(ms)}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  等待首个内容或后续内容的时间；持续返回内容时继续生成。
+                </FieldDescription>
+              </Field>
             </FieldGroup>
           </fieldset>
           {busy && (
@@ -350,7 +465,7 @@ export function ChannelEditor({
           )}
           {draft.capability?.checks && (
             <div className="mt-3 flex flex-col gap-2" aria-label="协议测试结果">
-              {(['responses', 'chat-completions'] as ApiProtocol[]).map((protocol) => {
+              {(['native', 'responses', 'chat-completions'] as ApiProtocol[]).map((protocol) => {
                 const check = draft.capability?.checks?.[protocol]
                 if (!check) return null
                 const labels = { passed: '通过', failed: '失败', untested: '未测试' }

@@ -13,7 +13,7 @@ export const usageSchema = z.object({
   channelId: id,
 })
 export const calibrationSchema = z.object({ ratio: z.number().min(0.5).max(4), samples: count })
-const protocolSchema = z.enum(['responses', 'chat-completions'])
+const protocolSchema = z.enum(['responses', 'chat-completions', 'native'])
 const protocolCapabilitySchema = z.object({
   nonStreaming: z.enum(['passed', 'failed', 'untested']),
   streaming: z.enum(['passed', 'failed', 'untested']),
@@ -27,6 +27,7 @@ export const capabilitySchema = z.object({
   protocol: protocolSchema.optional(),
   checks: z
     .object({
+      native: protocolCapabilitySchema.optional(),
       responses: protocolCapabilitySchema.optional(),
       'chat-completions': protocolCapabilitySchema.optional(),
     })

@@ -12,7 +12,7 @@ export default defineConfig({
       output: {
         codeSplitting: {
           groups: [
-            { name: 'ai', test: /node_modules\/(?:ai|@ai-sdk)\// },
+            { name: 'ai', test: /node_modules\/(?:ai|@ai-sdk\/(?:provider|provider-utils))\// },
             { name: 'schema', test: /node_modules\/zod\// },
             { name: 'react', test: /node_modules\/(?:react|react-dom|scheduler)\// },
             { name: 'storage', test: /node_modules\/(?:dexie|dexie-react-hooks)\// },

@@ -1,3 +1,4 @@
+import { CheckpointsDialog } from './checkpoints-dialog'
 import { ConfirmDialog, FormField, IconButton } from '@/components/shared'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -41,6 +42,7 @@ export function ArchivesSheet({
   archives,
   activeId,
   onSelect,
+  onRestored,
   notify,
   disabled,
 }: {
@@ -49,9 +51,11 @@ export function ArchivesSheet({
   archives: Archive[]
   activeId: string
   onSelect: (id: string) => void
+  onRestored: () => void
   notify: Notify
   disabled: boolean
 }) {
+  const [checkpointOpen, setCheckpointOpen] = useState(false)
   const [removeId, setRemoveId] = useState('')
   const [renameId, setRenameId] = useState('')
   const [name, setName] = useState('')
@@ -102,6 +106,9 @@ export function ArchivesSheet({
           )}
         </SheetHeader>
         <div className="flex flex-wrap gap-2 px-4">
+          <Button variant="outline" onClick={() => setCheckpointOpen(true)}>
+            Checkpoint
+          </Button>
           <Button
             disabled={disabled}
             onClick={() => {
@@ -248,6 +255,17 @@ export function ArchivesSheet({
             </Card>
           ))}
         </div>
+        <CheckpointsDialog
+          open={checkpointOpen}
+          onClose={() => setCheckpointOpen(false)}
+          disabled={disabled}
+          notify={notify}
+          archiveName={archives.find((a) => a.id === activeId)?.name ?? '宴雎'}
+          onRestore={(id) => {
+            onRestored()
+            onSelect(id)
+          }}
+        />
         <ConfirmDialog
           open={!!removeId}
           onClose={() => setRemoveId('')}
@@ -355,6 +373,7 @@ export function ArchivesSheet({
             const data = await importSave(pendingImport, db, false, importMode)
             await initializeStorage()
             await db.persistence.flush()
+            onRestored()
             onSelect(data.settings.activeArchiveId || (await createArchive()).id)
             notify('存档导入完成。渠道须重新测试。')
             onClose()
