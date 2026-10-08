@@ -1,5 +1,12 @@
 import { test, expect, type Page } from '@playwright/test'
-import { channelFixture, completion, forumFixture, narrativeFixture, sse } from '../fixtures'
+import {
+  channelFixture,
+  completion,
+  compressionFixture,
+  forumFixture,
+  narrativeFixture,
+  sse,
+} from '../fixtures'
 
 type Body = {
   model: string
@@ -10,9 +17,10 @@ type Body = {
 async function prepare(
   page: Page,
   respond?: (body: Body) => { value: unknown; finish?: string; status?: number },
+  seed: { historyTurns?: number; historyRepeats?: number; contextWindow?: number } = {},
 ) {
   const requests: Body[] = []
-  await page.addInitScript(() => {
+  await page.addInitScript((seed) => {
     if (localStorage.getItem('test-seeded')) return
     localStorage.setItem('test-seeded', 'true')
     localStorage.setItem(
@@ -30,6 +38,12 @@ async function prepare(
               content: '午后的书房很安静，今天想读哪一本书？',
               timestamp: 1,
             },
+            ...Array.from({ length: (seed.historyTurns ?? 0) * 2 }, (_, i) => ({
+              id: `history-${i}`,
+              role: i % 2 ? 'assistant' : 'user',
+              content: `旧历史${i}：${'讨论阅读和明天的安排。'.repeat(seed.historyRepeats ?? 1)}`,
+              timestamp: i + 2,
+            })),
           ],
         },
         {
@@ -71,7 +85,7 @@ async function prepare(
           model: 'test-model',
           maxTokens: 4096,
           temperature: 0.9,
-          contextWindow: 131072,
+          contextWindow: seed.contextWindow ?? 131072,
           createdAt: 1,
         },
         {
@@ -87,7 +101,7 @@ async function prepare(
         },
       ]),
     )
-  })
+  }, seed)
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
     requests.push(body)
@@ -96,7 +110,9 @@ async function prepare(
         ? { ready: true, echo: 'YanJu strict output' }
         : body.response_format.json_schema.name === 'ForumReply'
           ? forumFixture
-          : narrativeFixture
+          : body.response_format.json_schema.name === 'CompressionResult'
+            ? compressionFixture
+            : narrativeFixture
     const response = respond?.(body) ?? { value: fallback }
     await route.fulfill({
       status: response.status ?? 200,
@@ -162,6 +178,76 @@ test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) 
   const history = requests.filter((r) => r.stream).at(-1)!.messages
   expect(history.some((m) => m.role === 'assistant' && m.content.includes('innerVoice'))).toBe(true)
   expect(history.some((m) => m.role === 'assistant' && m.content.includes('answer-49'))).toBe(true)
+})
+
+for (const mode of ['手动', '自动'] as const) {
+  test(`${mode}压缩后可正常续聊，刷新后继续保留已发送前缀`, async ({ page }) => {
+    const requests = await prepare(page, undefined, {
+      historyTurns: 6,
+      historyRepeats: mode === '自动' ? 650 : 1,
+      contextWindow: mode === '自动' ? 65536 : 131072,
+    })
+    await enableChannel(page)
+    await enter(page)
+    if (mode === '手动') {
+      await page.getByRole('button', { name: '压缩上下文', exact: true }).click()
+      await expect(page.getByText('上下文压缩完成，原文保留。')).toBeVisible()
+    }
+    await page.getByRole('textbox', { name: '聊天输入' }).fill('压缩后继续一起读书。')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+    expect(requests.some((r) => r.response_format.json_schema.name === 'CompressionResult')).toBe(
+      true,
+    )
+    const before = requests.filter((r) => r.stream).at(-1)!
+    expect(before.messages[1].role).toBe('system')
+    expect(before.messages[1].content).toContain(JSON.stringify(compressionFixture))
+    await expect(page.getByText(/^旧历史0：/)).toHaveCount(1)
+
+    await page.reload()
+    await page.getByRole('textbox', { name: '聊天输入' }).fill('明天继续阅读。')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+    await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+    const after = requests.filter((r) => r.stream).at(-1)!
+    expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages)
+    expect(after.response_format).toEqual(before.response_format)
+    await expect(page.getByText(/^旧历史0：/)).toHaveCount(1)
+    await expect(page.getByText(/压缩未完成：/)).toHaveCount(0)
+  })
+}
+
+test('纠正成功后刷新续聊，纠正请求仍保留在上下文前缀', async ({ page }) => {
+  let narrativeRequests = 0
+  const requests = await prepare(page, (body) => {
+    if (body.response_format.json_schema.name === 'ChannelCapability')
+      return { value: { ready: true, echo: 'YanJu strict output' } }
+    narrativeRequests++
+    return {
+      value:
+        narrativeRequests === 1
+          ? { ...narrativeFixture, diary: { ...narrativeFixture.diary, text: '' } }
+          : narrativeFixture,
+    }
+  })
+  await enableChannel(page)
+  await enter(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('一起阅读。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  expect(requests.filter((r) => r.stream)).toHaveLength(2)
+  const corrected = requests.filter((r) => r.stream).at(-1)!
+  expect(corrected.messages.at(-1)?.content).toContain('校验失败')
+
+  await page.reload()
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('接着读。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+  const next = requests.filter((r) => r.stream).at(-1)!
+  expect(next.messages.slice(0, corrected.messages.length)).toEqual(corrected.messages)
+  expect(next.response_format).toEqual(corrected.response_format)
 })
 
 test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page }) => {

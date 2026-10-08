@@ -139,6 +139,7 @@ describe('IndexedDB 与存档迁移', () => {
     const m = {
       ...messageFixture('m-0', 'assistant', '', 0),
       reply: { kind: 'narrative' as const, value: narrativeFixture },
+      correction: '上次校验失败，请输出完整回复。',
     }
     await importSave({
       version: 2,
@@ -150,6 +151,7 @@ describe('IndexedDB 与存档迁移', () => {
     })
     const data = await exportSave()
     expect(data.messages[0].reply).toEqual(m.reply)
+    expect(data.messages[0].correction).toBe(m.correction)
     expect(data.archives[0].draft).toBe('未发出的输入')
     expect(data.channels[0].capability).toBeUndefined()
   })

@@ -35,9 +35,7 @@ export function serializeMessage(message: StoredMessage) {
 }
 export function modelMessages(messages: StoredMessage[], summary?: Summary): ModelMessage[] {
   const index = summary ? messages.findIndex((m) => m.id === summary.coveredThroughId) : -1
-  const history = messages
-    .slice(index + 1)
-    .filter((m) => m.role === 'user' || m.status === 'complete')
+  const history = messages.slice(index + 1)
   return [
     ...(summary && index >= 0
       ? [
@@ -47,7 +45,14 @@ export function modelMessages(messages: StoredMessage[], summary?: Summary): Mod
           },
         ]
       : []),
-    ...history.map((m) => ({ role: m.role, content: serializeMessage(m) })),
+    ...history.flatMap((m): ModelMessage[] => [
+      ...(m.role === 'assistant' && m.correction
+        ? [{ role: 'user' as const, content: m.correction }]
+        : []),
+      ...(m.role === 'user' || m.status === 'complete'
+        ? [{ role: m.role, content: serializeMessage(m) }]
+        : []),
+    ]),
   ]
 }
 

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { db, archiveMessages } from '../../src/lib/db'
+import { db, archiveMessages, appendMessage } from '../../src/lib/db'
 import { defaults } from '../../src/lib/types'
 import { channelFingerprint } from '../../src/lib/provider'
 import { BrowserChatTransport, toChatMessage } from '../../src/lib/transport'
+import { modelMessages } from '../../src/lib/prompts'
 import { channelFixture, compressionFixture, messageFixture, narrativeFixture } from '../fixtures'
 
 const mock = vi.hoisted(() => ({ generate: vi.fn(), summarize: vi.fn() }))
@@ -68,6 +69,41 @@ describe('浏览器 ChatTransport 与持久化', () => {
     const saved = (await archiveMessages('archive-1')).at(-1)!
     expect(saved.status).toBe('complete')
     expect(saved.reply?.value).toEqual(narrativeFixture)
+  })
+  it('纠正消息随完成回复持久化，下一轮重放已发送的前缀', async () => {
+    const correction = '上次回复校验失败，请返回完整日记。'
+    mock.generate.mockImplementation(async (opts) => {
+      opts.onCorrection('正在纠正', correction)
+      return { reply: { kind: 'narrative', value: narrativeFixture }, correction }
+    })
+    await run()
+    const saved = (await archiveMessages('archive-1')).at(-1)!
+    expect(saved.correction).toBe(correction)
+    const correctedRequest = [
+      ...mock.generate.mock.calls[0][0].messages,
+      { role: 'user', content: correction },
+    ]
+    await appendMessage(messageFixture('next-user', 'user', '继续阅读', saved.sequence + 1))
+    mock.generate.mockResolvedValueOnce({ reply: { kind: 'narrative', value: narrativeFixture } })
+    await run()
+    expect(mock.generate.mock.calls[1][0].messages.slice(0, correctedRequest.length)).toEqual(
+      correctedRequest,
+    )
+  })
+  it('纠正请求失败仍保留已发送消息，恢复时不把部分回复当成完成历史', async () => {
+    const correction = '上次回复校验失败，请重新输出全部模块。'
+    mock.generate.mockImplementation(async (opts) => {
+      opts.onCorrection('正在纠正', correction)
+      opts.onPartial({ scene: { time: '未完成的场景' } })
+      throw new Error('第二次请求连接失败')
+    })
+    await run()
+    const history = await archiveMessages('archive-1')
+    expect(history.at(-1)?.status).toBe('failed')
+    expect(history.at(-1)?.correction).toBe(correction)
+    const context = modelMessages(history)
+    expect(context.at(-1)).toEqual({ role: 'user', content: correction })
+    expect(context.some((m) => String(m.content).includes('未完成的场景'))).toBe(false)
   })
   it('取消保留收到的部分对象，重新载入仍可恢复', async () => {
     const controller = new AbortController()

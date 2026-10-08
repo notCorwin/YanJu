@@ -96,6 +96,7 @@ export async function editMessage(id: string, content: string) {
       ...message,
       content,
       rawContent: undefined,
+      correction: undefined,
       partial: undefined,
       error: undefined,
       status: 'complete',
@@ -235,6 +236,8 @@ export function normalizeImport(input: unknown): SaveFile {
       messages.push({
         ...m,
         content: str(m.content),
+        correction:
+          m.role === 'assistant' && typeof m.correction === 'string' ? m.correction : undefined,
         createdAt: numeric(m.createdAt, Date.now()),
         sequence: numeric(m.sequence, messages.length),
         status: ['complete', 'partial', 'failed', 'cancelled'].includes(str(m.status))

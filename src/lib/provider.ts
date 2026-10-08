@@ -132,6 +132,7 @@ export async function summarize(channel: Channel, input: CompressionInput, signa
 export interface GenerationResult {
   reply: Reply
   usage: Usage | undefined
+  correction?: string
 }
 interface GenerateOptions {
   channel: Channel
@@ -141,7 +142,7 @@ interface GenerateOptions {
   signal: AbortSignal
   estimatedInput: number
   onPartial: (partial: DeepPartial<NarrativeReply> | DeepPartial<ForumReply>, raw?: string) => void
-  onCorrection: (detail: string) => void
+  onCorrection: (detail: string, correction: string) => void
   fetcher?: typeof fetch
 }
 function usageData(
@@ -162,13 +163,18 @@ function usageData(
 
 export async function generateReply(options: GenerateOptions): Promise<GenerationResult> {
   const { channel, kind, instructions, messages, signal, onPartial, onCorrection } = options
-  let correction: ModelMessage[] = []
+  let correction: string | undefined
   for (let attempt = 0; attempt < 2; attempt++) {
     let streamError: unknown
     const stream = streamText({
       model: channelModel(channel, options.fetcher),
       instructions,
-      messages: [...messages, ...correction],
+      // The system message in modelMessages is our own committed history summary.
+      allowSystemInMessages: true,
+      messages: [
+        ...messages,
+        ...(correction ? [{ role: 'user' as const, content: correction }] : []),
+      ],
       output:
         kind === 'narrative'
           ? Output.object({ schema: narrativeSchema, name: 'NarrativeReply' })
@@ -202,7 +208,11 @@ export async function generateReply(options: GenerateOptions): Promise<Generatio
         kind === 'narrative'
           ? { kind, value: validateNarrative(resolved.value) }
           : { kind, value: validateForum(resolved.value) }
-      return { reply, usage: usageData(channel, await stream.usage, options.estimatedInput) }
+      return {
+        reply,
+        usage: usageData(channel, await stream.usage, options.estimatedInput),
+        correction,
+      }
     } catch (error) {
       if (signal.aborted || attempt || /truncated|token limit/i.test(friendlyError(error)))
         throw error
@@ -214,13 +224,8 @@ export async function generateReply(options: GenerateOptions): Promise<Generatio
           /NoObjectGenerated|NoOutputGenerated|JSONParse|TypeValidation/i.test(error.name))
       if (!invalid) throw error
       const detail = friendlyError(error)
-      onCorrection('回复未通过完整校验，正在使用相同 schema 纠正一次。')
-      correction = [
-        {
-          role: 'user',
-          content: `上次回复校验失败：${detail}。请纠正并重新输出同一 schema 的完整对象，保留本轮剧情意图，不能省略任何必填模块。`,
-        },
-      ]
+      correction = `上次回复校验失败：${detail}。请纠正并重新输出同一 schema 的完整对象，保留本轮剧情意图，不能省略任何必填模块。`
+      onCorrection('回复未通过完整校验，正在使用相同 schema 纠正一次。', correction)
     }
   }
   throw new Error('结构化回复校验失败')

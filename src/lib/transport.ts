@@ -180,6 +180,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     }
     let partial: StoredMessage['partial']
     let rawContent = ''
+    let correction: string | undefined
     let committed = false
     let checkpointAt = 0
     let pendingCheckpoint = Promise.resolve()
@@ -247,6 +248,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
                           await db.messages.put({
                             ...base,
                             partial,
+                            correction,
                             content: partial ? JSON.stringify(partial.value) : '',
                             rawContent,
                           })
@@ -257,7 +259,10 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
                     })
                 }
               },
-              onCorrection: (detail) => status(writer, 'correcting', detail),
+              onCorrection: (detail, text) => {
+                correction = text
+                status(writer, 'correcting', detail)
+              },
             })
             if (signal.aborted) throw new DOMException('已取消', 'AbortError')
             await pendingCheckpoint
@@ -267,6 +272,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               reply: result.reply,
               content: JSON.stringify(result.reply.value),
               usage: result.usage,
+              correction: result.correction ?? correction,
             }
             await saveGenerated(complete, snapshot.revision, regen)
             committed = true
@@ -309,6 +315,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               ...base,
               status: cancelled ? 'cancelled' : 'failed',
               partial,
+              correction,
               error: detail,
               content: partial ? JSON.stringify(partial.value) : '',
               rawContent,

@@ -96,6 +96,8 @@ export interface StoredMessage {
     | { kind: 'forum'; value: DeepPartial<ForumReply> }
   legacy?: LegacyContent
   rawContent?: string
+  /** A user message already sent to correct this generation, replayed before the assistant reply. */
+  correction?: string
   error?: string
   usage?: Usage
 }
