@@ -44,6 +44,10 @@ export const test = base.extend({
           })
         : await browser.newContext(options)
       try {
+        // Business acceptance must not wait for external font delivery.
+        await context.route('https://fonts.googleapis.com/**', (route) =>
+          route.fulfill({ contentType: 'text/css', body: '' }),
+        )
         if (directory) {
           // WebKit may share origin filesystem data across otherwise separate profiles.
           // Clear only this application's test data before seeding the scenario.
