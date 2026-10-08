@@ -6,7 +6,7 @@
 
 ## 本地开发
 
-需要 Node.js 26.11.1+ 和 pnpm 12.10.1。
+需要 Node.js 26.11.1+ 和 pnpm 12.10.1；`.nvmrc` 与部署环境使用相同版本。
 
 ```sh
 pnpm install --frozen-lockfile

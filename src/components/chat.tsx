@@ -293,7 +293,6 @@ function ChatRunner({
       } catch (e) {
         notify(friendlyError(e), true)
       }
-      inputRef.current?.focus()
     }
   }
   const external = useEffectEvent(async (request: ExternalChatRequest) => {
@@ -795,7 +794,10 @@ function ChatRunner({
             <form
               onSubmit={(e) => {
                 e.preventDefault()
-                if (!composing.current) void send()
+                if (!composing.current) {
+                  inputRef.current?.focus({ preventScroll: true })
+                  void send()
+                }
               }}
             >
               <InputGroup>
