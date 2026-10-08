@@ -8,5 +8,6 @@ export default defineConfig({
     include: ['tests/unit/**/*.test.ts'],
     setupFiles: ['tests/unit/setup.ts'],
     restoreMocks: true,
+    maxWorkers: 4,
   },
 })

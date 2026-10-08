@@ -260,7 +260,7 @@ const list = (v: unknown) => z.array(z.unknown()).parse(v ?? [])
 
 export function normalizeImport(input: unknown, restore = false): SaveFile {
   const raw = record(input)
-  if (raw.version !== 3) throw new Error('新版仅支持版本 3 的盐焗 JSON 存档。')
+  if (raw.version !== 3) throw new Error('新版仅支持版本 3 的宴雎 JSON 存档。')
   for (const key of [
     'channels',
     'masks',
