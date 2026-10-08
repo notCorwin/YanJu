@@ -102,3 +102,5 @@ UI 回归还覆盖字段错误与未保存修改、焦点恢复、可点击的�
 本地验收通过后提交并推送功能分支，通过面向 `master` 的 PR 发布。`.github/workflows/deploy.yml` 仅负责 CD：安装锁定依赖、构建、上传 Pages artifact 并发布。CI 检查在本地完成。
 
 GitHub 仓库须为公开的 `notCorwin/YanJu`，Pages 的 Build and deployment / Source 设为 GitHub Actions。Vite `base` 已设为 `/YanJu/`。音乐与网络字体由原有公开资源/字体服务提供；网络字体异步加载，未加载时使用本地衬线字体，保留界面显示和操作。
+
+背景上传、替换和移除显示保存状态。图片随 OPFS 检查点和 v3 JSON 存档一并保存；界面使用可释放的 Blob URL 预览。

@@ -944,18 +944,20 @@ export function AppearanceDialog({
 }) {
   const update = (key: keyof Settings, value: string | number) =>
     void db.settings.update('app', { [key]: value }).catch((e) => notify(friendlyError(e), true))
-  const upload = async (file: File | undefined) => {
-    if (!file) return
-    if (!file.type.startsWith('image/')) {
-      notify('请选择图片文件。', true)
-      return
+  const [savingBackground, setSavingBackground] = useState(false)
+  const saving = useRef(false)
+  const saveBackground = async (file?: File) => {
+    if (saving.current) return
+    saving.current = true
+    setSavingBackground(true)
+    try {
+      await replaceBackground(db, file)
+    } catch (error) {
+      notify(friendlyError(error), true)
+    } finally {
+      saving.current = false
+      setSavingBackground(false)
     }
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result === 'string') update('bgImage', reader.result)
-    }
-    reader.onerror = () => notify('图片读取失败，请重试。', true)
-    reader.readAsDataURL(file)
   }
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -1005,12 +1007,17 @@ export function AppearanceDialog({
               id="background-file"
               type="file"
               accept="image/*"
+              disabled={savingBackground}
+              aria-busy={savingBackground}
               onChange={(e) => {
-                void upload(e.target.files?.[0])
+                const file = e.target.files?.[0]
                 e.target.value = ''
+                if (file) void saveBackground(file)
               }}
             />
-            <FieldDescription>保存到当前浏览器，导出存档时一并保存。</FieldDescription>
+            <FieldDescription role={savingBackground ? 'status' : undefined}>
+              {savingBackground ? '正在保存背景图片…' : '保存到当前浏览器，导出存档时一并保存。'}
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel htmlFor="background-opacity">背景透明度 · {settings.bgOpacity}%</FieldLabel>
@@ -1026,8 +1033,9 @@ export function AppearanceDialog({
         </FieldGroup>
         <Button
           variant="outline"
-          disabled={!settings.bgImage}
-          onClick={() => update('bgImage', '')}
+          disabled={!settings.bgImage || savingBackground}
+          aria-busy={savingBackground}
+          onClick={() => void saveBackground()}
         >
           移除背景
         </Button>

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, initializeStorage } from '@/lib/db'
 import { applyAppearance } from '@/lib/appearance'
+import { useBackground } from '@/lib/use-background'
 import { channelIsReady, friendlyError } from '@/lib/provider'
 import { ChatSession, type ExternalChatRequest } from '@/components/chat'
 import {
@@ -98,6 +99,7 @@ export default function App() {
 }
 function Workspace() {
   const settings = useLiveQuery(() => db.settings.get('app'))
+  const background = useBackground(settings?.bgImage)
   const archives = useLiveQuery(() => db.archives.orderBy('updatedAt').reverse().toArray()) ?? []
   const channels = useLiveQuery(() => db.channels.toArray()) ?? []
   const personas = useLiveQuery(() => db.personas.toArray()) ?? []
@@ -137,8 +139,8 @@ function Workspace() {
   }, [])
   useEffect(() => () => pendingSend.current?.complete(false), [])
   useEffect(() => {
-    if (settings) applyAppearance(settings)
-  }, [settings])
+    if (settings) applyAppearance({ ...settings, bgImage: background })
+  }, [settings, background])
   const routeId = archiveIdFromRoute(route)
   const archive = archives.find((a) => a.id === (routeId || settings?.activeArchiveId))
   const channel = channels.find((c) => c.id === settings?.activeChannelId)
