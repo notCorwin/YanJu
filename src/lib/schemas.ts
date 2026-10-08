@@ -221,6 +221,8 @@ export function validateNarrative(input: unknown): NarrativeReply {
 export function validateEffects(input: unknown, blockIds?: string[]): string[] {
   const effects = effectsSchema.parse(input)
   const issues = nonempty(effects)
+  if (new Set(effects.states.map((s) => `${s.entityRef}\0${s.key}`)).size !== effects.states.length)
+    issues.push('同轮状态键不得重复')
   for (const key of [
     'entities',
     'relationships',

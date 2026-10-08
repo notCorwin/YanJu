@@ -420,3 +420,60 @@ describe('创作和本地操作调度', () => {
     await expect(applyTask(task.id)).rejects.toThrow(/目标不存在/)
   })
 })
+
+describe('整份改写与问题位置校验', () => {
+  it('JSON 属性顺序不影响改写判断，重复修改引用会被拒绝', async () => {
+    const target = (await db.messages.get('n'))!
+    if (target.reply?.kind !== 'narrative') throw new Error('fixture')
+    target.reply.value.blocks = target.reply.value.blocks.map((b) => ({
+      translation: b.translation,
+      text: b.text,
+      kind: b.kind,
+      speakerRef: b.speakerRef,
+      id: b.id,
+    }))
+    await db.messages.put(target)
+    const valid = await executeAuxiliary(archive.id, 'rewrite', '只改第一段', 'n', {
+      fetcher: fake('rewrite'),
+    })
+    expect(valid.status, valid.error).toBe('complete')
+    const invalid = await executeAuxiliary(archive.id, 'rewrite', '重复段落', 'n', {
+      fetcher: fake('rewrite', (value) => ({
+        ...(value as object),
+        changedBlockIds: ['b1', 'b1'],
+      })),
+    })
+    expect(invalid.status).toBe('failed')
+    expect((await db.messages.get('n'))!.reply).toEqual(target.reply)
+  })
+  it('证据必须属于指定段落，不能引用另一段的句子', async () => {
+    const task = await executeAuxiliary(archive.id, 'consistency', '检查', null, {
+      fetcher: fake('consistency', () => ({
+        summary: '检查结果',
+        issues: [
+          {
+            type: 'character',
+            severity: 'warning',
+            source: { messageId: 'n', blockId: 'b1' },
+            evidence: narrativeFixture.blocks[1].text,
+            suggestion: '调整这句话',
+          },
+        ],
+      })),
+    })
+    expect(task.status).toBe('failed')
+    expect(task.error).toContain('段落不匹配')
+  })
+  it('关联字段校验失败不会覆盖原回复或失效后续事实', async () => {
+    const task = await executeAuxiliary(archive.id, 'rewrite', '改写', 'n', {
+      fetcher: fake('rewrite', (value) => {
+        const v = structuredClone(value) as { replacement: typeof narrativeFixture }
+        v.replacement.state.spokenLine = '正文里没有这句话'
+        return v
+      }),
+    })
+    expect(task.status).toBe('failed')
+    expect((await db.messages.get('f'))?.stale).toBeUndefined()
+    expect((await db.storyStates.get(archive.id))!.forums[0].answers).toHaveLength(50)
+  })
+})

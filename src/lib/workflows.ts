@@ -82,16 +82,21 @@ function validateAuxiliary<K extends AuxiliaryKind>(
     if (
       v.replacement.blocks.length !== old.length ||
       v.replacement.blocks.some((b) => !ids.has(b.id)) ||
-      v.changedBlockIds.some((id) => !ids.has(id))
+      v.changedBlockIds.some((id) => !ids.has(id)) ||
+      new Set(v.changedBlockIds).size !== v.changedBlockIds.length
     )
       invalid('改写须保留原段落 ID 与数量')
     const changed = old
-      .filter(
-        (b) =>
-          JSON.stringify(b) !==
-          JSON.stringify(v.replacement.blocks.find((next) => next.id === b.id)),
-      )
-      .map((b) => b.id)
+      .filter((block) => {
+        const next = v.replacement.blocks.find((next) => next.id === block.id)!
+        return (
+          block.text !== next.text ||
+          block.translation !== next.translation ||
+          block.kind !== next.kind ||
+          block.speakerRef !== next.speakerRef
+        )
+      })
+      .map((block) => block.id)
     if (
       changed.some((id) => !v.changedBlockIds.includes(id)) ||
       v.changedBlockIds.some((id) => !changed.includes(id))
