@@ -375,3 +375,48 @@ describe('独立交互与请求恢复边界', () => {
     )
   })
 })
+
+describe('创作和本地操作调度', () => {
+  it('联系人消息采用请求冻结的人设姓名，后续切换不改变历史发送者', async () => {
+    await db.personas.put({
+      id: 'p',
+      name: '林霁',
+      gender: '女',
+      identity: '研究者',
+      prefer: '',
+      force: '不代替用户决定',
+      createdAt: 0,
+    })
+    await db.settings.update('app', { activePersonaId: 'p' })
+    const task = await executeAuxiliary(archive.id, 'phoneReply', '确认安排', 'character-shendu', {
+      fetcher: fake('phoneReply'),
+    })
+    expect((await db.messages.get(`task:${task.id}`))?.userName).toBe('林霁')
+    expect((await db.storyStates.get(archive.id))!.phones[0].messages.at(-2)?.speaker).toBe('林霁')
+  })
+  it('操作不接受地点冒充人物；已删除篇章不能继续执行冻结操作', async () => {
+    const invalid = await executeAuxiliary(archive.id, 'command', '打开人物', null, {
+      fetcher: fake('command', () => ({
+        action: 'character',
+        targetId: 'location-manor',
+        mode: null,
+        query: null,
+        explanation: '打开人物',
+      })),
+    })
+    expect(invalid.status).toBe('failed')
+    await db.archives.put({ ...archive, id: 'other' })
+    const task = await executeAuxiliary(archive.id, 'command', '打开其他篇章', null, {
+      fetcher: fake('command', () => ({
+        action: 'archive',
+        targetId: 'other',
+        mode: null,
+        query: null,
+        explanation: '打开其他篇章',
+      })),
+    })
+    expect(task.status).toBe('complete')
+    await db.archives.delete('other')
+    await expect(applyTask(task.id)).rejects.toThrow(/目标不存在/)
+  })
+})

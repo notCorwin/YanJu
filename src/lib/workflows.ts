@@ -157,7 +157,8 @@ function validateAuxiliary<K extends AuxiliaryKind>(
       if (
         (v.action === 'music' && !tracks.some((t) => t.id === v.targetId)) ||
         (v.action === 'archive' && !archives.some((a) => a.id === v.targetId)) ||
-        (v.action === 'character' && !hasEntity(v.targetId)) ||
+        (v.action === 'character' &&
+          !story.entities.some((e) => e.id === v.targetId && e.kind === 'character')) ||
         (v.action === 'phone' && !story.phones.some((p) => p.id === v.targetId))
       )
         invalid('操作目标不存在')
@@ -369,10 +370,20 @@ export async function applyTask(id: string, editedOutput?: unknown) {
       const value = validateTask(task.kind, editedOutput ?? task.output)
       const all = await archiveMessages(archive.id)
       const story = rebuildStory(archive, all).story
+      const validationInput =
+        task.kind === 'command'
+          ? {
+              ...task.input,
+              context: {
+                ...task.input.context,
+                archives: (await db.archives.toArray()).map((a) => ({ id: a.id, name: a.name })),
+              },
+            }
+          : task.input
       validateAuxiliary(
         task.kind,
         value,
-        task.input,
+        validationInput,
         story,
         all.filter((m) => !m.stale && m.status === 'complete'),
       )
@@ -385,7 +396,7 @@ export async function applyTask(id: string, editedOutput?: unknown) {
         kind: 'material',
         status: 'complete',
         content: task.input.text,
-        userName: archive.userName,
+        userName: task.input.context.persona?.name ?? archive.userName,
         usage: task.usage,
       }
       const updated = revise(archive)
@@ -395,7 +406,7 @@ export async function applyTask(id: string, editedOutput?: unknown) {
         await db.messages.put({
           ...base,
           kind: 'interaction',
-          content: `${archive.userName ?? '你'}：${task.input.text}\n${speaker}：${v.text}`,
+          content: `${base.userName ?? '你'}：${task.input.text}\n${speaker}：${v.text}`,
           interaction: { kind: 'phone', ...v, speaker, userText: task.input.text },
         })
       } else if (task.kind === 'forumReply') {
@@ -403,7 +414,7 @@ export async function applyTask(id: string, editedOutput?: unknown) {
         await db.messages.put({
           ...base,
           kind: 'interaction',
-          content: `${archive.userName ?? '你'}：${task.input.text}\n${v.author}：${v.content}`,
+          content: `${base.userName ?? '你'}：${task.input.text}\n${v.author}：${v.content}`,
           interaction: { kind: 'forum', ...v, userText: task.input.text },
         })
       } else if (task.kind === 'contentImport') {

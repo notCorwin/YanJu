@@ -190,6 +190,7 @@ function ChatRunner({
         archiveId: archive.id,
         role: 'user',
         content: text,
+        userName: persona?.name ?? archive.userName ?? '沈辞玉',
         createdAt: Date.now(),
         sequence: (current.at(-1)?.sequence ?? -1) + 1,
         kind,
@@ -397,7 +398,11 @@ function ChatRunner({
                       <MessageContent>
                         <MessageHeader>
                           <span className="flex items-center gap-2">
-                            {message.role === 'user' ? persona?.name || '你' : '宴雎'}
+                            {message.role === 'user'
+                              ? (stored.find((m) => m.id === message.id)?.userName ??
+                                persona?.name ??
+                                '你')
+                              : '宴雎'}
                             {stored.find((m) => m.id === message.id)?.stale && (
                               <Badge variant="outline">已失效 · 历史记录</Badge>
                             )}
