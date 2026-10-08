@@ -1,5 +1,5 @@
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { createOpenAI } from '@ai-sdk/openai'
+import { createProviderModel } from './provider-model'
+import { loadModelCatalog } from './model-catalog'
 import { APICallError, wrapLanguageModel, type DeepPartial, type ModelMessage } from 'ai'
 import type { Reply, RequestKind, NarrativeReply, ForumReply } from './schemas'
 import type {
@@ -21,16 +21,18 @@ import { runStructuredTask } from './task-runner'
 
 export function channelValidationErrors(channel: Channel) {
   const errors: Partial<Record<keyof Channel, string>> = {}
-  if (!channel.name.trim()) errors.name = '请输入渠道名称。'
+  if (!channel.providerId || !channel.sdk) errors.providerId = '请选择 Models.dev 中的 Provider。'
   if (!channel.apiKey.trim()) errors.apiKey = '请输入渠道提供的 API Key。'
-  if (!channel.model.trim()) errors.model = '请输入渠道提供的模型 ID。'
+  if (!channel.model.trim()) errors.model = '请选择支持 Structured Outputs 的模型。'
   try {
-    const url = new URL(channel.baseUrl)
-    if (!['https:', 'http:'].includes(url.protocol)) throw new Error()
+    if (channel.baseUrl && !channel.baseUrl.includes('${')) {
+      const url = new URL(channel.baseUrl, 'http://localhost')
+      if (!['https:', 'http:'].includes(url.protocol)) throw new Error()
+    }
   } catch {
     errors.baseUrl = '请输入完整的 HTTP(S) 地址，例如 https://example.com/v1。'
   }
-  if (!['auto', 'chat-completions', 'responses'].includes(channel.apiMode))
+  if (!['auto', 'chat-completions', 'responses', 'native'].includes(channel.apiMode))
     errors.apiMode = '请选择自动探测、Chat Completions 或 Responses。'
   if (
     channel.temperature !== null &&
@@ -42,49 +44,38 @@ export function channelValidationErrors(channel: Channel) {
     (!Number.isInteger(channel.requestTimeoutMs) || channel.requestTimeoutMs < 0)
   )
     errors.requestTimeoutMs = '请求等待上限须为非负整数；0 表示不限。'
-  if (!Number.isInteger(channel.contextWindow) || channel.contextWindow < 1024)
-    errors.contextWindow = '上下文容量须为至少 1,024 的整数。'
-  if (
-    !Number.isInteger(channel.maxOutputTokens) ||
-    channel.maxOutputTokens < 128 ||
-    channel.maxOutputTokens >= channel.contextWindow
-  )
-    errors.maxOutputTokens = '输出上限须为至少 128 的整数，且小于上下文容量。'
+  if (!Number.isInteger(channel.contextWindow) || channel.contextWindow <= 0)
+    errors.contextWindow = 'Models.dev 尚未提供有效的上下文容量。'
   return errors
 }
 export function validateChannel(channel: Channel) {
   const error = Object.values(channelValidationErrors(channel))[0]
   if (error) throw new Error(error)
 }
-export function channelRequest(channel: Channel, fetcher?: typeof fetch, protocol?: ApiProtocol) {
+export async function channelRequest(
+  channel: Channel,
+  fetcher?: typeof fetch,
+  protocol?: ApiProtocol,
+) {
   validateChannel(channel)
   if (!protocol && channel.apiMode === 'auto' && !channelIsReady(channel))
     throw new Error('自动模式尚未选定可用协议，请先重新测试渠道。')
   const selected =
     protocol ?? (channel.apiMode === 'auto' ? channel.capability!.protocol! : channel.apiMode)
-  const settings = {
-    baseURL: channel.baseUrl.replace(/\/+$/, ''),
-    apiKey: channel.apiKey,
-    ...(fetcher ? { fetch: fetcher } : {}),
+  const model = await createProviderModel(
+    await loadModelCatalog(),
+    channel.providerId,
+    channel.model,
+    channel.apiKey,
+    fetcher,
+    selected,
+  )
+  return {
+    model: model.provider.endsWith('.responses')
+      ? wrapLanguageModel({ model, middleware: responsesLifecycle })
+      : model,
   }
-  if (selected === 'responses') {
-    return {
-      model: wrapLanguageModel({
-        model: createOpenAI(settings).responses(channel.model),
-        middleware: responsesLifecycle,
-      }),
-      providerOptions: { openai: { strictJsonSchema: true, store: false } },
-    }
-  }
-  const provider = createOpenAICompatible({
-    name: 'yanju',
-    ...settings,
-    supportsStructuredOutputs: true,
-    includeUsage: true,
-  })
-  return { model: provider.chatModel(channel.model), providerOptions: strictOptions }
 }
-export const strictOptions = { yanju: { strictJsonSchema: true } }
 
 export function friendlyError(error: unknown) {
   if (
@@ -127,13 +118,13 @@ export function friendlyError(error: unknown) {
   if (error instanceof DOMException && error.name === 'TimeoutError')
     return '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
   if (/fetch|network|cors/i.test(message))
-    return '无法从浏览器连接渠道。请检查 Base URL、网络和服务端 CORS（允许本站来源、Authorization 与 Content-Type 请求头）。'
+    return '无法从浏览器连接渠道。请检查网络和服务商的浏览器访问支持；服务商须通过 CORS 允许本站来源与认证请求头。'
   if (/temperature/i.test(message))
     return `渠道不接受当前温度配置，请选择「模型默认」后重新测试。${message}`
   if (/json_schema|response_format|text\.format|structured|strict/i.test(message))
     return `渠道未能完成严格结构化请求。请使用支持 json_schema / strict:true 的模型。${message}`
   if (/length|truncat|token limit/i.test(message))
-    return '回复达到输出上限而被截断，已保留收到的内容。请提高输出上限后重试。'
+    return '回复达到模型自身容量而被截断，已保留收到的内容。可选择容量更大的模型后重试。'
   if (APICallError.isInstance(error)) return `${message} 请重新测试渠道后重试。`
   return message
 }
@@ -239,7 +230,6 @@ export async function summarize(
     input,
     signal,
     instructions: compressionInstructions,
-    maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
     temperature: channel.temperature === null ? null : 0.3,
     streaming: false,
     fetcher,

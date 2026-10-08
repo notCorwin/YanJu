@@ -2,4 +2,7 @@ packages:
   - '.'
 
 # Use the stable releases recorded in the lockfile, including newly published ones.
+allowBuilds:
+  esbuild: true
+
 minimumReleaseAge: 0

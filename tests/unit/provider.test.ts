@@ -7,6 +7,7 @@ import {
   testChannel,
   testChannelProtocols,
   friendlyError,
+  channelRequest,
 } from '../../src/lib/provider'
 import {
   forumFixture,
@@ -37,6 +38,17 @@ function streaming(value: unknown, finishReason = 'stop'): Response {
   })
 }
 describe('OpenAI-compatible 严格协议', () => {
+  it('请求始终采用 Models.dev 的模型和 API，不接受存档中的自定义地址', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(streaming(narrativeFixture))
+    await generateReply({
+      ...request(fetcher),
+      channel: { ...channelFixture, baseUrl: 'https://custom.invalid/v1', sdk: 'custom-sdk' },
+    })
+    expect(String(fetcher.mock.calls[0][0])).toBe('https://mock.example/v1/chat/completions')
+    await expect(channelRequest({ ...channelFixture, model: 'custom-model' })).rejects.toThrow(
+      'Models.dev',
+    )
+  })
   it('完整能力测试实际运行流式叙事、50 条论坛回答和摘要协议', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init?.body))
@@ -161,7 +173,7 @@ describe('OpenAI-compatible 严格协议', () => {
     expect(result.usage?.input).toBe(12000)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.stream_options.include_usage).toBe(true)
-    expect(body.max_tokens).toBe(channelFixture.maxOutputTokens)
+    expect(body.max_tokens).toBeUndefined()
   })
   it('非空校验失败只追加一次同 schema 纠正', async () => {
     const broken = { ...narrativeFixture, diary: { ...narrativeFixture.diary, text: '' } }

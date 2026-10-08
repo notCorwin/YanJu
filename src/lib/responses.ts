@@ -10,7 +10,7 @@ export class ResponseLifecycleError extends Error {
     detail?: string,
   ) {
     const messages = {
-      truncated: 'truncated: token limit；回复达到输出上限，已保留收到的内容。',
+      truncated: 'truncated: token limit；回复达到模型自身容量，已保留收到的内容。',
       refusal: '模型拒绝了本次生成，已保留收到的内容。',
       failed: 'Responses 服务端生成失败，已保留收到的内容。请重试或重新测试渠道。',
       interrupted:

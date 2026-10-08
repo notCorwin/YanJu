@@ -67,8 +67,7 @@ export function RequestHistory({ archiveId }: { archiveId: string }) {
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
                   <p className="text-sm">
-                    估算输入 {record.estimatedInput.toLocaleString()} · 输出上限{' '}
-                    {record.request.maxOutputTokens.toLocaleString()} tokens
+                    估算输入 {record.estimatedInput.toLocaleString()} tokens
                   </p>
                   {record.usage && (
                     <p className="text-sm">

@@ -96,7 +96,7 @@ describe('自动探测与能力缓存', () => {
     expect(fetcher).toHaveBeenCalledTimes(2)
     for (const [, init] of fetcher.mock.calls) {
       const body = JSON.parse(String(init?.body))
-      expect(body.max_output_tokens ?? body.max_tokens).toBe(channelFixture.maxOutputTokens)
+      expect(body.max_output_tokens ?? body.max_tokens).toBeUndefined()
     }
   })
   it('取消停止探测，不返回部分成功结果或探测另一个协议', async () => {
@@ -141,7 +141,6 @@ describe('自动探测与能力缓存', () => {
     for (const change of [
       { apiMode: 'responses' as const },
       { temperature: null },
-      { maxOutputTokens: 2048 },
       { requestTimeoutMs: 1000 },
       { model: 'changed' },
       { apiKey: 'changed' },
@@ -221,7 +220,7 @@ describe('原生 Responses 结构化业务协议', () => {
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.text.format).toMatchObject({ type: 'json_schema', strict: true })
     expect(body.text.format.schema.additionalProperties).toBe(false)
-    expect(body.max_output_tokens).toBe(responsesChannel.maxOutputTokens)
+    expect(body.max_output_tokens).toBeUndefined()
     expect(body.store).toBe(false)
     expect(body).not.toHaveProperty('response_format')
     expect(body).not.toHaveProperty('stream_options')

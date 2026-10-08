@@ -15,9 +15,28 @@ pnpm dev
 
 访问终端显示的 `/YanJu/` 地址。应用是纯静态 SPA，不需要后端或构建时 API Key。
 
-首次使用时打开「渠道管理」，填写 OpenAI-compatible Base URL、Key 和模型，按实际模型容量设置上下文及输出上限，运行「测试渠道」，通过后点「使用此渠道」。可选择自动探测、Responses 或 Chat Completions；自动探测优先 Responses，并测试两种协议的非流式与流式严格输出，最多四个短请求。模型不接受温度参数时选择「模型默认」。
+首次使用时打开「渠道管理」，从下拉列表选择 Provider 和模型，填写 API Key，按需设置 Temperature，运行「测试渠道」，通过后点「使用此渠道」。服务商、模型、SDK、API 地址、输入与上下文容量及温度能力均来自 [Models.dev](https://models.dev/)。只列出该 Provider 明确标记 `structured_output: true` 的文本模型；支持模型级 SDK、API 和协议覆盖，不提供自定义 Provider、模型或地址。目录可刷新，浏览器缓存用于网络不可用时恢复最后一次成功加载的数据。
 
-请求由浏览器直接发送，渠道必须允许站点来源的 CORS 请求和 Authorization、Content-Type 请求头，并支持 Responses 的 `text.format` 或 Chat Completions 的 `response_format` 严格 JSON Schema。正式请求固定使用测试选定的协议；失败不降级到 JSON Mode。Responses 请求不依赖服务端保存或 `previous_response_id`，上下文仍由本地完整管理。
+请求全部由浏览器直接发送，GitHub Pages 只托管静态文件。以 Vercel AI SDK 的 `Output.object` 为统一执行入口，覆盖当前 Models.dev 的全部 SDK 类型，官方与社区 SDK 按需加载。Vertex 使用 Edge 入口；SAP orchestration v2、GitLab Duo direct access 和 QVAC external HTTP 使用同协议的浏览器适配，支持非流式与流式结构化生成。Cloudflare Gateway 使用其 SDK 的 Unified 路由，保留完整 Provider/model ID。没有符合条件模型的 SDK 暂不显示在目录中。
+
+OpenAI SDK 渠道可通过下拉列表选择自动探测、Responses 或 Chat Completions；自动探测优先 Responses。其他 SDK 使用服务商原生协议。测试检查非流式和流式的嵌套严格 schema；正式请求使用通过测试的协议，失败不降级到 JSON Mode。Responses 请求设置 `store: false`，上下文由本地完整管理。
+
+Provider 必须通过 CORS 允许本站来源以及其认证和内容请求头；浏览器也必须允许访问目标网络。纯前端无法绕过服务商拒绝的 CORS。SDK 覆盖和协议测试不代表任意账户、地区或网络下的服务必然可用；真实连接由用户凭据、服务商授权和应用内测试共同确认。
+
+仅需要单个 Key 的服务商直接粘贴 Key。需要云账户信息的服务商在同一 API Key 字段粘贴凭据 JSON，认证字段使用 Models.dev 的 `env` 名称，或以下服务商导出的凭据结构；不增加自定义地址设置：
+
+| Provider                 | API Key 凭据内容                                                                                                                                                                                                      |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Azure                    | `AZURE_API_KEY` 与 `AZURE_RESOURCE_NAME`；部署名称不等于模型 ID 时，在凭据内提供 `deployments` 的模型 ID 到部署 ID 映射                                                                                               |
+| Azure Cognitive Services | `AZURE_COGNITIVE_SERVICES_API_KEY` 与 `AZURE_COGNITIVE_SERVICES_RESOURCE_NAME`                                                                                                                                        |
+| Vertex                   | Gemini 支持 Express API Key；标准模式、Claude 和 MaaS 可粘贴完整 service-account JSON（`project_id`、`client_email`、`private_key`）；凭据可带 `GOOGLE_VERTEX_LOCATION`，默认 `global`，MaaS 地址从项目与区域自动展开 |
+| Bedrock（含 Mantle）     | Bedrock API Key，或 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选 `AWS_SESSION_TOKEN`；`AWS_REGION` 默认 `us-east-1`                                                                                             |
+| SAP AI Core              | 导出的 service-key JSON（`clientid`、`clientsecret`、`url`、`serviceurls.AI_API_URL`），自动查询运行中的 orchestration 部署；资源组默认 `default`                                                                     |
+| watsonx                  | `WATSONX_AI_APIKEY` 与 `WATSONX_AI_PROJECT_ID`                                                                                                                                                                        |
+| Cloudflare AI Gateway    | `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_GATEWAY_ID`；上游认证在 Gateway 配置                                                                                                                     |
+| 地址含资源占位符的服务商 | JSON 中包含 Models.dev 所列 Key 与地址中的资源字段，例如 `SNOWFLAKE_ACCOUNT`、`SNOWFLAKE_CORTEX_PAT`                                                                                                                  |
+
+QVAC 使用 SDK 的 external HTTP 默认地址 `http://127.0.0.1:11435/v1`，本机服务须在该端口运行并允许 Pages 来源访问。浏览器不能启动其 Node.js CLI 或读取本机凭据文件路径；服务账户请粘贴 JSON 内容。
 
 ## 技术与设计
 
@@ -50,9 +69,9 @@ pnpm dev
 
 ## 上下文与存档
 
-默认渠道容量为 65,536 tokens，输出上限为 8,192 tokens，可按模型实际容量修改。估算计入角色资料、人设、schema、摘要、冻结事实与状态和有效历史，以中英文混合的保守估算及服务商实际 usage 校正；界面分别显示当前估算和上次实际输入/输出。
+上下文和输入容量从 Models.dev 读取。应用不提供或保存输出上限，聊天、工作台任务、纠正和摘要请求均不设置可选输出限制。Anthropic API 必填 `max_tokens`，由 Models.dev 公布的模型完整输出容量填充，避免 SDK 的较小默认值；实际容量仍由服务商决定。估算计入角色资料、人设、schema、摘要、冻结事实与状态和有效历史，以中英文混合的保守估算及服务商实际 usage 校正；界面分别显示当前估算和上次实际输入/输出。
 
-发送前与完成后检查输入预算，达到 85% 或输出预留不足时自动压缩，以 70% 以下为目标。默认保留最近 4 轮完整对话及当前输入；必要时减少到至少最新完整一轮及当前输入。较大历史按预算分批生成同渠道严格摘要。覆盖边界与会话版本一并校验，全部成功后一次性更新。无法容纳固定设定和最新输入时，提示调整容量或输出预算，保留原记录。
+发送前与完成后检查输入预算，达到 85% 时自动压缩，以 70% 以下为目标。默认保留最近 4 轮完整对话及当前输入；必要时减少到至少最新完整一轮及当前输入。较大历史按输入预算分批生成同渠道严格摘要。覆盖边界与会话版本一并校验，全部成功后一次性更新。无法容纳固定设定和最新输入时，提示选择容量更大的模型或缩短输入，保留原记录。
 
 压缩不删除消息。编辑已覆盖消息和从覆盖位置重说会使摘要失效，从原文重建。压缩失败/取消保留原摘要与全部原文，并提供重试操作。已取消或失败的部分助手回复不作为完成的模型历史发送。
 
@@ -61,6 +80,8 @@ pnpm dev
 IndexedDB 作为工作数据库保存消息、存档、渠道、人设、外观和摘要；所有提交通过事务内变更日志自动同步到 OPFS；`yanju-v3/save.json` 保存索引，消息使用不可变文件增量保存，背景图片独立保存。写入通过 `createWritable()` / `close()` 原子替换，支持 Web Locks 的浏览器按同源锁串行同步。完整回复、失败恢复记录和停止生成都会等待最终同步；完成后的自动压缩在后台继续，不阻塞存档载入、导出及下一轮聊天。工作数据库为空时，启动优先校验并恢复 OPFS 存档，保留同浏览器渠道测试状态；不可解析的旧文件在写入新存档前保留到 `save-recovery.json`。
 
 应用会请求 `navigator.storage.persist()`，授权结果由浏览器决定；OPFS 文件可跨刷新和浏览器重启保存，但未获持久存储授权时仍可能被浏览器清理。存档面板显示同步和授权状态。OPFS 不受支持或同步失败时，保留 IndexedDB 读写、载入、导出和聊天功能，并在面板提供说明及失败重试。清除站点数据会同时移除 OPFS 和 IndexedDB；需要跨浏览器恢复时请先导出文件。
+
+「存档管理 → Checkpoint」将独立完整快照保存到 `yanju-v3/checkpoints/<UUID>.json`，包含剧情、任务、请求、人设、渠道凭据、草稿与外观。支持创建、导出、导入、恢复和删除。导入先校验，再使用新 ID 存入 OPFS，保留当前工作进度；恢复确认后原子替换工作资料、同步自动存档并重新载入草稿，渠道须重新测试。删除只移除选中的 Checkpoint。Checkpoint 不回退到其他存储；不支持 OPFS 的浏览器仍可使用原有 JSON 存档导入导出。
 
 新版只使用 `yanju-v3` 数据库与版本 3 存档，不读取旧库或 localStorage，不导入 v1/v2 应用存档，原资料保留在原位置。v3 包含消息、冻结请求、剧情事件、状态投影、任务结果、渠道 Key、外观及摘要边界。导入替换前校验完整数据并显示确认操作。
 

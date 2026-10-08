@@ -1,6 +1,7 @@
 import type { ApiProtocol, Channel, ChannelCapability } from './types'
 
 export const protocolLabels: Record<ApiProtocol, string> = {
+  native: 'Provider SDK',
   responses: 'Responses',
   'chat-completions': 'Chat Completions',
 }
@@ -18,7 +19,9 @@ export function channelFingerprint(channel: Channel) {
     channel.model,
     channel.apiMode,
     channel.temperature,
-    channel.maxOutputTokens,
+    channel.providerId,
+    channel.sdk,
+    channel.inputLimit,
     channel.contextWindow,
     channel.requestTimeoutMs ?? 300000,
   ])

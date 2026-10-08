@@ -320,7 +320,7 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
         ),
         channel.calibration?.ratio,
       )
-    if (estimate() + channel.maxOutputTokens > channel.contextWindow && history.length > 2) {
+    if (estimate() > (channel.inputLimit ?? channel.contextWindow) && history.length > 2) {
       const summary = await compactContext({
         archive,
         channel,

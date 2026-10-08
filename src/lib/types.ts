@@ -4,7 +4,7 @@ import type { TurnEffects } from './domain-schema'
 import type { StoryState, StoryEvent } from './story'
 import type { AuxiliaryKind, TaskInput, TaskKind } from './tasks'
 
-export type ApiProtocol = 'chat-completions' | 'responses'
+export type ApiProtocol = 'chat-completions' | 'responses' | 'native'
 export type ApiMode = 'auto' | ApiProtocol
 export interface ProtocolCapability {
   nonStreaming: 'passed' | 'failed' | 'untested'
@@ -25,13 +25,16 @@ export interface ChannelCapability {
 export interface Channel {
   id: string
   name: string
+  providerId: string
+  sdk: string
   baseUrl: string
   apiKey: string
   model: string
   apiMode: ApiMode
   temperature: number | null
-  maxOutputTokens: number
   contextWindow: number
+  inputLimit?: number
+  temperatureSupported?: boolean
   requestTimeoutMs?: number
   createdAt: number
   capability?: ChannelCapability
@@ -174,7 +177,6 @@ export interface RequestRecord {
     instructions: string
     messages: ModelMessage[]
     schema: unknown
-    maxOutputTokens: number
     temperature: number | null
     streaming: boolean
   }
@@ -237,13 +239,14 @@ export const defaults: Settings = {
 export const newChannel = (): Channel => ({
   id: crypto.randomUUID(),
   name: '新渠道',
-  baseUrl: 'https://api.openai.com/v1',
+  providerId: '',
+  sdk: '',
+  baseUrl: '',
   apiKey: '',
   model: '',
   apiMode: 'auto',
-  temperature: 0.9,
-  maxOutputTokens: 8192,
-  contextWindow: 65536,
+  temperature: null,
+  contextWindow: 0,
   requestTimeoutMs: 300000,
   createdAt: Date.now(),
 })

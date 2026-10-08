@@ -46,13 +46,16 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     return {
       id: z.string().min(1).parse(c.id),
       name: z.string().parse(c.name),
+      providerId: z.string().parse(c.providerId),
+      sdk: z.string().parse(c.sdk),
       baseUrl: z.string().parse(c.baseUrl),
       apiKey: z.string().parse(c.apiKey),
       model: z.string().parse(c.model),
-      apiMode: z.enum(['auto', 'chat-completions', 'responses']).parse(c.apiMode),
+      apiMode: z.enum(['auto', 'chat-completions', 'responses', 'native']).parse(c.apiMode),
       temperature: z.number().min(0).max(2).nullable().parse(c.temperature),
-      maxOutputTokens: z.number().int().min(128).parse(c.maxOutputTokens),
-      contextWindow: z.number().int().min(1024).parse(c.contextWindow),
+      contextWindow: z.number().int().nonnegative().parse(c.contextWindow),
+      inputLimit: z.number().int().positive().optional().parse(c.inputLimit),
+      temperatureSupported: z.boolean().optional().parse(c.temperatureSupported),
       createdAt: z.number().int().min(0).max(8_640_000_000_000_000).parse(c.createdAt),
       requestTimeoutMs:
         c.requestTimeoutMs === undefined
@@ -62,8 +65,6 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       capability: restore ? parseSave(capabilitySchema.optional(), c.capability) : undefined,
     }
   })
-  if (channels.some((c) => c.maxOutputTokens >= c.contextWindow))
-    throw new Error('输出上限须小于上下文容量。')
   const masks: Persona[] = list(raw.masks).map((value) => {
     const p = record(value)
     return {
@@ -179,7 +180,6 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     z.array(
       z.object({ role: z.enum(['system', 'user', 'assistant', 'tool']), content: z.unknown() }),
     ).parse(request.messages)
-    z.number().int().positive().parse(request.maxOutputTokens)
     z.number().min(0).max(2).nullable().parse(request.temperature)
     z.boolean().parse(request.streaming)
     z.object({
@@ -187,7 +187,7 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       name: z.string(),
       baseUrl: z.string(),
       model: z.string(),
-      protocol: z.enum(['responses', 'chat-completions']),
+      protocol: z.enum(['responses', 'chat-completions', 'native']),
     }).parse(r.channel)
     return {
       ...r,

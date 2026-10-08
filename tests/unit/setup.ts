@@ -1,6 +1,15 @@
 import 'fake-indexeddb/auto'
-import { afterEach } from 'vitest'
+import { afterEach, vi } from 'vitest'
 import { db } from '../../src/lib/storage'
+import { catalogFixture } from '../model-catalog-fixture'
+
+vi.mock('../../src/lib/model-catalog', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/model-catalog')>()
+  return {
+    ...actual,
+    loadModelCatalog: vi.fn(async () => actual.parseModelCatalog(catalogFixture())),
+  }
+})
 
 afterEach(async () => {
   await Promise.all([
