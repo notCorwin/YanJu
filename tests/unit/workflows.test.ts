@@ -8,7 +8,7 @@ import {
   editMessage,
   exportSave,
 } from '../../src/lib/db'
-import { applyTask, executeAuxiliary, storyMarkdown } from '../../src/lib/workflows'
+import { applyTask, executeAuxiliary, saveMediaDraft, storyMarkdown } from '../../src/lib/workflows'
 import { taskSchemas, validateTask, type AuxiliaryKind, type TaskInput } from '../../src/lib/tasks'
 import { channelFingerprint } from '../../src/lib/provider'
 import { defaults, type StoredMessage } from '../../src/lib/types'
@@ -422,6 +422,25 @@ describe('创作和本地操作调度', () => {
 })
 
 describe('整份改写与问题位置校验', () => {
+  it('媒体编辑重新校验描述和引用；原叙事失效后不会覆盖已有草稿', async () => {
+    const task = await executeAuxiliary(archive.id, 'media', '当前场景', 'n', {
+      fetcher: fake('media'),
+    })
+    const value = validateTask('media', task.output)
+    const edited = { ...value, background: '编辑后的书房背景' }
+    await saveMediaDraft(task.id, edited)
+    expect((await db.tasks.get(task.id))?.output).toEqual(edited)
+    await expect(saveMediaDraft(task.id, { ...value, background: '' })).rejects.toThrow()
+    await expect(
+      saveMediaDraft(task.id, {
+        ...value,
+        voice: [{ blockId: 'missing', speaker: '宴雎', direction: '低声' }],
+      }),
+    ).rejects.toThrow(/未知段落/)
+    await editMessage('u', '改变原剧情')
+    await expect(saveMediaDraft(task.id, value)).rejects.toThrow(/已失效/)
+    expect((await db.tasks.get(task.id))?.output).toEqual(edited)
+  })
   it('JSON 属性顺序不影响改写判断，重复修改引用会被拒绝', async () => {
     const target = (await db.messages.get('n'))!
     if (target.reply?.kind !== 'narrative') throw new Error('fixture')

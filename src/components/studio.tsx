@@ -2,8 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { archiveMessages, db } from '@/lib/db'
 import type { Archive, TaskRun } from '@/lib/types'
-import { applyTask, currentStory, executeAuxiliary, storyMarkdown } from '@/lib/workflows'
-import { taskDefinitions, validateTask, type AuxiliaryKind, type TaskOutput } from '@/lib/tasks'
+import {
+  applyTask,
+  currentStory,
+  executeAuxiliary,
+  saveMediaDraft,
+  storyMarkdown,
+} from '@/lib/workflows'
+import { taskDefinitions, type AuxiliaryKind, type TaskOutput } from '@/lib/tasks'
 import { displayCountdown } from '@/lib/story'
 import type { SourceRef } from '@/lib/domain-schema'
 import { friendlyError } from '@/lib/provider'
@@ -206,13 +212,17 @@ export function Studio({
     }
   }
   const saveMedia = async (task: TaskRun, value: TaskOutput<'media'>) => {
+    if (lock.current) return
+    lock.current = true
+    setApplying(true)
     try {
-      const parsed = validateTask('media', value)
-      await db.tasks.update(task.id, { output: parsed })
-      await db.persistence.flush()
+      await saveMediaDraft(task.id, value)
       notify('媒体描述已保存。')
     } catch (error) {
       notify(friendlyError(error), true)
+    } finally {
+      lock.current = false
+      setApplying(false)
     }
   }
   const jumpToSource = (source: SourceRef) => {

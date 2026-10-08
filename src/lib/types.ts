@@ -205,8 +205,8 @@ export const newChannel = (): Channel => ({
   apiKey: '',
   model: '',
   temperature: 0.9,
-  maxOutputTokens: 4096,
-  contextWindow: 32768,
+  maxOutputTokens: 8192,
+  contextWindow: 65536,
   createdAt: Date.now(),
 })
 export const newPersona = (): Persona => ({

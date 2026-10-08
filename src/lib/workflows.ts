@@ -144,6 +144,7 @@ function validateAuxiliary<K extends AuxiliaryKind>(
     const v = value as TaskOutput<'media'>
     if (v.trackId !== null && !tracks.some((t) => t.id === v.trackId)) invalid('配乐曲目不存在')
     const target = history.find((m) => m.id === input.targetId)
+    if (target?.reply?.kind !== 'narrative') invalid('媒体描述对应的叙事已失效，请重新生成。')
     if (
       v.voice.some(
         (item) =>
@@ -475,6 +476,23 @@ export async function applyTask(id: string, editedOutput?: unknown) {
   await db.persistence.flush()
 }
 
+export async function saveMediaDraft(id: string, editedOutput: unknown) {
+  await db.transaction('rw', [db.archives, db.messages, db.tasks], async () => {
+    const task = await db.tasks.get(id)
+    if (!task || task.kind !== 'media' || task.status !== 'complete')
+      throw new Error('媒体任务尚未完成，不能保存。')
+    const archive = await db.archives.get(task.archiveId)
+    if (!archive) throw new Error('篇章已删除。')
+    const value = validateTask('media', editedOutput)
+    const history = (await archiveMessages(archive.id)).filter(
+      (m) => m.status === 'complete' && !m.stale,
+    )
+    validateAuxiliary('media', value, task.input, initialStory(archive.id), history)
+    await db.tasks.update(id, { output: value })
+  })
+  await db.persistence.flush()
+}
+
 export interface SearchHit {
   id: string
   category: string
@@ -489,6 +507,28 @@ export function searchStory(
   history: StoredMessage[],
   query: TaskOutput<'search'>,
 ): SearchHit[] {
+  const validHistory = history
+    .filter((m) => m.status === 'complete' && !m.stale)
+    .sort((a, b) => a.sequence - b.sequence)
+  const dates = new Map<string, string | null>()
+  let currentDate: string | null = null
+  for (const message of validHistory) {
+    const effects =
+      message.reply?.kind === 'narrative' ? message.reply.value.effects : message.effects
+    currentDate = effects?.clock.dateTime?.slice(0, 10) ?? currentDate
+    dates.set(message.id, currentDate)
+  }
+  const references = (message: StoredMessage) => {
+    const refs =
+      message.reply?.kind === 'narrative'
+        ? [...message.reply.value.scene.characterRefs, message.reply.value.scene.locationRef]
+        : message.interaction?.kind === 'phone'
+          ? [message.interaction.contactRef]
+          : []
+    return refs
+      .filter((ref): ref is string => ref !== null)
+      .map((ref) => (ref.startsWith('new:') ? `${message.id}:entity:${ref.slice(4)}` : ref))
+  }
   const rows: SearchHit[] = [
     ...story.events.map((e) => ({
       id: e.id,
@@ -506,7 +546,7 @@ export function searchStory(
         category: 'memory',
         title: m.kind === 'preference' ? '偏好' : '事实',
         text: m.content,
-        date: null,
+        date: dates.get(m.source.messageId) ?? null,
         entities: m.entityRefs,
         source: m.source,
       })),
@@ -528,20 +568,15 @@ export function searchStory(
       entities: [],
       source: d.source,
     })),
-    ...history
-      .filter((m) => m.status === 'complete' && !m.stale)
-      .map((m) => ({
-        id: m.id,
-        category: 'message',
-        title: m.role === 'user' ? '你的消息' : '宴雎的回复',
-        text: messageText(m),
-        date:
-          m.reply?.kind === 'narrative'
-            ? (m.reply.value.effects.clock.dateTime?.slice(0, 10) ?? null)
-            : null,
-        entities: m.reply?.kind === 'narrative' ? m.reply.value.scene.characterRefs : [],
-        source: { messageId: m.id, blockId: null },
-      })),
+    ...validHistory.map((m) => ({
+      id: m.id,
+      category: 'message',
+      title: m.role === 'user' ? '你的消息' : '宴雎的回复',
+      text: messageText(m),
+      date: dates.get(m.id) ?? null,
+      entities: references(m),
+      source: { messageId: m.id, blockId: null },
+    })),
   ]
   return rows.filter(
     (r) =>

@@ -761,6 +761,9 @@ test('资料 JSON 提取预览、媒体编辑导出、章节 Markdown 与自然�
   expect(JSON.parse(Buffer.concat(bytes).toString()).background).toBe(
     '书房背景，柔和的雨声与窗光。',
   )
+  await studio.getByRole('textbox', { name: '背景描述' }).fill('')
+  await expect(studio.getByRole('button', { name: '导出媒体描述 JSON' })).toBeDisabled()
+  await studio.getByRole('textbox', { name: '背景描述' }).fill('书房背景，柔和的雨声与窗光。')
   await creationTask(page, '章节整理', '整理全部有效剧情')
   const mdDownload = page.waitForEvent('download')
   await studio.getByRole('button', { name: '导出整理后的剧情 Markdown' }).click()
@@ -768,6 +771,22 @@ test('资料 JSON 提取预览、媒体编辑导出、章节 Markdown 与自然�
   const mdBytes = []
   for await (const chunk of markdown!) mdBytes.push(chunk)
   expect(Buffer.concat(mdBytes).toString()).toContain('侬要看哪一本呀。')
+  await studio.getByRole('button', { name: /请求记录（/ }).click()
+  const requestDownload = page.waitForEvent('download')
+  await studio.getByRole('button', { name: '导出请求记录 JSON' }).click()
+  const requestStream = await (await requestDownload).createReadStream()
+  const requestBytes = []
+  for await (const chunk of requestStream!) requestBytes.push(chunk)
+  const requests = JSON.parse(Buffer.concat(requestBytes).toString())
+  expect(requests.map((r: { kind: string }) => r.kind)).toEqual(
+    expect.arrayContaining(['capability', 'narrative', 'contentImport', 'media', 'chapters']),
+  )
+  expect(
+    requests.every(
+      (r: { request: { schema: { additionalProperties: boolean } } }) =>
+        r.request.schema.additionalProperties === false,
+    ),
+  ).toBe(true)
   await creationTask(page, '自然语言操作', '切换到论坛模式')
   await studio.getByRole('button', { name: '执行操作' }).first().click()
   await expect(page.getByRole('combobox', { name: '聊天模式' })).toContainText('论坛')

@@ -1,7 +1,7 @@
 import { downloadText } from '@/lib/download'
 import { useState } from 'react'
 import type { TaskRun, Archive, StoredMessage } from '@/lib/types'
-import { taskDefinitions, type TaskOutput } from '@/lib/tasks'
+import { taskDefinitions, validateTask, type TaskOutput } from '@/lib/tasks'
 import type { StoryState } from '@/lib/story'
 import { entityName } from '@/lib/story'
 import type { SourceRef } from '@/lib/domain-schema'
@@ -342,6 +342,13 @@ export function TaskResult({
     )
   } else if (task.kind === 'media') {
     const v = value as TaskOutput<'media'>
+    let validated: TaskOutput<'media'> | undefined
+    let mediaError = ''
+    try {
+      validated = validateTask('media', v)
+    } catch {
+      mediaError = '请补全背景和语音描述后保存或导出。'
+    }
     result = (
       <>
         <p className="text-sm text-muted-foreground">{v.reason}</p>
@@ -388,7 +395,7 @@ export function TaskResult({
           ))}
         </FieldGroup>
         <div className="flex flex-wrap gap-2">
-          <Button disabled={busy} onClick={() => onSaveMedia(task, v)}>
+          <Button disabled={busy || !validated} onClick={() => onSaveMedia(task, v)}>
             保存媒体描述
           </Button>
           {v.trackId && (
@@ -398,10 +405,11 @@ export function TaskResult({
           )}
           <Button
             variant="outline"
+            disabled={busy || !validated}
             onClick={() =>
               downloadText(
                 `${archive.name}-media.json`,
-                JSON.stringify(v, null, 2),
+                JSON.stringify(validated, null, 2),
                 'application/json',
               )
             }
@@ -409,6 +417,11 @@ export function TaskResult({
             导出媒体描述 JSON
           </Button>
         </div>
+        {mediaError && (
+          <p role="alert" className="text-sm text-destructive">
+            {mediaError}
+          </p>
+        )}
       </>
     )
   } else if (task.kind === 'command') {

@@ -213,4 +213,26 @@ describe('可追踪剧情投影', () => {
       searchStory(state, [first], { ...query, fromDate: '2020-01-01', toDate: null }),
     ).toHaveLength(0)
   })
+  it('时间条件覆盖事实来源和延续日期，场景临时地点可按稳定 ID 检索', () => {
+    const next = structuredClone(first)
+    next.id = 'next'
+    next.sequence = 2
+    if (next.reply?.kind !== 'narrative') throw new Error('fixture')
+    next.reply.value.effects = emptyEffects()
+    next.reply.value.scene.locationRef = 'first:entity:study'
+    const history = [first, next]
+    const state = rebuildStory(archive, history).story
+    const query = {
+      entityRefs: ['first:entity:study'],
+      terms: [],
+      fromDate: '2019-06-01',
+      toDate: '2019-06-01',
+      category: 'message' as const,
+    }
+    expect(searchStory(state, history, query).map((hit) => hit.id)).toEqual(['first', 'next'])
+    const memories = searchStory(state, history, { ...query, category: 'memory', entityRefs: [] })
+    expect(memories).toHaveLength(1)
+    expect(memories[0].source).toEqual({ messageId: 'first', blockId: 'b1' })
+    expect(searchStory(state, history, { ...query, fromDate: '2019-06-02' })).toEqual([])
+  })
 })
