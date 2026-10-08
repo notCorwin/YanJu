@@ -47,8 +47,9 @@ beforeEach(async () => {
     capability: {
       fingerprint: channelFingerprint(channelFixture),
       ok: true,
-      streaming: true,
       testedAt: 1,
+      protocol: 'chat-completions',
+      checks: { 'chat-completions': { nonStreaming: 'passed', streaming: 'passed' } },
     },
   })
   await db.archives.put({

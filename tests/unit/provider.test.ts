@@ -12,6 +12,7 @@ import {
   forumFixture,
   compressionFixture,
   channelFixture,
+  capabilityFixture,
   completion,
   sse,
 } from '../fixtures'
@@ -55,7 +56,7 @@ describe('OpenAI-compatible 严格协议', () => {
       vi.fn(),
       fetcher,
     )
-    expect(result).toMatchObject({ ok: true, streaming: true, protocols: true })
+    expect(result).toMatchObject({ ok: true, protocol: 'chat-completions', protocols: true })
     expect(
       fetcher.mock.calls.map(
         (call) => JSON.parse(String(call[1]?.body)).response_format.json_schema.name,
@@ -75,7 +76,10 @@ describe('OpenAI-compatible 严格协议', () => {
         Response.json(completion({ ready: true, echo: 'YanJu strict output' })),
       )
       .mockResolvedValueOnce(streaming({ ready: true }))
-    await expect(testChannel(channelFixture, undefined, fetcher)).rejects.toThrow()
+    expect(await testChannel(channelFixture, undefined, fetcher)).toMatchObject({
+      ok: false,
+      checks: { 'chat-completions': { nonStreaming: 'passed', streaming: 'failed' } },
+    })
   })
   it('首包等待超时结束挂起流，保留诊断且不会重复请求', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(
@@ -132,10 +136,11 @@ describe('OpenAI-compatible 严格协议', () => {
   it('能力测试发送 json_schema / strict true，不使用 json_object', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        Response.json(completion({ ready: true, echo: 'YanJu strict output' })),
+      .mockImplementation(async (_url, init) =>
+        JSON.parse(String(init?.body)).stream
+          ? streaming(capabilityFixture)
+          : Response.json(completion(capabilityFixture)),
       )
-      .mockResolvedValueOnce(streaming({ ready: true, echo: 'YanJu strict output' }))
     const capability = await testChannel(channelFixture, undefined, fetcher)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.response_format.type).toBe('json_schema')
@@ -143,11 +148,11 @@ describe('OpenAI-compatible 严格协议', () => {
     expect(body.response_format.json_schema.schema.additionalProperties).toBe(false)
     expect(channelIsReady({ ...channelFixture, capability })).toBe(true)
     expect(
-      channelIsReady({ ...channelFixture, capability: { ...capability, streaming: undefined } }),
+      channelIsReady({ ...channelFixture, capability: { ...capability, checks: undefined } }),
     ).toBe(false)
     expect(channelIsReady({ ...channelFixture, model: 'changed', capability })).toBe(false)
     expect(channelFingerprint(channelFixture)).not.toContain(channelFixture.apiKey)
-    expect(capability.streaming).toBe(true)
+    expect(capability.checks?.['chat-completions']?.streaming).toBe('passed')
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body)).stream).toBe(true)
   })
   it('部分对象持续更新，并在完整校验后返回 usage', async () => {

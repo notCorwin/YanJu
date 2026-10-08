@@ -1,8 +1,11 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { createOpenAI } from '@ai-sdk/openai'
 import {
   generateText,
+  APICallError,
   Output,
   streamText,
+  wrapLanguageModel,
   type DeepPartial,
   type ModelMessage,
   type LanguageModelUsage,
@@ -22,31 +25,32 @@ import {
   type NarrativeReply,
   type ForumReply,
 } from './schemas'
-import type { Channel, RequestDiagnostics, Usage } from './types'
+import type {
+  ApiProtocol,
+  Channel,
+  ChannelCapability,
+  ProtocolCapability,
+  RequestDiagnostics,
+  Usage,
+} from './types'
+import { channelFingerprint, channelIsReady, protocolLabels } from './channels'
+import { responsesLifecycle, ResponseLifecycleError } from './responses'
+export { channelFingerprint, channelIsReady } from './channels'
 import { buildInstructions, compressionInstructions } from './prompts'
-import { ChannelRequestError, requestTimeout, requestTrace } from './request-trace'
 import type { CompressionInput } from './context'
 
-export function channelFingerprint(channel: Channel) {
-  // Bound capability results to exactly this endpoint/key/model, without storing another plaintext key.
-  let hash = 2166136261
-  for (const char of `${channel.baseUrl}\0${channel.apiKey}\0${channel.model}`)
-    hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
-  return `${channel.baseUrl}|${channel.model}|${(hash >>> 0).toString(16)}`
-}
-export function channelIsReady(channel: Channel) {
-  return (
-    !!channel.capability?.ok &&
-    channel.capability.streaming === true &&
-    channel.capability.fingerprint === channelFingerprint(channel)
-  )
-}
+import { ChannelRequestError, requestTimeout, requestTrace } from './request-trace'
 export function validateChannel(channel: Channel) {
   if (!channel.name.trim() || !channel.model.trim() || !channel.apiKey.trim())
     throw new Error('请填写渠道名称、模型和 API Key。')
   const url = new URL(channel.baseUrl)
   if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Base URL 必须是 HTTP(S) 地址。')
-  if (!Number.isFinite(channel.temperature) || channel.temperature < 0 || channel.temperature > 2)
+  if (!['auto', 'chat-completions', 'responses'].includes(channel.apiMode))
+    throw new Error('请选择自动探测、Chat Completions 或 Responses。')
+  if (
+    channel.temperature !== null &&
+    (!Number.isFinite(channel.temperature) || channel.temperature < 0 || channel.temperature > 2)
+  )
     throw new Error('温度应在 0–2 之间。')
   if (
     channel.requestTimeoutMs !== undefined &&
@@ -62,17 +66,33 @@ export function validateChannel(channel: Channel) {
   )
     throw new Error('输出上限须至少 128 tokens 且小于上下文容量。')
 }
-export function channelModel(channel: Channel, fetcher?: typeof fetch) {
+export function channelRequest(channel: Channel, fetcher?: typeof fetch, protocol?: ApiProtocol) {
   validateChannel(channel)
-  const provider = createOpenAICompatible({
-    name: 'yanju',
+  if (!protocol && channel.apiMode === 'auto' && !channelIsReady(channel))
+    throw new Error('自动模式尚未选定可用协议，请先重新测试渠道。')
+  const selected =
+    protocol ?? (channel.apiMode === 'auto' ? channel.capability!.protocol! : channel.apiMode)
+  const settings = {
     baseURL: channel.baseUrl.replace(/\/+$/, ''),
     apiKey: channel.apiKey,
+    ...(fetcher ? { fetch: fetcher } : {}),
+  }
+  if (selected === 'responses') {
+    return {
+      model: wrapLanguageModel({
+        model: createOpenAI(settings).responses(channel.model),
+        middleware: responsesLifecycle,
+      }),
+      providerOptions: { openai: { strictJsonSchema: true, store: false } },
+    }
+  }
+  const provider = createOpenAICompatible({
+    name: 'yanju',
+    ...settings,
     supportsStructuredOutputs: true,
     includeUsage: true,
-    ...(fetcher ? { fetch: fetcher } : {}),
   })
-  return provider.chatModel(channel.model)
+  return { model: provider.chatModel(channel.model), providerOptions: strictOptions }
 }
 export const strictOptions = { yanju: { strictJsonSchema: true } }
 
@@ -107,72 +127,139 @@ export function friendlyError(error: unknown) {
   if (status === 401 || status === 403) return '渠道拒绝授权，请检查 API Key 和模型访问权限。'
   if (status === 429) return '渠道请求受限，请检查用量额度或稍后重试。'
   const message = error instanceof Error ? error.message : String(error)
+  if (error instanceof ResponseLifecycleError) return message
+  if (error instanceof DOMException && error.name === 'TimeoutError')
+    return '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
   if (/fetch|network|cors/i.test(message))
     return '无法从浏览器连接渠道。请检查 Base URL、网络和服务端 CORS（允许本站来源、Authorization 与 Content-Type 请求头）。'
-  if (/json_schema|response_format|structured|strict|unsupported/i.test(message))
+  if (/temperature/i.test(message))
+    return `渠道不接受当前温度配置，请选择「模型默认」后重新测试。${message}`
+  if (/json_schema|response_format|text\.format|structured|strict/i.test(message))
     return `渠道未能完成严格结构化请求。请使用支持 json_schema / strict:true 的模型。${message}`
   if (/length|truncat|token limit/i.test(message))
     return '回复达到输出上限而被截断，已保留收到的内容。请提高输出上限后重试。'
+  if (APICallError.isInstance(error)) return `${message} 请重新测试渠道后重试。`
   return message
 }
 
-export async function testChannel(channel: Channel, signal?: AbortSignal, fetcher?: typeof fetch) {
-  const trace = requestTrace(channel, 'ChannelCapability', fetcher)
-  const schema = z.strictObject({ ready: z.boolean(), echo: z.string() })
-  const prompt =
-    'Return ready=true and echo="YanJu strict output". This tests JSON Schema Structured Outputs.'
-  const validate = (value: z.infer<typeof schema>) => {
-    if (!value.ready || value.echo !== 'YanJu strict output')
-      throw new Error('渠道结构化测试返回内容不符合测试要求。')
-  }
+async function timedProbe<T>(operation: (signal: AbortSignal) => Promise<T>, parent?: AbortSignal) {
+  const controller = new AbortController()
+  const cancel = () => controller.abort(new DOMException('已取消', 'AbortError'))
+  parent?.addEventListener('abort', cancel, { once: true })
+  if (parent?.aborted) cancel()
+  const timer = setTimeout(
+    () => controller.abort(new DOMException('测试超时', 'TimeoutError')),
+    45000,
+  )
+  let onAbort: () => void = () => {}
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(controller.signal.reason)
+    controller.signal.addEventListener('abort', onAbort, { once: true })
+    if (controller.signal.aborted) onAbort()
+  })
   try {
-    const result = await generateText({
-      model: channelModel(channel, trace.fetch),
-      output: Output.object({ schema, name: 'ChannelCapability' }),
-      prompt,
-      maxOutputTokens: channel.maxOutputTokens,
-      temperature: channel.temperature,
-      maxRetries: 0,
-      abortSignal: signal,
-      timeout: requestTimeout(channel, false),
-      providerOptions: strictOptions,
-    })
-    validate(result.output)
-    const stream = streamText({
-      model: channelModel(channel, trace.fetch),
-      output: Output.object({ schema, name: 'ChannelCapability' }),
-      prompt,
-      maxOutputTokens: channel.maxOutputTokens,
-      temperature: channel.temperature,
-      maxRetries: 0,
-      abortSignal: signal,
-      timeout: requestTimeout(channel, true),
-      providerOptions: strictOptions,
-      onChunk: ({ chunk }) => {
-        if (chunk.type === 'text-delta') trace.chunk()
-      },
-    })
-    const outcome = Promise.resolve(stream.output).then(
-      (value) => ({ value }),
-      (error) => ({ error }),
-    )
-    for await (const partial of stream.partialOutputStream) {
-      void partial
+    return await Promise.race([operation(controller.signal), aborted])
+  } finally {
+    clearTimeout(timer)
+    parent?.removeEventListener('abort', cancel)
+    controller.signal.removeEventListener('abort', onAbort)
+  }
+}
+
+export async function testChannel(
+  channel: Channel,
+  signal?: AbortSignal,
+  fetcher?: typeof fetch,
+  onProgress?: (detail: string) => void,
+): Promise<ChannelCapability> {
+  validateChannel(channel)
+  const trace = requestTrace(channel, 'ChannelCapability', fetcher)
+  const protocols: ApiProtocol[] =
+    channel.apiMode === 'auto' ? ['responses', 'chat-completions'] : [channel.apiMode]
+  const checks: ChannelCapability['checks'] = {}
+  let selected: ApiProtocol | undefined
+  for (const protocol of protocols) {
+    if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+    const check: ProtocolCapability = { nonStreaming: 'untested', streaming: 'untested' }
+    checks[protocol] = check
+    for (const streaming of [false, true]) {
+      const stage = streaming ? 'streaming' : 'nonStreaming'
+      onProgress?.(
+        `正在测试 ${protocolLabels[protocol]} · ${streaming ? '流式' : '非流式'}严格输出…`,
+      )
+      try {
+        const output = await timedProbe(async (abortSignal) => {
+          const request = {
+            ...channelRequest(channel, trace.fetch, protocol),
+            output: Output.object({
+              schema: z.strictObject({ ready: z.boolean(), echo: z.string() }),
+              name: 'ChannelCapability',
+            }),
+            prompt:
+              'Return ready=true and echo="YanJu strict output". This tests JSON Schema Structured Outputs.',
+            maxOutputTokens: channel.maxOutputTokens,
+            ...(channel.temperature === null
+              ? {}
+              : { temperature: streaming ? channel.temperature : 0.3 }),
+            maxRetries: 0,
+            abortSignal,
+            timeout: requestTimeout(channel, streaming),
+          }
+          if (!streaming) {
+            const result = await generateText(request)
+            if (result.finishReason === 'length') throw new Error('truncated: token limit')
+            return result.output
+          }
+          let streamError: unknown
+          const result = streamText({
+            ...request,
+            onChunk: ({ chunk }) => {
+              if (chunk.type === 'text-delta') trace.chunk()
+            },
+            onError: ({ error }) => {
+              streamError = error
+            },
+          })
+          const outcome = result.output.then(
+            (value) => ({ value }),
+            (error) => ({ error }),
+          )
+          // Drain without updating the conversation; these are independent capability probes.
+          for await (const partial of result.partialOutputStream) void partial
+          if (streamError) throw streamError
+          if ((await result.finishReason) === 'length') throw new Error('truncated: token limit')
+          const resolved = await outcome
+          if ('error' in resolved) throw resolved.error
+          return resolved.value
+        }, signal)
+        if (!output.ready || output.echo !== 'YanJu strict output')
+          throw new Error('渠道结构化测试返回内容不符合测试要求。')
+        check[stage] = 'passed'
+      } catch (error) {
+        if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+        check[stage] = 'failed'
+        check.error =
+          error instanceof DOMException && error.name === 'TimeoutError'
+            ? '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
+            : friendlyError(error)
+        break
+      }
     }
-    const resolved = await outcome
-    if ('error' in resolved) throw resolved.error
-    if ((await stream.finishReason) === 'length') throw new Error('渠道流式测试输出被截断。')
-    validate(resolved.value)
-    return {
-      fingerprint: channelFingerprint(channel),
-      testedAt: Date.now(),
-      ok: true,
-      streaming: true,
-      firstTokenMs: trace.data.firstTokenMs,
-      elapsedMs: trace.finish().elapsedMs,
-    }
-  } catch (error) {
-    throw new ChannelRequestError(error, trace.finish('error'))
+    if (!selected && check.nonStreaming === 'passed' && check.streaming === 'passed')
+      selected = protocol
+  }
+  if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+  return {
+    fingerprint: channelFingerprint(channel),
+    testedAt: Date.now(),
+    ok: selected !== undefined,
+    protocol: selected,
+    checks,
+    firstTokenMs: trace.data.firstTokenMs,
+    elapsedMs: trace.finish().elapsedMs,
+    error: selected
+      ? undefined
+      : protocols.map((p) => `${protocolLabels[p]}：${checks[p]?.error}`).join('；'),
   }
 }
 
@@ -187,13 +274,12 @@ export async function summarize(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const result = await generateText({
-        model: channelModel(channel, trace.fetch),
+        ...channelRequest(channel, trace.fetch),
         instructions: compressionInstructions,
         prompt: JSON.stringify(input) + correction,
         output: Output.object({ schema: compressionSchema, name: 'CompressionResult' }),
         maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
-        temperature: 0.3,
-        providerOptions: strictOptions,
+        ...(channel.temperature === null ? {} : { temperature: 0.3 }),
         abortSignal: signal,
         maxRetries: 0,
         timeout: requestTimeout(channel, false),
@@ -259,7 +345,7 @@ export async function generateReply(options: GenerateOptions): Promise<Generatio
     for (let attempt = 0; attempt < 2; attempt++) {
       let streamError: unknown
       const stream = streamText({
-        model: channelModel(channel, trace.fetch),
+        ...channelRequest(channel, trace.fetch),
         instructions,
         // The system message in modelMessages is our own committed history summary.
         allowSystemInMessages: true,
@@ -272,14 +358,13 @@ export async function generateReply(options: GenerateOptions): Promise<Generatio
             ? Output.object({ schema: narrativeSchema, name: 'NarrativeReply' })
             : Output.object({ schema: forumSchema, name: 'ForumReply' }),
         maxOutputTokens: channel.maxOutputTokens,
-        temperature: channel.temperature,
+        ...(channel.temperature === null ? {} : { temperature: channel.temperature }),
         abortSignal: signal,
         maxRetries: 0,
         timeout: requestTimeout(channel, true),
         onChunk: ({ chunk }) => {
           if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') trace.chunk()
         },
-        providerOptions: strictOptions,
         onError: ({ error }) => {
           streamError = error
         },
@@ -339,7 +424,9 @@ export async function testChannelProtocols(
   fetcher?: typeof fetch,
 ) {
   onProgress('正在检查连接、严格结构化与流式传输…')
-  const capability = await testChannel(channel, signal, fetcher)
+  const capability = await testChannel(channel, signal, fetcher, onProgress)
+  if (!capability.ok) return { ...capability, protocols: false }
+  const tested = { ...channel, capability }
   for (const kind of ['narrative', 'forum'] as const) {
     onProgress(
       kind === 'narrative'
@@ -347,7 +434,7 @@ export async function testChannelProtocols(
         : '正在验证论坛与完整 50 条回答…',
     )
     await generateReply({
-      channel,
+      channel: tested,
       kind,
       instructions: buildInstructions(undefined, kind),
       messages: [
@@ -362,7 +449,7 @@ export async function testChannelProtocols(
   }
   onProgress('正在验证上下文摘要协议…')
   await summarize(
-    channel,
+    tested,
     {
       messages: [{ role: 'user', content: '两人在书房约定明天整理阅读笔记。' }],
       targetTokens: 256,

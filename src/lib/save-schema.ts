@@ -15,12 +15,24 @@ export const usageSchema = z.object({
   channelId: id,
 })
 export const calibrationSchema = z.object({ ratio: z.number().min(0.5).max(4), samples: count })
+const protocolSchema = z.enum(['responses', 'chat-completions'])
+const protocolCapabilitySchema = z.object({
+  nonStreaming: z.enum(['passed', 'failed', 'untested']),
+  streaming: z.enum(['passed', 'failed', 'untested']),
+  error: z.string().optional(),
+})
 export const capabilitySchema = z.object({
   fingerprint: z.string(),
   testedAt: timestamp,
   ok: z.boolean(),
   error: z.string().optional(),
-  streaming: z.boolean().optional(),
+  protocol: protocolSchema.optional(),
+  checks: z
+    .object({
+      responses: protocolCapabilitySchema.optional(),
+      'chat-completions': protocolCapabilitySchema.optional(),
+    })
+    .optional(),
   protocols: z.boolean().optional(),
   firstTokenMs: z.number().nonnegative().optional(),
   elapsedMs: z.number().nonnegative().optional(),
@@ -130,7 +142,8 @@ export const saveFileSchema: z.ZodType<SaveFile> = z.object({
         baseUrl: z.string(),
         apiKey: z.string(),
         model: z.string(),
-        temperature: z.number().min(0).max(2),
+        apiMode: z.enum(['auto', 'responses', 'chat-completions'], { error: 'API 模式无效' }),
+        temperature: z.number().min(0).max(2).nullable(),
         maxOutputTokens: z.number().int().min(128),
         contextWindow: z.number().int().min(1024),
         requestTimeoutMs: z.number().int().nonnegative().optional(),

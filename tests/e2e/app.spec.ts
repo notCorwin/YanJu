@@ -2,11 +2,14 @@ import { expect, type Page } from '@playwright/test'
 import { test } from './fixtures'
 import { readFile } from 'node:fs/promises'
 import {
+  capabilityFixture,
   channelFixture,
   completion,
   compressionFixture,
   forumFixture,
   narrativeFixture,
+  response,
+  responseSse,
   sse,
 } from '../fixtures'
 import type { SaveFile } from '../../src/lib/types'
@@ -66,6 +69,17 @@ type Body = {
   stream?: boolean
   response_format: { type: string; json_schema: { name: string; strict: boolean } }
   messages: { role: string; content: string }[]
+}
+const businessRequests = (requests: Body[]) =>
+  requests.filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability')
+type ResponseBody = {
+  model: string
+  stream?: boolean
+  input: { role: string; content: string | { type: string; text: string }[] }[]
+  text: { format: { type: string; name: string; strict: boolean } }
+  store: boolean
+  temperature?: number
+  max_output_tokens: number
 }
 async function prepare(
   page: Page,
@@ -136,6 +150,7 @@ async function prepare(
           baseUrl: 'https://mock.example/v1',
           apiKey: 'test-key-not-real',
           model: 'test-model',
+          apiMode: 'chat-completions',
           maxTokens: 4096,
           temperature: 0.9,
           contextWindow: seed.contextWindow ?? 131072,
@@ -147,6 +162,7 @@ async function prepare(
           baseUrl: 'https://mock.example/v1',
           apiKey: 'test-key-not-real',
           model: 'second-model',
+          apiMode: 'chat-completions',
           maxTokens: 4096,
           temperature: 0.9,
           contextWindow: 131072,
@@ -185,16 +201,66 @@ async function prepare(
   await expect(page.getByRole('button', { name: '进入聊天' })).toBeVisible()
   return requests
 }
-async function enableChannel(page: Page, name = '测试渠道') {
+async function enableChannel(
+  page: Page,
+  name = '测试渠道',
+  options?: { mode?: 'auto' | 'responses' | 'chat-completions'; defaultTemperature?: boolean },
+) {
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
   await page
     .getByRole('navigation', { name: '渠道列表' })
     .getByRole('button', { name, exact: true })
     .click()
+  if (options?.mode) {
+    await page.getByRole('combobox', { name: 'API 协议' }).click()
+    const label = {
+      auto: '自动探测（Responses 优先）',
+      responses: 'Responses',
+      'chat-completions': 'Chat Completions',
+    }[options.mode]
+    await page.getByRole('option', { name: label, exact: true }).click()
+  }
+  if (options?.defaultTemperature) {
+    await page.getByRole('combobox', { name: '温度设置' }).click()
+    await page.getByRole('option', { name: '模型默认', exact: true }).click()
+  }
   await page.locator('fieldset').getByRole('button', { name: '测试渠道', exact: true }).click()
   await expect(page.getByText(/测试通过 ·/)).toBeVisible()
   await page.getByRole('button', { name: '使用此渠道' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+}
+async function prepareResponses(
+  page: Page,
+  respond?: (body: ResponseBody) => { value: unknown; terminal?: string; reason?: string },
+) {
+  const chatRequests = await prepare(page)
+  const requests: ResponseBody[] = []
+  await page.route(`${channelFixture.baseUrl}/responses`, async (route) => {
+    const body = route.request().postDataJSON() as ResponseBody
+    requests.push(body)
+    const name = body.text.format.name
+    const fallback =
+      name === 'ChannelCapability'
+        ? capabilityFixture
+        : name === 'CompressionResult'
+          ? compressionFixture
+          : name === 'ForumReply'
+            ? forumFixture
+            : narrativeFixture
+    const result = respond?.(body) ?? { value: fallback }
+    await route.fulfill({
+      headers: {
+        'access-control-allow-origin': '*',
+        'access-control-expose-headers': 'x-request-id',
+        'x-request-id': 'mock-request',
+        'content-type': body.stream ? 'text/event-stream' : 'application/json',
+      },
+      body: body.stream
+        ? responseSse(result.value, result.terminal, result.reason).join('')
+        : JSON.stringify(response(result.value)),
+    })
+  })
+  return { requests, chatRequests }
 }
 async function enter(page: Page) {
   await page.getByRole('button', { name: '进入聊天' }).click()
@@ -234,14 +300,7 @@ test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) 
   await page.getByRole('button', { name: '回复', exact: true }).first().click()
   await page.getByRole('textbox', { name: '内容', exact: true }).fill('谢谢推荐。')
   await page.getByRole('dialog').getByRole('button', { name: '发送', exact: true }).click()
-  await expect
-    .poll(
-      () =>
-        requests.filter(
-          (r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability',
-        ).length,
-    )
-    .toBe(3)
+  await expect.poll(() => businessRequests(requests).length).toBe(3)
   await expectArchiveAvailable(page)
   expect((await readOpfs(page))?.messages.filter((m) => m.reply).length).toBe(3)
   expect(
@@ -249,9 +308,7 @@ test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) 
       (r) => r.response_format.type === 'json_schema' && r.response_format.json_schema.strict,
     ),
   ).toBe(true)
-  const history = requests
-    .filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability')
-    .at(-1)!.messages
+  const history = businessRequests(requests).at(-1)!.messages
   expect(history.some((m) => m.role === 'assistant' && m.content.includes('innerVoice'))).toBe(true)
   expect(history.some((m) => m.role === 'assistant' && m.content.includes('answer-49'))).toBe(true)
 })
@@ -276,9 +333,7 @@ for (const mode of ['手动', '自动'] as const) {
     expect(requests.some((r) => r.response_format.json_schema.name === 'CompressionResult')).toBe(
       true,
     )
-    const before = requests
-      .filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability')
-      .at(-1)!
+    const before = businessRequests(requests).at(-1)!
     expect(before.messages[1].role).toBe('system')
     expect(before.messages[1].content).toContain(JSON.stringify(compressionFixture))
     await expect(page.getByText(/^旧历史0：/)).toHaveCount(1)
@@ -288,9 +343,7 @@ for (const mode of ['手动', '自动'] as const) {
     await page.getByRole('button', { name: '发送消息', exact: true }).click()
     await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
     await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
-    const after = requests
-      .filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability')
-      .at(-1)!
+    const after = businessRequests(requests).at(-1)!
     expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages)
     expect(after.response_format).toEqual(before.response_format)
     await expect(page.getByText(/^旧历史0：/)).toHaveCount(1)
@@ -317,21 +370,15 @@ test('纠正成功后刷新续聊，纠正请求仍保留在上下文前缀', as
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
   await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
   await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
-  expect(
-    requests.filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability'),
-  ).toHaveLength(2)
-  const corrected = requests
-    .filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability')
-    .at(-1)!
+  expect(businessRequests(requests)).toHaveLength(2)
+  const corrected = businessRequests(requests).at(-1)!
   expect(corrected.messages.at(-1)?.content).toContain('校验失败')
 
   await page.reload()
   await page.getByRole('textbox', { name: '聊天输入' }).fill('接着读。')
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
   await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
-  const next = requests
-    .filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability')
-    .at(-1)!
+  const next = businessRequests(requests).at(-1)!
   expect(next.messages.slice(0, corrected.messages.length)).toEqual(corrected.messages)
   expect(next.response_format).toEqual(corrected.response_format)
 })
@@ -343,21 +390,11 @@ test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page })
   await enter(page)
   await page.getByRole('textbox', { name: '聊天输入' }).fill('第二个模型。')
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
-  await expect
-    .poll(
-      () =>
-        requests.filter(
-          (r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability',
-        ).length,
-    )
-    .toBe(1)
-  expect(
-    requests.find((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability')
-      ?.model,
-  ).toBe('second-model')
+  await expect.poll(() => businessRequests(requests).length).toBe(1)
+  expect(businessRequests(requests)[0]?.model).toBe('second-model')
   await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
   await page.getByRole('button', { name: '存档管理' }).click()
-  await page.getByRole('button', { name: '载入', exact: true }).click()
+  await page.getByRole('button', { name: '载入', exact: true }).first().click()
   await expect(page).toHaveURL(/#\/chat\/archive-2$/)
   await expect(page.getByText('第二篇章的开场。')).toBeVisible()
   await page.reload()
@@ -395,25 +432,14 @@ test('中文输入法、换行、移动端宽度和触控尺寸', async ({ page 
     isComposing: true,
     keyCode: 229,
   })
-  expect(
-    requests.filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability'),
-  ).toHaveLength(0)
+  expect(businessRequests(requests)).toHaveLength(0)
   await expect(input).toHaveValue('正在输入中文')
   await input.dispatchEvent('compositionend')
   await input.press('Shift+Enter')
   await expect(input).toHaveValue('正在输入中文\n')
-  expect(
-    requests.filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability'),
-  ).toHaveLength(0)
+  expect(businessRequests(requests)).toHaveLength(0)
   await input.press('Enter')
-  await expect
-    .poll(
-      () =>
-        requests.filter(
-          (r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability',
-        ).length,
-    )
-    .toBe(1)
+  await expect.poll(() => businessRequests(requests).length).toBe(1)
   await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   const sizes = await page
@@ -458,9 +484,7 @@ test('截断保留收到的内容，并可重试', async ({ page }) => {
     status: 'failed',
     partial: { kind: 'narrative', value: { blocks: [{ text: '可恢复的部分正文' }] } },
   })
-  expect(
-    requests.filter((r) => r.stream && r.response_format.json_schema.name !== 'ChannelCapability'),
-  ).toHaveLength(1)
+  expect(businessRequests(requests)).toHaveLength(1)
   await page.getByRole('button', { name: '重试回复', exact: true }).click()
   await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
   await expect(page.getByRole('button', { name: '重试回复', exact: true })).toHaveCount(0)
@@ -599,7 +623,7 @@ test('OPFS 写入失败后存档仍可载入和导出，并可重试同步', asy
   await page.getByRole('button', { name: '重试存档同步' }).click()
   await expect(page.getByText(/已同步 OPFS 存档/)).toBeVisible()
   expect(lastSavedMessage(await readOpfs(page))?.reply?.value).toEqual(narrativeFixture)
-  await page.getByRole('button', { name: '载入', exact: true }).click()
+  await page.getByRole('button', { name: '载入', exact: true }).first().click()
   await expect(page.getByText('第二篇章的开场。')).toBeVisible()
 })
 
@@ -618,6 +642,268 @@ test('没有部分内容的模型错误结束后仍可管理和导出存档', as
   expect(lastSavedMessage(await readOpfs(page))?.status).toBe('failed')
 })
 
+test('自动优先 Responses，叙事、论坛、摘要续聊及 v2 存档往返', async ({ page }) => {
+  const { requests, chatRequests } = await prepareResponses(page)
+  await enableChannel(page, '测试渠道', { mode: 'auto', defaultTemperature: true })
+  expect(requests).toHaveLength(2)
+  expect(chatRequests).toHaveLength(2)
+  await enter(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('一起读书吧。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.getByRole('button', { name: '压缩上下文', exact: true }).click()
+  await expect(page.getByText('上下文压缩完成，原文保留。')).toBeVisible()
+  expect(requests.filter((r) => r.text.format.name === 'CompressionResult')).toHaveLength(1)
+  await page.getByRole('combobox', { name: '聊天模式' }).click()
+  await page.getByRole('option', { name: '论坛', exact: true }).click()
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('今天该读什么书？')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByText(/50\/50 回答/)).toBeVisible()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.reload()
+  await expect(page.getByText(/50\/50 回答/)).toBeVisible()
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('接着刚才的话题。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect
+    .poll(
+      () => requests.filter((r) => r.stream && r.text.format.name !== 'ChannelCapability').length,
+    )
+    .toBe(3)
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  const history = JSON.stringify(requests.at(-1)!.input)
+  expect(history).toContain('innerVoice')
+  expect(history).toContain('answer-49')
+  expect(history).toContain(compressionFixture.summary)
+  expect(
+    requests.every(
+      (r) =>
+        r.text.format.type === 'json_schema' &&
+        r.text.format.strict &&
+        r.store === false &&
+        !('temperature' in r),
+    ),
+  ).toBe(true)
+  expect(chatRequests).toHaveLength(2)
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'API 协议' })).toContainText('自动探测')
+  await expect(page.getByRole('combobox', { name: '温度设置' })).toContainText('模型默认')
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('button', { name: '存档管理' }).click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出全部' }).click()
+  const path = await (await downloadPromise).path()
+  const exported = JSON.parse(await readFile(path!, 'utf8'))
+  expect(exported.version).toBe(2)
+  expect(exported.channels.find((c: { id: string }) => c.id === 'channel-1')).toMatchObject({
+    apiMode: 'auto',
+    temperature: null,
+  })
+  await page.getByLabel('导入存档文件').setInputFiles(path!)
+  await page
+    .getByRole('dialog', { name: '导入并替换当前资料？' })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'API 协议' })).toContainText('自动探测')
+  await expect(page.getByRole('combobox', { name: '温度设置' })).toContainText('模型默认')
+})
+
+test('手动协议、取消重测保留结果，配置修改使缓存失效', async ({ page }) => {
+  const { requests, chatRequests } = await prepareResponses(page)
+  await enableChannel(page, '测试渠道', { mode: 'responses' })
+  expect(requests).toHaveLength(2)
+  expect(chatRequests).toHaveLength(0)
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  let pending = false
+  let release = () => {}
+  await page.route(`${channelFixture.baseUrl}/responses`, async (route) => {
+    pending = true
+    await new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await route.fulfill({ json: response(capabilityFixture) }).catch(() => {})
+  })
+  await page.locator('fieldset').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await expect.poll(() => pending).toBe(true)
+  await expect(page.getByRole('status').filter({ hasText: /正在测试 Responses/ })).toBeVisible()
+  await page.getByRole('button', { name: '取消测试', exact: true }).click()
+  await expect(page.getByText('渠道测试已取消，原测试结果已保留。')).toBeVisible()
+  release()
+  await expect(page.getByRole('button', { name: '使用此渠道' })).toBeEnabled()
+  await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
+  await page.getByRole('combobox', { name: 'API 协议' }).click()
+  await page.getByRole('option', { name: 'Chat Completions', exact: true }).click()
+  await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
+  await expect(page.getByText(/当前协议：Responses/)).toHaveCount(0)
+  await page.locator('fieldset').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await expect(page.getByText(/当前协议：Chat Completions/)).toBeVisible()
+  await page.getByRole('button', { name: '使用此渠道' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await enter(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('切换协议后继续。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect.poll(() => businessRequests(chatRequests).length).toBe(1)
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.reload()
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await expect(page.getByText(/当前协议：Chat Completions/)).toBeVisible()
+  await page.getByRole('textbox', { name: '模型', exact: true }).fill('new-model')
+  await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
+})
+
+for (const action of ['修改', '删除']) {
+  test(`测试全部期间其他标签页${action}渠道，不覆盖配置或复活记录`, async ({ page, context }) => {
+    await prepare(page)
+    await enableChannel(page)
+    const other = await context.newPage()
+    await other.goto('./')
+    await other.getByRole('button', { name: '渠道管理', exact: true }).click()
+    await other
+      .getByRole('navigation', { name: '渠道列表' })
+      .getByRole('button', { name: '测试渠道', exact: true })
+      .click()
+    await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+    let pending = false
+    let held = false
+    let release = () => {}
+    await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+      if (!held) {
+        held = true
+        pending = true
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+      }
+      await route.fallback()
+    })
+    await page.getByRole('button', { name: '测试全部', exact: true }).click()
+    await expect.poll(() => pending).toBe(true)
+    if (action === '修改') {
+      await other
+        .getByRole('textbox', { name: '模型', exact: true })
+        .fill('new-model-from-other-tab')
+      await other.getByRole('button', { name: '保存渠道', exact: true }).click()
+      await expect(other.getByText('渠道已保存；通过测试后可用于聊天。')).toBeVisible()
+    } else {
+      await other.getByRole('button', { name: '删除渠道', exact: true }).click()
+      await other
+        .getByRole('dialog', { name: '删除渠道？' })
+        .getByRole('button', { name: '确认', exact: true })
+        .click()
+      await expect(
+        other
+          .getByRole('navigation', { name: '渠道列表' })
+          .getByRole('button', { name: '测试渠道', exact: true }),
+      ).toHaveCount(0)
+    }
+    release()
+    await expect(
+      page.getByText('渠道测试已结束；1 个渠道配置已变更或删除，旧测试结果未保存。请重新测试。'),
+    ).toBeVisible()
+    await other.reload()
+    await other.getByRole('button', { name: '渠道管理', exact: true }).click()
+    if (action === '修改') {
+      await other
+        .getByRole('navigation', { name: '渠道列表' })
+        .getByRole('button', { name: '测试渠道', exact: true })
+        .click()
+      await expect(other.getByRole('textbox', { name: '模型', exact: true })).toHaveValue(
+        'new-model-from-other-tab',
+      )
+      await expect(other.getByRole('button', { name: '使用此渠道', exact: true })).toBeDisabled()
+    } else {
+      await expect(
+        other
+          .getByRole('navigation', { name: '渠道列表' })
+          .getByRole('button', { name: '测试渠道', exact: true }),
+      ).toHaveCount(0)
+    }
+  })
+}
+
+for (const terminal of ['incomplete', 'missing']) {
+  test(`Responses ${terminal} 保留部分对象并支持刷新重试`, async ({ page }) => {
+    let generations = 0
+    const { requests } = await prepareResponses(page, (body) => {
+      if (body.text.format.name === 'ChannelCapability') return { value: capabilityFixture }
+      generations++
+      return generations === 1
+        ? {
+            value: {
+              ...narrativeFixture,
+              blocks: [{ kind: 'narration', text: 'Responses 部分正文', translation: '' }],
+            },
+            terminal,
+            reason: terminal === 'incomplete' ? 'max_output_tokens' : undefined,
+          }
+        : { value: narrativeFixture }
+    })
+    await enableChannel(page, '测试渠道', { mode: 'responses' })
+    await enter(page)
+    await page.getByRole('textbox', { name: '聊天输入' }).fill('继续阅读。')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByText('Responses 部分正文')).toBeVisible()
+    await expect(page.getByRole('button', { name: '重试回复', exact: true })).toBeVisible()
+    await expect(
+      page.getByText(terminal === 'incomplete' ? /回复达到输出上限/ : /未返回完整终止事件/).first(),
+    ).toBeVisible()
+    expect(generations).toBe(1)
+    await page.reload()
+    await expect(page.getByText('Responses 部分正文')).toBeVisible()
+    await page.getByRole('button', { name: '重试回复', exact: true }).click()
+    await expect(page.getByRole('button', { name: '重试回复', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+    expect(requests.filter((r) => r.text.format.name === 'NarrativeReply')).toHaveLength(2)
+  })
+}
+
+test('Responses 停止保存部分内容，刷新后继续使用选定协议', async ({ page }) => {
+  const { requests } = await prepareResponses(page)
+  await enableChannel(page, '测试渠道', { mode: 'responses' })
+  await enter(page)
+  const chunks = responseSse(
+    {
+      scene: narrativeFixture.scene,
+      blocks: [{ kind: 'narration', text: 'Responses 停止前的内容', translation: '' }],
+    },
+    'missing',
+  ).slice(0, -1)
+  await page.evaluate((frames) => {
+    const original = window.fetch.bind(window)
+    window.fetch = async (url, init) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null
+      if (!body?.stream) return original(url, init)
+      const encoder = new TextEncoder()
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            for (const frame of frames) controller.enqueue(encoder.encode(frame))
+            init?.signal?.addEventListener('abort', () =>
+              controller.error(new DOMException('Cancelled', 'AbortError')),
+            )
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+    }
+  }, chunks)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('慢一点。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByText('Responses 停止前的内容')).toBeVisible()
+  await page.getByRole('button', { name: '停止生成' }).click()
+  await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByText('Responses 停止前的内容')).toBeVisible()
+  await page.getByRole('button', { name: '重试回复', exact: true }).click()
+  await expect(page.getByRole('button', { name: '重试回复', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+  expect(requests.filter((r) => r.text.format.name === 'NarrativeReply')).toHaveLength(1)
+})
+
 test('完整协议能力测试覆盖真实流式结构，不写入聊天存档', async ({ page }) => {
   const requests = await prepare(page)
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
@@ -631,6 +917,29 @@ test('完整协议能力测试覆盖真实流式结构，不写入聊天存档',
     'CompressionResult',
   ])
   expect(requests.filter((body) => body.stream)).toHaveLength(3)
+  await page.getByRole('button', { name: '使用此渠道' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await enter(page)
+  await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(1)
+})
+
+test('自动选定 Responses 后完整协议测试仍覆盖叙事论坛摘要并保留诊断', async ({ page }) => {
+  const { requests, chatRequests } = await prepareResponses(page)
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await page.getByRole('combobox', { name: 'API 协议' }).click()
+  await page.getByRole('option', { name: '自动探测（Responses 优先）', exact: true }).click()
+  await page.getByRole('button', { name: '完整协议测试', exact: true }).click()
+  await expect(page.getByText(/测试通过 · 完整协议/)).toBeVisible()
+  await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
+  expect(requests.map((body) => body.text.format.name)).toEqual([
+    'ChannelCapability',
+    'ChannelCapability',
+    'NarrativeReply',
+    'ForumReply',
+    'CompressionResult',
+  ])
+  expect(chatRequests).toHaveLength(2)
+  expect(requests.every((body) => body.text.format.strict && body.store === false)).toBe(true)
   await page.getByRole('button', { name: '使用此渠道' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
   await enter(page)

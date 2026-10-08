@@ -7,6 +7,7 @@ import {
   importSave,
   initializeStorage,
   normalizeImport,
+  commitChannelCapability,
 } from '@/lib/db'
 import { downloadJson, saveFileName } from '@/lib/download'
 import { withArchiveOperation } from '@/lib/operations'
@@ -17,11 +18,15 @@ import {
   testChannelProtocols,
   validateChannel,
 } from '@/lib/provider'
+import { channelFingerprint, protocolLabels } from '@/lib/channels'
 import {
   newChannel,
   newPersona,
+  type ApiMode,
+  type ApiProtocol,
   type Archive,
   type Channel,
+  type ChannelCapability,
   type Persona,
   type Settings,
 } from '@/lib/types'
@@ -31,7 +36,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from './ui/sheet'
 import { FieldGroup, Field, FieldLabel, FieldDescription } from './ui/field'
 import { Input } from './ui/input'
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select'
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+} from './ui/select'
 import { Badge } from './ui/badge'
 import { ConfirmDialog, FormField, IconButton } from './shared'
 import {
@@ -63,16 +75,16 @@ function ChannelEditor({
 }) {
   const [draft, setDraft] = useState(channel)
   const [busy, setBusy] = useState(false)
-  const [testDetail, setTestDetail] = useState('')
+  const [progress, setProgress] = useState('')
   const [remove, setRemove] = useState(false)
   const controller = useRef<AbortController | null>(null)
   useEffect(() => () => controller.current?.abort(), [])
-  const update = (key: keyof Channel, value: string | number) =>
+  const update = (key: keyof Channel, value: string | number | null) =>
     setDraft((d) => ({
       ...d,
       [key]: value,
-      capability: undefined,
-      calibration: key === 'model' || key === 'baseUrl' ? undefined : d.calibration,
+      capability: key === 'name' ? d.capability : undefined,
+      calibration: key === 'name' ? d.calibration : undefined,
     }))
   const save = async () => {
     try {
@@ -86,35 +98,49 @@ function ChannelEditor({
   const test = async (full = false) => {
     controller.current = new AbortController()
     setBusy(true)
-    setTestDetail(full ? '正在检查完整协议…' : '正在检查连接与流式传输…')
+    setProgress(full ? '正在检查完整协议…' : '正在检查连接与流式传输…')
     try {
       validateChannel(draft)
       await db.channels.put(draft)
       const capability = full
-        ? await testChannelProtocols(draft, controller.current.signal, setTestDetail)
-        : await testChannel(draft, controller.current.signal)
-      const next = { ...draft, capability }
-      setDraft(next)
-      await db.channels.put(next)
-      notify(
-        full
-          ? '完整叙事、论坛和压缩协议测试通过。'
-          : '严格 JSON Schema、浏览器连接和流式测试通过。',
-      )
-    } catch (e) {
-      const error = friendlyError(e)
-      notify(error, true)
-      const next = {
-        ...draft,
-        capability:
-          full && draft.capability?.ok
-            ? { ...draft.capability, protocols: false, error }
-            : { fingerprint: '', testedAt: Date.now(), ok: false, error },
+        ? await testChannelProtocols(draft, controller.current.signal, setProgress)
+        : await testChannel(draft, controller.current.signal, undefined, setProgress)
+      const next = await commitChannelCapability(draft, capability)
+      if (!next) {
+        const current = await db.channels.get(draft.id)
+        if (current) setDraft(current)
+        notify('渠道配置已在其他窗口变更或删除，旧测试结果未保存。请重新测试。', true)
+        return
       }
       setDraft(next)
-      await db.channels.put(next)
+      notify(
+        capability.ok
+          ? full
+            ? '完整叙事、论坛和压缩协议测试通过。'
+            : `渠道测试通过，使用 ${protocolLabels[capability.protocol!]}。`
+          : (capability.error ?? '渠道测试未通过。'),
+        !capability.ok,
+      )
+    } catch (e) {
+      if (controller.current.signal.aborted) {
+        notify(
+          channelIsReady(draft)
+            ? '渠道测试已取消，原测试结果已保留。'
+            : '渠道测试已取消，须完成测试后使用此配置。',
+        )
+        return
+      }
+      const error = friendlyError(e)
+      const capability: ChannelCapability =
+        full && channelIsReady(draft)
+          ? { ...draft.capability!, protocols: false, error }
+          : { fingerprint: channelFingerprint(draft), testedAt: Date.now(), ok: false, error }
+      const next = await commitChannelCapability(draft, capability)
+      if (next) setDraft(next)
+      notify(error, true)
     } finally {
       setBusy(false)
+      setProgress('')
     }
   }
   return (
@@ -143,7 +169,7 @@ function ChannelEditor({
               onChange={(v) => update('baseUrl', v)}
               placeholder="https://example.com/v1"
               type="url"
-              help="填写 API 根地址，不含 /chat/completions。"
+              help="填写 API 根地址（通常以 /v1 结尾），不含 /responses 或 /chat/completions。"
               autoComplete="url"
             />
             <FormField
@@ -160,16 +186,62 @@ function ChannelEditor({
               placeholder="填写渠道提供的模型 ID"
               autoComplete="off"
             />
+            <Field>
+              <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 协议</FieldLabel>
+              <Select
+                value={draft.apiMode}
+                disabled={busy || disabled}
+                onValueChange={(value) => update('apiMode', value as ApiMode)}
+              >
+                <SelectTrigger id={`api-mode-${draft.id}`} className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="auto">自动探测（Responses 优先）</SelectItem>
+                    <SelectItem value="responses">Responses</SelectItem>
+                    <SelectItem value="chat-completions">Chat Completions</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                自动测试两种协议的非流式和流式严格输出，最多发送 4
+                个短请求。正式生成使用测试选定的协议。
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor={`temperature-mode-${draft.id}`}>温度设置</FieldLabel>
+              <Select
+                value={draft.temperature === null ? 'default' : 'custom'}
+                disabled={busy || disabled}
+                onValueChange={(value) => update('temperature', value === 'default' ? null : 0.9)}
+              >
+                <SelectTrigger id={`temperature-mode-${draft.id}`} className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="default">模型默认</SelectItem>
+                    <SelectItem value="custom">自定义温度</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                模型默认会省略温度参数，适用于不接受自定义温度的模型。
+              </FieldDescription>
+            </Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              <FormField
-                label="温度"
-                type="number"
-                min={0}
-                max={2}
-                step={0.1}
-                value={draft.temperature}
-                onChange={(v) => update('temperature', Number(v))}
-              />
+              {draft.temperature !== null && (
+                <FormField
+                  label="温度"
+                  type="number"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={draft.temperature}
+                  onChange={(v) => update('temperature', Number(v))}
+                />
+              )}
               <FormField
                 label="输出上限（tokens）"
                 type="number"
@@ -200,7 +272,7 @@ function ChannelEditor({
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => void save()}>保存渠道</Button>
             <Button variant="outline" onClick={() => void test()}>
-              <FlaskConical />
+              {busy ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}
               测试渠道
             </Button>
             <Button variant="outline" onClick={() => void test(true)}>
@@ -218,7 +290,7 @@ function ChannelEditor({
         {busy && (
           <div className="mt-3 flex items-center gap-2" role="status">
             <LoaderCircle className="animate-spin" />
-            {testDetail || '正在测试…'}
+            {progress || '正在测试…'}
             <Button variant="ghost" onClick={() => controller.current?.abort()}>
               取消测试
             </Button>
@@ -228,7 +300,29 @@ function ChannelEditor({
           <p className="mt-3 text-sm text-success">
             测试通过 · {draft.capability?.protocols ? '完整协议' : '连接、结构化与流式'} ·{' '}
             {formatDate(draft.capability!.testedAt)}
+            {' · 当前协议：'}
+            {draft.capability?.protocol && protocolLabels[draft.capability.protocol]}
           </p>
+        )}
+        {draft.capability?.checks && (
+          <div className="mt-3 flex flex-col gap-2" aria-label="协议测试结果">
+            {(['responses', 'chat-completions'] as ApiProtocol[]).map((protocol) => {
+              const check = draft.capability?.checks?.[protocol]
+              if (!check) return null
+              const labels = { passed: '通过', failed: '失败', untested: '未测试' }
+              return (
+                <div key={protocol} className="text-sm">
+                  <p>
+                    {protocolLabels[protocol]} · 非流式：{labels[check.nonStreaming]} · 流式：
+                    {labels[check.streaming]}
+                  </p>
+                  {check.error && (
+                    <p className="wrap-break-word text-muted-foreground">{check.error}</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         )}
         {draft.capability?.error && (
           <p className="mt-3 wrap-break-word text-sm text-destructive" role="alert">
@@ -268,6 +362,7 @@ export function ChannelsDialog({
 }) {
   const [selectedId, setSelectedId] = useState('')
   const [testingAll, setTestingAll] = useState(false)
+  const [progress, setProgress] = useState('')
   const controller = useRef<AbortController | null>(null)
   const selected =
     channels.find((c) => c.id === selectedId) ??
@@ -276,20 +371,39 @@ export function ChannelsDialog({
   const testAll = async () => {
     setTestingAll(true)
     controller.current = new AbortController()
-    for (const channel of channels) {
-      if (controller.current.signal.aborted) break
-      try {
-        await db.channels.update(channel.id, {
-          capability: await testChannel(channel, controller.current.signal),
-        })
-      } catch (e) {
-        await db.channels.update(channel.id, {
-          capability: { fingerprint: '', testedAt: Date.now(), ok: false, error: friendlyError(e) },
-        })
+    let discarded = 0
+    try {
+      for (const snapshot of channels) {
+        if (controller.current.signal.aborted) break
+        const channel = await db.channels.get(snapshot.id)
+        if (!channel) continue
+        let capability: ChannelCapability
+        try {
+          capability = await testChannel(channel, controller.current.signal, undefined, (detail) =>
+            setProgress(`${channel.name}：${detail}`),
+          )
+        } catch (e) {
+          if (controller.current.signal.aborted) break
+          capability = {
+            fingerprint: channelFingerprint(channel),
+            testedAt: Date.now(),
+            ok: false,
+            error: friendlyError(e),
+          }
+        }
+        if (!(await commitChannelCapability(channel, capability))) discarded++
       }
+      notify(
+        discarded
+          ? `渠道测试已结束；${discarded} 个渠道配置已变更或删除，旧测试结果未保存。请重新测试。`
+          : '渠道测试已结束，结果显示在各渠道配置中。',
+      )
+    } catch (e) {
+      notify(friendlyError(e), true)
+    } finally {
+      setTestingAll(false)
+      setProgress('')
     }
-    setTestingAll(false)
-    notify('渠道测试已结束，结果显示在各渠道配置中。')
   }
   useEffect(() => () => controller.current?.abort(), [])
   return (
@@ -333,6 +447,7 @@ export function ChannelsDialog({
             </Button>
           )}
         </div>
+        {testingAll && <p role="status">{progress || '正在测试渠道…'}</p>}
         <div className="grid gap-4 md:grid-cols-[1fr_2fr]">
           <nav aria-label="渠道列表" className="flex flex-col gap-2">
             {channels.map((c) => (

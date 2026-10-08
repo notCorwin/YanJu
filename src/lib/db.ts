@@ -6,6 +6,7 @@ import {
   newPersona,
   type Archive,
   type Channel,
+  type ChannelCapability,
   type Persona,
   type Settings,
   type StoredMessage,
@@ -14,6 +15,7 @@ import {
 } from './types'
 import { validateNarrative, validateForum, compressionSchema } from './schemas'
 import { z } from 'zod'
+import { channelFingerprint, withCapability } from './channels'
 import { OpfsPersistence, type PersistenceSnapshot } from './opfs'
 import {
   calibrationSchema,
@@ -148,6 +150,24 @@ export async function contextArchiveMessages(archive: Archive, database = db) {
     .where('[archiveId+sequence]')
     .between([archive.id, boundary.sequence], [archive.id, Dexie.maxKey])
     .toArray()
+}
+
+/** Probes finish asynchronously; commit only if their request configuration is still current. */
+export async function commitChannelCapability(
+  tested: Channel,
+  capability: ChannelCapability,
+  database = db,
+): Promise<Channel | undefined> {
+  return database.transaction('rw', database.channels, async () => {
+    const current = await database.channels.get(tested.id)
+    if (!current || channelFingerprint(current) !== channelFingerprint(tested)) return undefined
+    const next = withCapability(current, capability)
+    await database.channels.update(current.id, {
+      capability: next.capability,
+      calibration: next.calibration,
+    })
+    return next
+  })
 }
 
 export function createArchiveData(name = '新的篇章'): { archive: Archive; opening: StoredMessage } {
@@ -329,13 +349,17 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     })
   const channels: Channel[] = list(raw.channels).map((value) => {
     const c = record(value)
+    const apiMode = c.apiMode
+    if (typeof apiMode !== 'string' || !['auto', 'chat-completions', 'responses'].includes(apiMode))
+      throw new Error('存档包含未知的渠道 API 模式，导入未执行。')
     return {
       id: str(c.id) || crypto.randomUUID(),
       name: str(c.name, '导入渠道'),
       baseUrl: str(c.baseUrl),
       apiKey: str(c.apiKey),
       model: str(c.model),
-      temperature: numeric(c.temperature, 0.9),
+      apiMode: apiMode as Channel['apiMode'],
+      temperature: c.temperature === null ? null : numeric(c.temperature, 0.9),
       maxOutputTokens: numeric(c.maxOutputTokens ?? c.maxTokens, 4096),
       contextWindow: numeric(c.contextWindow, 32768),
       requestTimeoutMs: numeric(c.requestTimeoutMs, 300000),
