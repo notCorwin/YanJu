@@ -730,6 +730,76 @@ test('手动协议、取消重测保留结果，配置修改使缓存失效', as
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
 })
 
+for (const action of ['修改', '删除']) {
+  test(`测试全部期间其他标签页${action}渠道，不覆盖配置或复活记录`, async ({ page, context }) => {
+    await prepare(page)
+    await enableChannel(page)
+    const other = await context.newPage()
+    await other.goto('./')
+    await other.getByRole('button', { name: '渠道管理', exact: true }).click()
+    await other
+      .getByRole('navigation', { name: '渠道列表' })
+      .getByRole('button', { name: '测试渠道', exact: true })
+      .click()
+    await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+    let pending = false
+    let held = false
+    let release = () => {}
+    await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+      if (!held) {
+        held = true
+        pending = true
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+      }
+      await route.fallback()
+    })
+    await page.getByRole('button', { name: '测试全部', exact: true }).click()
+    await expect.poll(() => pending).toBe(true)
+    if (action === '修改') {
+      await other
+        .getByRole('textbox', { name: '模型', exact: true })
+        .fill('new-model-from-other-tab')
+      await other.getByRole('button', { name: '保存渠道', exact: true }).click()
+      await expect(other.getByText('渠道已保存；通过测试后可用于聊天。')).toBeVisible()
+    } else {
+      await other.getByRole('button', { name: '删除渠道', exact: true }).click()
+      await other
+        .getByRole('dialog', { name: '删除渠道？' })
+        .getByRole('button', { name: '确认', exact: true })
+        .click()
+      await expect(
+        other
+          .getByRole('navigation', { name: '渠道列表' })
+          .getByRole('button', { name: '测试渠道', exact: true }),
+      ).toHaveCount(0)
+    }
+    release()
+    await expect(
+      page.getByText('渠道测试已结束；1 个渠道配置已变更或删除，旧测试结果未保存。请重新测试。'),
+    ).toBeVisible()
+    await other.reload()
+    await other.getByRole('button', { name: '渠道管理', exact: true }).click()
+    if (action === '修改') {
+      await other
+        .getByRole('navigation', { name: '渠道列表' })
+        .getByRole('button', { name: '测试渠道', exact: true })
+        .click()
+      await expect(other.getByRole('textbox', { name: '模型', exact: true })).toHaveValue(
+        'new-model-from-other-tab',
+      )
+      await expect(other.getByRole('button', { name: '使用此渠道', exact: true })).toBeDisabled()
+    } else {
+      await expect(
+        other
+          .getByRole('navigation', { name: '渠道列表' })
+          .getByRole('button', { name: '测试渠道', exact: true }),
+      ).toHaveCount(0)
+    }
+  })
+}
+
 for (const terminal of ['incomplete', 'missing']) {
   test(`Responses ${terminal} 保留部分对象并支持刷新重试`, async ({ page }) => {
     let generations = 0

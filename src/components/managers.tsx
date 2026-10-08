@@ -6,9 +6,10 @@ import {
   importSave,
   initializeStorage,
   normalizeImport,
+  commitChannelCapability,
 } from '@/lib/db'
 import { channelIsReady, friendlyError, testChannel, validateChannel } from '@/lib/provider'
-import { protocolLabels, withCapability } from '@/lib/channels'
+import { channelFingerprint, protocolLabels } from '@/lib/channels'
 import {
   newChannel,
   newPersona,
@@ -16,6 +17,7 @@ import {
   type ApiProtocol,
   type Archive,
   type Channel,
+  type ChannelCapability,
   type Persona,
   type Settings,
 } from '@/lib/types'
@@ -91,9 +93,14 @@ function ChannelEditor({
       validateChannel(draft)
       await db.channels.put(draft)
       const capability = await testChannel(draft, controller.current.signal, undefined, setProgress)
-      const next = withCapability(draft, capability)
+      const next = await commitChannelCapability(draft, capability)
+      if (!next) {
+        const current = await db.channels.get(draft.id)
+        if (current) setDraft(current)
+        notify('渠道配置已在其他窗口变更或删除，旧测试结果未保存。请重新测试。', true)
+        return
+      }
       setDraft(next)
-      await db.channels.put(next)
       notify(
         capability.ok
           ? `渠道测试通过，使用 ${protocolLabels[capability.protocol!]}。`
@@ -109,14 +116,7 @@ function ChannelEditor({
         )
         return
       }
-      const error = friendlyError(e)
-      notify(error, true)
-      const next = {
-        ...draft,
-        capability: { fingerprint: '', testedAt: Date.now(), ok: false, error },
-      }
-      setDraft(next)
-      await db.channels.put(next)
+      notify(friendlyError(e), true)
     } finally {
       setBusy(false)
       setProgress('')
@@ -338,26 +338,39 @@ export function ChannelsDialog({
   const testAll = async () => {
     setTestingAll(true)
     controller.current = new AbortController()
-    for (const channel of channels) {
-      if (controller.current.signal.aborted) break
-      try {
-        const capability = await testChannel(
-          channel,
-          controller.current.signal,
-          undefined,
-          (detail) => setProgress(`${channel.name}：${detail}`),
-        )
-        await db.channels.put(withCapability(channel, capability))
-      } catch (e) {
+    let discarded = 0
+    try {
+      for (const snapshot of channels) {
         if (controller.current.signal.aborted) break
-        await db.channels.update(channel.id, {
-          capability: { fingerprint: '', testedAt: Date.now(), ok: false, error: friendlyError(e) },
-        })
+        const channel = await db.channels.get(snapshot.id)
+        if (!channel) continue
+        let capability: ChannelCapability
+        try {
+          capability = await testChannel(channel, controller.current.signal, undefined, (detail) =>
+            setProgress(`${channel.name}：${detail}`),
+          )
+        } catch (e) {
+          if (controller.current.signal.aborted) break
+          capability = {
+            fingerprint: channelFingerprint(channel),
+            testedAt: Date.now(),
+            ok: false,
+            error: friendlyError(e),
+          }
+        }
+        if (!(await commitChannelCapability(channel, capability))) discarded++
       }
+      notify(
+        discarded
+          ? `渠道测试已结束；${discarded} 个渠道配置已变更或删除，旧测试结果未保存。请重新测试。`
+          : '渠道测试已结束，结果显示在各渠道配置中。',
+      )
+    } catch (e) {
+      notify(friendlyError(e), true)
+    } finally {
+      setTestingAll(false)
+      setProgress('')
     }
-    setTestingAll(false)
-    setProgress('')
-    notify('渠道测试已结束，结果显示在各渠道配置中。')
   }
   useEffect(() => () => controller.current?.abort(), [])
   return (

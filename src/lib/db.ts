@@ -6,6 +6,7 @@ import {
   newPersona,
   type Archive,
   type Channel,
+  type ChannelCapability,
   type Persona,
   type Settings,
   type StoredMessage,
@@ -15,6 +16,7 @@ import {
 import { validateNarrative, validateForum, compressionSchema } from './schemas'
 import { z } from 'zod'
 import { OpfsPersistence } from './opfs'
+import { channelFingerprint, withCapability } from './channels'
 
 export class YanJuDatabase extends Dexie {
   archives!: Table<Archive, string>
@@ -53,6 +55,24 @@ export class YanJuDatabase extends Dexie {
 export const db = new YanJuDatabase()
 export const archiveMessages = (id: string, database = db) =>
   database.messages.where('archiveId').equals(id).sortBy('sequence')
+
+/** Probes finish asynchronously; commit only if their request configuration is still current. */
+export async function commitChannelCapability(
+  tested: Channel,
+  capability: ChannelCapability,
+  database = db,
+): Promise<Channel | undefined> {
+  return database.transaction('rw', database.channels, async () => {
+    const current = await database.channels.get(tested.id)
+    if (!current || channelFingerprint(current) !== channelFingerprint(tested)) return undefined
+    const next = withCapability(current, capability)
+    await database.channels.update(current.id, {
+      capability: next.capability,
+      calibration: next.calibration,
+    })
+    return next
+  })
+}
 
 export function createArchiveData(name = '新的篇章'): { archive: Archive; opening: StoredMessage } {
   const now = Date.now()
