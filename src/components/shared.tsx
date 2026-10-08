@@ -1,4 +1,6 @@
-import { useId, type ComponentProps, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ComponentProps, type ReactNode } from 'react'
+import { LoaderCircle } from 'lucide-react'
+import { friendlyError } from '@/lib/provider'
 import { Button } from './ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import { Field, FieldLabel, FieldDescription } from './ui/field'
@@ -71,21 +73,45 @@ export function ConfirmDialog({
   onConfirm: () => Promise<void> | void
   destructive?: boolean
 }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (open) setError('')
+  }, [open])
+  const confirm = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await onConfirm()
+      onClose()
+    } catch (error) {
+      setError(friendlyError(error))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+    <Dialog open={open} onOpenChange={(v) => !v && !busy && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{detail}</DialogDescription>
         </DialogHeader>
+        {error && (
+          <p role="alert" className="wrap-break-word text-sm text-destructive">
+            {error}
+          </p>
+        )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
             取消
           </Button>
           <Button
             variant={destructive ? 'destructive' : 'default'}
-            onClick={() => void Promise.resolve(onConfirm()).then(onClose)}
+            disabled={busy}
+            onClick={() => void confirm()}
           >
+            {busy && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
             确认
           </Button>
         </DialogFooter>

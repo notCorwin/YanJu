@@ -1,3 +1,5 @@
+import { acquireArchiveOperation, withArchiveOperation } from './operations'
+import { errorDiagnostics } from './request-trace'
 import {
   createUIMessageStream,
   type ChatTransport,
@@ -5,7 +7,15 @@ import {
   type UIMessageStreamWriter,
 } from 'ai'
 import { isRoleIntercepted, interceptImage } from '@/content/intercept'
-import { archiveMessages, db, appendMessage, commitSummary, revise, refreshStory } from './db'
+import {
+  archiveMessages,
+  db,
+  appendMessage,
+  commitSummary,
+  revise,
+  refreshStory,
+  copyArchiveData,
+} from './db'
 import { applyMessage, rebuildStory, storyContext, displayCountdown } from './story'
 import { compactContext, contextBudget, calibrate } from './context'
 import { buildInstructions, modelMessages } from './prompts'
@@ -46,6 +56,7 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
       kind: message.kind,
       status: message.status,
       error: message.error,
+      diagnostics: message.diagnostics,
     },
   }
 }
@@ -95,6 +106,10 @@ async function saveGenerated(message: StoredMessage, revision: number, regenerat
     const start = all.findIndex((m) => m.id === regenerateFromId)
     if (start < 0) throw new Error('找不到重说的消息')
     message.sequence = all[start].sequence
+    const backup = copyArchiveData(archive, all, `${archive.name} · 重说前`)
+    await db.archives.add(backup.archive)
+    await db.messages.bulkAdd(backup.messages)
+    await refreshStory(db, backup.archive)
     await db.messages.bulkDelete(all.slice(start).map((m) => m.id))
     await db.messages.put(message)
     const next = revise(archive)
@@ -157,6 +172,10 @@ export async function compressArchive(
 
 export class BrowserChatTransport implements ChatTransport<ChatMessage> {
   private compaction?: AbortController
+  private settled = Promise.resolve()
+  waitForIdle() {
+    return this.settled
+  }
 
   private async compactAfterReply(
     archiveId: string,
@@ -168,16 +187,18 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     const controller = new AbortController()
     this.compaction = controller
     try {
-      const archive = await db.archives.get(archiveId)
-      if (!archive || archive.revision !== revision || controller.signal.aborted) return
-      await compressArchive(
-        archive,
-        channel,
-        persona,
-        await archiveMessages(archiveId),
-        controller.signal,
-        kind,
-      )
+      await withArchiveOperation(archiveId, async () => {
+        const archive = await db.archives.get(archiveId)
+        if (!archive || archive.revision !== revision || controller.signal.aborted) return
+        await compressArchive(
+          archive,
+          channel,
+          persona,
+          await archiveMessages(archiveId),
+          controller.signal,
+          kind,
+        )
+      })
     } catch {
       // Compaction errors live on the archive; the completed reply stays complete and usable.
     } finally {
@@ -187,20 +208,38 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
   }
 
   async sendMessages(options: Parameters<ChatTransport<ChatMessage>['sendMessages']>[0]) {
+    const body = options.body as Record<string, unknown> | undefined
+    if (typeof body?.operationOwner === 'string') {
+      if ((await db.operations.get(options.chatId))?.owner !== body.operationOwner)
+        throw new Error('会话操作已失效，请重新发送。')
+      return this.sendWithOperation(options)
+    }
+    const operation = await acquireArchiveOperation(options.chatId)
+    try {
+      return await this.sendWithOperation(options, operation.release)
+    } catch (error) {
+      await operation.release()
+      throw error
+    }
+  }
+  private async sendWithOperation(
+    options: Parameters<ChatTransport<ChatMessage>['sendMessages']>[0],
+    release?: () => Promise<void>,
+  ) {
+    const body = options.body as Record<string, unknown> | undefined
     this.compaction?.abort(supersededCompaction)
     const settings = await db.settings.get('app')
     let archive = await db.archives.get(options.chatId)
-    const channel = settings?.activeChannelId
-      ? await db.channels.get(settings.activeChannelId)
-      : undefined
-    const persona = settings?.activePersonaId
-      ? await db.personas.get(settings.activePersonaId)
-      : undefined
+    const channelId =
+      typeof body?.channelId === 'string' ? body.channelId : settings?.activeChannelId
+    const personaId =
+      typeof body?.personaId === 'string' ? body.personaId : settings?.activePersonaId
+    const channel = channelId ? await db.channels.get(channelId) : undefined
+    const persona = personaId ? await db.personas.get(personaId) : undefined
     if (!archive) throw new Error('存档不存在，请创建或选择存档。')
     if (!channel || !channelIsReady(channel))
       throw new Error('请先配置渠道并通过严格结构化与浏览器连接测试。')
     const all = await archiveMessages(archive.id)
-    const body = options.body as Record<string, unknown> | undefined
     const regen = typeof body?.regenerateFromId === 'string' ? body.regenerateFromId : undefined
     const regenIndex = regen ? all.findIndex((m) => m.id === regen) : -1
     if (
@@ -232,7 +271,10 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     }
     const kind: RequestKind =
       body?.kind === 'forum' || lastUser.kind === 'forum' ? 'forum' : 'narrative'
-    const signal = options.abortSignal ?? new AbortController().signal
+    const signal = AbortSignal.any([
+      ...(options.abortSignal ? [options.abortSignal] : []),
+      ...(body?.operationSignal instanceof AbortSignal ? [body.operationSignal] : []),
+    ])
     const messageId = crypto.randomUUID()
     const createdAt = Date.now()
     const base: StoredMessage = {
@@ -257,6 +299,10 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
       phase: 'compressing' | 'generating' | 'correcting' | 'complete' | 'failed' | 'cancelled',
       detail: string,
     ) => writer.write({ type: 'data-status', id: 'status', data: { phase, detail } })
+    let settle!: () => void
+    this.settled = new Promise<void>((resolve) => {
+      settle = resolve
+    })
     return createUIMessageStream<ChatMessage>({
       execute: async ({ writer }) => {
         writer.write({
@@ -360,6 +406,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               reply: result.reply,
               content: JSON.stringify(result.reply.value),
               usage: result.usage,
+              diagnostics: result.diagnostics,
               correction: result.correction ?? correction,
             }
             partial = result.reply
@@ -393,17 +440,13 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
           writer.write({
             type: 'finish',
             finishReason: 'stop',
-            messageMetadata: { createdAt, kind, status: 'complete' },
-          })
-          // End the UI stream before optional post-reply LLM compaction, which may be slow.
-          if (completedChannel)
-            void this.compactAfterReply(
-              snapshot.id,
-              snapshot.revision + 1,
-              completedChannel,
-              persona,
+            messageMetadata: {
+              createdAt,
               kind,
-            ).catch((error) => db.persistence.reportError(error))
+              status: 'complete',
+              diagnostics: (await db.messages.get(messageId))?.diagnostics,
+            },
+          })
         } catch (error) {
           await pendingCheckpoint
           let detail = friendlyError(error)
@@ -417,6 +460,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               error: detail,
               content: partial ? JSON.stringify(partial.value) : '',
               rawContent,
+              diagnostics: errorDiagnostics(error),
             }
             // Regeneration failures append recovery data; the old branch is still intact.
             try {
@@ -436,9 +480,26 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               kind,
               status: outcome,
               error: committed ? undefined : detail,
+              diagnostics: errorDiagnostics(error),
             },
           })
           if (!cancelled && !committed) writer.write({ type: 'error', errorText: detail })
+        } finally {
+          try {
+            await release?.()
+          } finally {
+            settle()
+          }
+          if (completedChannel)
+            setTimeout(() => {
+              void this.compactAfterReply(
+                snapshot.id,
+                snapshot.revision + 1,
+                completedChannel!,
+                persona,
+                kind,
+              ).catch((error) => db.persistence.reportError(error))
+            }, 0)
         }
       },
       onError: friendlyError,

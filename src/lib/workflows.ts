@@ -1,3 +1,5 @@
+import { withArchiveOperation } from './operations'
+import { errorDiagnostics } from './request-trace'
 import { db, archiveMessages, refreshStory, revise } from './db'
 import { channelIsReady, friendlyError, summarize } from './provider'
 import { runStructuredTask } from './task-runner'
@@ -223,6 +225,22 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     fetcher?: typeof fetch
   } = {},
 ): Promise<TaskRun> {
+  return withArchiveOperation(archiveId, () =>
+    executeAuxiliaryWithOperation(archiveId, kind, text, targetId, options),
+  )
+}
+
+async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
+  archiveId: string,
+  kind: K,
+  text: string,
+  targetId: string | null,
+  options: {
+    signal?: AbortSignal
+    onPartial?: (task: TaskRun) => void
+    fetcher?: typeof fetch
+  } = {},
+): Promise<TaskRun> {
   if (kind === 'contentImport') {
     let material: unknown
     try {
@@ -355,6 +373,7 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     Object.assign(task, {
       output: result.value,
       usage: result.usage,
+      diagnostics: result.diagnostics,
       correction: result.correction,
       status: 'complete',
     })
@@ -367,13 +386,14 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     )
     if (calibration) await db.channels.update(channel.id, { calibration })
     if (options.signal?.aborted) throw new DOMException('已取消', 'AbortError')
-    if (kind === 'phoneReply' || kind === 'forumReply') await applyTask(task.id)
+    if (kind === 'phoneReply' || kind === 'forumReply') await applyTaskWithOperation(task.id)
     await db.persistence.flush()
     return (await db.tasks.get(task.id))!
   } catch (error) {
     await checkpoint.catch(() => undefined)
     task.status = options.signal?.aborted ? 'cancelled' : 'failed'
     task.error = friendlyError(error)
+    task.diagnostics = errorDiagnostics(error)
     await saveTaskProgress(task)
     await db.persistence.flush()
     return task
@@ -381,6 +401,11 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
 }
 
 export async function applyTask(id: string, editedOutput?: unknown) {
+  const task = await db.tasks.get(id)
+  if (!task) throw new Error('任务不存在。')
+  return withArchiveOperation(task.archiveId, () => applyTaskWithOperation(id, editedOutput))
+}
+async function applyTaskWithOperation(id: string, editedOutput?: unknown) {
   await db.transaction(
     'rw',
     [db.archives, db.messages, db.storyStates, db.storyEvents, db.tasks, db.personas, db.settings],
@@ -429,6 +454,7 @@ export async function applyTask(id: string, editedOutput?: unknown) {
         content: task.input.text,
         userName: task.input.context.persona?.name ?? archive.userName,
         usage: task.usage,
+        diagnostics: task.diagnostics,
       }
       const updated = revise(archive)
       if (task.kind === 'phoneReply') {

@@ -6,7 +6,7 @@
 
 ## 本地开发
 
-需要 Node.js 22.12+ 和 pnpm 10.28.2。
+需要 Node.js 26.11.1+ 和 pnpm 12.10.1。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -21,7 +21,7 @@ pnpm dev
 
 ## 技术与设计
 
-- Vite 8、React 19、TypeScript、Tailwind CSS 4、shadcn/ui、AI SDK 7、Zod、Dexie。
+- Vite 8、React 19、TypeScript 7、Tailwind CSS 4、shadcn/ui、AI SDK 7、Zod、Dexie。TypeScript 7 原生编译器与 ESLint 所需的 TypeScript 6 API 按[官方并行配置](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6-0)安装。
 - `src/styles/tokens.css` 是颜色、字体、字号、间距、圆角、边框、阴影与动效的唯一来源，映射到 Tailwind 语义工具类。外观设置只修改根 Token。`pnpm check:tokens` 阻止组件新增裸视觉值，包含 shadcn 源码。
 - 使用官方 shadcn MessageScroller / Message / Bubble，Field / InputGroup，Card / Accordion / Dialog / Sheet。共享组件和变体统一视觉与触控尺寸。
 - 角色、人设规则、文风、开场白、世界和常用指令保存在 `src/content`。文本不再嵌入脚本边界。原文件 `宴雎.html` 保留供旧版行为和数据格式参考，不参与生产构建。
@@ -56,13 +56,15 @@ pnpm dev
 
 在渠道、模型、人设、回复协议及摘要保持不变时，普通续聊只在已发送上下文末尾追加消息。校验纠正请求中的追加消息随助手记录持久化，刷新或导入存档后继续重放；失败的部分回复仍不作为完成历史。压缩会重建摘要和历史前缀，这是正常的上下文重置边界；同一摘要下的后续对话继续追加。编辑、重说以及切换渠道、人设或回复协议也会改变上下文，服务端缓存命中还取决于渠道支持、缓存有效期和路由，不能保证每次请求都命中。
 
-IndexedDB 作为工作数据库保存消息、存档、渠道、人设、外观和摘要；所有提交自动同步到 OPFS 的 `yanju-v3/save.json`。写入通过 `createWritable()` / `close()` 原子替换，支持 Web Locks 的浏览器按同源锁串行同步。完整回复、失败恢复记录和停止生成都会等待最终同步；完成后的自动压缩在后台继续，不阻塞存档载入、导出及下一轮聊天。工作数据库为空时，启动优先校验并恢复 OPFS 存档，保留同浏览器渠道测试状态；不可解析的旧文件在写入新存档前保留到 `save-recovery.json`。
+IndexedDB 作为工作数据库保存消息、存档、渠道、人设、外观和摘要；所有提交通过事务内变更日志自动同步到 OPFS；`yanju-v3/save.json` 保存索引，消息使用不可变文件增量保存，背景图片独立保存。写入通过 `createWritable()` / `close()` 原子替换，支持 Web Locks 的浏览器按同源锁串行同步。完整回复、失败恢复记录和停止生成都会等待最终同步；完成后的自动压缩在后台继续，不阻塞存档载入、导出及下一轮聊天。工作数据库为空时，启动优先校验并恢复 OPFS 存档，保留同浏览器渠道测试状态；不可解析的旧文件在写入新存档前保留到 `save-recovery.json`。
 
 应用会请求 `navigator.storage.persist()`，授权结果由浏览器决定；OPFS 文件可跨刷新和浏览器重启保存，但未获持久存储授权时仍可能被浏览器清理。存档面板显示同步和授权状态。OPFS 不受支持或同步失败时，保留 IndexedDB 读写、载入、导出和聊天功能，并在面板提供说明及失败重试。清除站点数据会同时移除 OPFS 和 IndexedDB；需要跨浏览器恢复时请先导出文件。
 
 新版只使用 `yanju-v3` 数据库与版本 3 存档，不读取旧库或 localStorage，不导入 v1/v2 应用存档，原资料保留在原位置。v3 包含消息、冻结请求、剧情事件、状态投影、任务结果、渠道 Key、外观及摘要边界。导入替换前校验完整数据并显示确认操作。
 
-编辑历史消息会使后续剧情失效并重建状态；失效记录仍可查看，但不进入有效上下文。局部改写返回完整替换对象及修改段落清单，保留原段落 ID，合并后的正文、翻译、状态和引用全部重新校验。重说失败保留原分支，成功后原子替换受影响分支。
+编辑历史消息会使后续剧情失效并重建状态；失效记录仍可查看，但不进入有效上下文。局部改写返回完整替换对象及修改段落清单，保留原段落 ID，合并后的正文、翻译、状态和引用全部重新校验。重说失败保留原分支，成功后先将原分支保存为独立篇章，再原子替换受影响分支。可从指定消息创建分支，单独导出篇章或合并导入；编号冲突时重映射消息、实体及来源引用。
+
+支持 Web Locks 的浏览器通过篇章锁防止多窗口同时生成、编辑或删除；其他浏览器使用可续期的数据库租约。导入持有全局锁，避免旧窗口排队写入恢复后的同名篇章。聊天默认显示最近 60 条消息，可按需加载更早内容。消息支持分区编辑和 JSON 编辑；局部展示错误可恢复、编辑与导出。请求可配置首包及后续内容等待上限，并保留耗时、HTTP 状态与请求编号。渠道的「完整协议测试」运行完整叙事、50 条论坛回答及压缩样例，测试结果不写入剧情。
 
 ## 剧情工作台
 
@@ -80,13 +82,14 @@ IndexedDB 作为工作数据库保存消息、存档、渠道、人设、外观�
 ## 本地验收
 
 ```sh
-pnpm exec playwright install chromium
+pnpm exec playwright install chromium webkit
+pnpm setup:hooks
 pnpm verify
 ```
 
-`verify` 顺序执行 Token 检查、ESLint、TypeScript、Vitest、桌面/移动端 Playwright 和生产构建。测试使用模拟模型与真实 SDK 协议，不需要真实密钥。真实渠道由用户配置后在应用内执行能力测试。
+`verify` 顺序执行 Token 检查、ESLint、TypeScript、Vitest、生产构建及桌面 Chrome、移动 Chromium、移动 Safari Playwright。测试使用模拟模型与真实 SDK 协议，不需要真实密钥。真实渠道由用户配置后在应用内执行能力测试。
 
-Playwright 启动当前工作目录的独立开发服务，不复用已有服务，避免多个 worktree 之间误测其他版本。默认使用 5173 端口；端口已被占用时，可用 `YANJU_E2E_PORT=5174 pnpm verify` 指定其他端口。
+`pnpm verify` 的 Playwright 启动当前工作目录的独立生产预览服务，不复用已有服务，避免多个 worktree 之间误测其他版本。`pnpm setup:hooks` 安装推送前钩子，每次推送执行完整本地验收。默认使用 5173 端口；端口已被占用时，可用 `YANJU_E2E_PORT=5174 pnpm verify` 指定其他端口。
 
 重点覆盖严格参数、缺字段、非空和数量、部分对象更新、一次纠正、取消/截断/重试、稳定引用与事实来源、知情范围、日期与金额、事务回滚、重复提交、多窗口冲突、编辑失效与重说、冻结前缀、分批压缩、旧版拒绝、v3 往返及 OPFS 恢复。桌面和移动端流程覆盖论坛追加、独立手机、来源定位、人设编辑、分支选择、改写、导入预览、媒体与请求记录导出。
 

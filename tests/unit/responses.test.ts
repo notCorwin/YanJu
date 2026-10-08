@@ -3,6 +3,7 @@ import {
   generateReply,
   summarize,
   testChannel,
+  testChannelProtocols,
   channelFingerprint,
   channelIsReady,
 } from '../../src/lib/provider'
@@ -141,6 +142,7 @@ describe('自动探测与能力缓存', () => {
       { apiMode: 'responses' as const },
       { temperature: null },
       { maxOutputTokens: 2048 },
+      { requestTimeoutMs: 1000 },
       { model: 'changed' },
       { apiKey: 'changed' },
       { baseUrl: 'https://another.test/v1' },
@@ -170,6 +172,34 @@ describe('自动探测与能力缓存', () => {
 })
 
 describe('原生 Responses 结构化业务协议', () => {
+  it('完整协议测试使用自动探测选定的 Responses，保留诊断且不依赖旧能力缓存', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      const body = JSON.parse(String(init?.body))
+      if (String(url).endsWith('/chat/completions'))
+        return Response.json({ error: { message: 'unsupported protocol' } }, { status: 400 })
+      const value =
+        body.text.format.name === 'NarrativeReply'
+          ? narrativeFixture
+          : body.text.format.name === 'ForumReply'
+            ? forumFixture
+            : body.text.format.name === 'CompressionResult'
+              ? compressionFixture
+              : capabilityFixture
+      expect(body.store).toBe(false)
+      expect(body.text.format.strict).toBe(true)
+      return body.stream ? streamResponse(responseSse(value)) : Response.json(response(value))
+    })
+    const result = await testChannelProtocols(
+      autoChannel,
+      new AbortController().signal,
+      vi.fn(),
+      fetcher,
+    )
+    expect(result).toMatchObject({ ok: true, protocol: 'responses', protocols: true })
+    expect(result.firstTokenMs).toBeGreaterThanOrEqual(0)
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(0)
+    expect(fetcher).toHaveBeenCalledTimes(6)
+  })
   it.each(['narrative', 'forum'] as const)('%s 流式更新、完整校验和 usage', async (kind) => {
     const value = kind === 'narrative' ? narrativeFixture : forumFixture
     const fetcher = vi

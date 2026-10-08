@@ -2,12 +2,21 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createOpenAI } from '@ai-sdk/openai'
 import { APICallError, wrapLanguageModel, type DeepPartial, type ModelMessage } from 'ai'
 import type { Reply, RequestKind, NarrativeReply, ForumReply } from './schemas'
-import type { ApiProtocol, Channel, ChannelCapability, ProtocolCapability, Usage } from './types'
+import type {
+  RequestDiagnostics,
+  ApiProtocol,
+  Channel,
+  ChannelCapability,
+  ProtocolCapability,
+  Usage,
+} from './types'
 import { channelFingerprint, channelIsReady, protocolLabels } from './channels'
 import { responsesLifecycle, ResponseLifecycleError } from './responses'
 export { channelFingerprint, channelIsReady } from './channels'
 import { compressionInstructions } from './prompts'
 import type { CompressionInput } from './context'
+import { ChannelRequestError } from './request-trace'
+import { buildInstructions } from './prompts'
 import { runStructuredTask } from './task-runner'
 
 export function validateChannel(channel: Channel) {
@@ -24,6 +33,11 @@ export function validateChannel(channel: Channel) {
     throw new Error('温度应在 0–2 之间。')
   if (!Number.isInteger(channel.contextWindow) || channel.contextWindow < 1024)
     throw new Error('上下文容量至少为 1,024 tokens。')
+  if (
+    channel.requestTimeoutMs !== undefined &&
+    (!Number.isInteger(channel.requestTimeoutMs) || channel.requestTimeoutMs < 0)
+  )
+    throw new Error('超时必须是非负整数，0 表示关闭。')
   if (
     !Number.isInteger(channel.maxOutputTokens) ||
     channel.maxOutputTokens < 128 ||
@@ -62,8 +76,41 @@ export function channelRequest(channel: Channel, fetcher?: typeof fetch, protoco
 export const strictOptions = { yanju: { strictJsonSchema: true } }
 
 export function friendlyError(error: unknown) {
-  if (error instanceof DOMException && error.name === 'AbortError')
+  if (
+    error instanceof DOMException &&
+    error.name === 'TimeoutError' &&
+    error.message === '测试超时'
+  )
+    return '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
+  const causes: { name?: unknown; message?: unknown; cause?: unknown }[] = []
+  for (
+    let current = error;
+    current && typeof current === 'object' && !causes.includes(current) && causes.length < 10;
+  ) {
+    causes.push(current)
+    current = 'cause' in current ? current.cause : undefined
+  }
+  if (
+    causes.some(
+      (cause) =>
+        cause.name === 'TimeoutError' ||
+        /\bTimeoutError\b|\b(?:first chunk|chunk|total|step) timeout\b/i.test(
+          String(cause.message),
+        ),
+    )
+  )
+    return '渠道在等待上限内没有返回内容，收到的部分回复已保留。可调整请求等待上限后重试。'
+  if (causes.some((cause) => cause.name === 'AbortError'))
     return '已停止生成，已保留收到的内容，可重试。'
+  const cause = error instanceof ChannelRequestError ? error.cause : error
+  const status =
+    error instanceof ChannelRequestError
+      ? error.diagnostics.httpStatus
+      : cause && typeof cause === 'object' && 'statusCode' in cause
+        ? cause.statusCode
+        : undefined
+  if (status === 401 || status === 403) return '渠道拒绝授权，请检查 API Key 和模型访问权限。'
+  if (status === 429) return '渠道请求受限，请检查用量额度或稍后重试。'
   const message = error instanceof Error ? error.message : String(error)
   if (error instanceof ResponseLifecycleError) return message
   if (error instanceof DOMException && error.name === 'TimeoutError')
@@ -115,6 +162,8 @@ export async function testChannel(
     channel.apiMode === 'auto' ? ['responses', 'chat-completions'] : [channel.apiMode]
   const checks: ChannelCapability['checks'] = {}
   let selected: ApiProtocol | undefined
+  let firstTokenMs: number | undefined
+  const startedAt = Date.now()
   for (const protocol of protocols) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     const check: ProtocolCapability = { nonStreaming: 'untested', streaming: 'untested' }
@@ -126,7 +175,7 @@ export async function testChannel(
       )
       try {
         await timedProbe(async (abortSignal) => {
-          await runStructuredTask({
+          const result = await runStructuredTask({
             kind: 'capability',
             channel,
             protocol,
@@ -138,6 +187,7 @@ export async function testChannel(
             temperature:
               channel.temperature === null ? null : streaming ? channel.temperature : 0.3,
           })
+          if (streaming) firstTokenMs ??= result.diagnostics.firstTokenMs
         }, signal)
         check[stage] = 'passed'
       } catch (error) {
@@ -157,6 +207,8 @@ export async function testChannel(
     ok: selected !== undefined,
     protocol: selected,
     checks,
+    firstTokenMs,
+    elapsedMs: Date.now() - startedAt,
     error: selected
       ? undefined
       : protocols.map((p) => `${protocolLabels[p]}：${checks[p]?.error}`).join('；'),
@@ -189,6 +241,7 @@ export interface GenerationResult {
   reply: Reply
   usage: Usage | undefined
   correction?: string
+  diagnostics: RequestDiagnostics
 }
 interface GenerateOptions {
   archiveId?: string
@@ -215,6 +268,7 @@ export async function generateReply(options: GenerateOptions): Promise<Generatio
       reply: { kind: 'narrative', value: result.value },
       usage: result.usage,
       correction: result.correction,
+      diagnostics: result.diagnostics,
     }
   }
   const result = await runStructuredTask({
@@ -226,5 +280,49 @@ export async function generateReply(options: GenerateOptions): Promise<Generatio
     reply: { kind: 'forum', value: result.value },
     usage: result.usage,
     correction: result.correction,
+    diagnostics: result.diagnostics,
   }
+}
+
+export async function testChannelProtocols(
+  channel: Channel,
+  signal: AbortSignal,
+  onProgress: (detail: string) => void,
+  fetcher?: typeof fetch,
+) {
+  onProgress('正在检查连接、严格结构化与流式传输…')
+  const capability = await testChannel(channel, signal, fetcher, onProgress)
+  if (!capability.ok) return { ...capability, protocols: false }
+  const tested = { ...channel, capability }
+  for (const kind of ['narrative', 'forum'] as const) {
+    onProgress(
+      kind === 'narrative'
+        ? '正在验证完整叙事、状态、手机和日记…'
+        : '正在验证论坛与完整 50 条回答…',
+    )
+    await generateReply({
+      channel: tested,
+      kind,
+      instructions: buildInstructions(undefined, kind),
+      messages: [
+        { role: 'user', content: '生成符合当前协议的完整测试样例。测试内容不会写入聊天存档。' },
+      ],
+      signal,
+      estimatedInput: 0,
+      fetcher,
+      onPartial: () => undefined,
+      onCorrection: onProgress,
+    })
+  }
+  onProgress('正在验证上下文摘要协议…')
+  await summarize(
+    tested,
+    {
+      messages: [{ role: 'user', content: '两人在书房约定明天整理阅读笔记。' }],
+      targetTokens: 256,
+    },
+    signal,
+    fetcher,
+  )
+  return { ...capability, protocols: true }
 }

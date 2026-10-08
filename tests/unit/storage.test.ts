@@ -7,15 +7,24 @@ import {
   db,
   editMessage,
   exportSave,
+  exportArchive,
+  forkArchive,
   importSave,
   normalizeImport,
   YanJuDatabase,
   initializeStorage,
 } from '../../src/lib/db'
+import { emptyEffects } from '../../src/lib/domain-schema'
 import { defaults, type Archive, type ChannelCapability } from '../../src/lib/types'
 import { channelFingerprint, channelIsReady } from '../../src/lib/channels'
 import { modelMessages } from '../../src/lib/prompts'
-import { channelFixture, compressionFixture, messageFixture, narrativeFixture } from '../fixtures'
+import {
+  channelFixture,
+  compressionFixture,
+  messageFixture,
+  narrativeFixture,
+  forumFixture,
+} from '../fixtures'
 
 const archive: Archive = {
   id: 'archive-1',
@@ -212,5 +221,115 @@ describe('v3 IndexedDB 与独立存档协议', () => {
         createdAt: 1,
       }),
     ).rejects.toThrow(/变更/)
+  })
+})
+
+describe('v3 分支与合并引用', () => {
+  it.each(['fork', 'merge'] as const)(
+    '%s 重映射跨轮实体、关系、会话与事实来源，并保留用户原文',
+    async (mode) => {
+      const first = structuredClone(narrativeFixture)
+      first.effects.entities.push({
+        ref: 'new:guest',
+        kind: 'character',
+        name: '来客',
+        description: '新朋友',
+        sourceBlockId: 'b1',
+      })
+      const second = structuredClone(narrativeFixture)
+      second.scene.locationRef = 'm1:entity:study'
+      second.effects = {
+        ...emptyEffects(),
+        states: [{ entityRef: 'm1:entity:guest', key: '心情', value: '开心', sourceBlockId: 'b1' }],
+        relationships: [
+          {
+            ref: 'new:friend',
+            from: 'm1:entity:guest',
+            to: 'character-yanju',
+            type: '朋友',
+            description: '共同读书',
+            sourceBlockId: 'b1',
+          },
+        ],
+        events: [
+          {
+            ref: 'new:visit',
+            title: '来访',
+            time: null,
+            locationRef: 'm1:entity:study',
+            participants: ['m1:entity:guest'],
+            description: '朋友到访',
+            sourceBlockId: 'b1',
+          },
+        ],
+      }
+      second.phone.conversations[0].contactRef = 'm1:entity:guest'
+      const messages = [
+        {
+          ...messageFixture('m1', 'assistant', JSON.stringify(first), 0),
+          reply: { kind: 'narrative' as const, value: first },
+        },
+        {
+          ...messageFixture('m2', 'assistant', JSON.stringify(second), 1),
+          reply: { kind: 'narrative' as const, value: second },
+          requestContext: JSON.stringify({
+            source: { messageId: 'm1', blockId: 'b1' },
+            entities: [{ id: 'm1:entity:guest', name: 'm1' }],
+          }),
+        },
+        {
+          ...messageFixture('m3', 'assistant', JSON.stringify(forumFixture), 2),
+          kind: 'forum' as const,
+          reply: { kind: 'forum' as const, value: forumFixture },
+        },
+        {
+          ...messageFixture('m4', 'assistant', '用户 m1:entity:guest 原文', 3),
+          kind: 'interaction' as const,
+          interaction: {
+            kind: 'forum' as const,
+            postId: 'm3:post',
+            replyTo: 'm3:answer-0',
+            userText: '用户 m1:entity:guest 原文',
+            author: '读者',
+            time: '15:00',
+            content: '回答',
+          },
+        },
+      ]
+      await importSave(save(messages))
+      const original = await exportArchive(archive.id)
+      const newId =
+        mode === 'fork'
+          ? (await forkArchive(archive.id, 'm4')).id
+          : (await importSave(original, db, false, 'merge')).archives[0].id
+      const copied = await archiveMessages(newId)
+      const projected = (await db.storyStates.get(newId))!
+      const guest = projected.entities.find((entity) => entity.name === '来客')!
+      expect(guest.id).toBe(`${copied[0].id}:entity:guest`)
+      expect(projected.states.find((state) => state.entityRef === guest.id)?.value).toBe('开心')
+      expect(projected.relationships[0].from).toBe(guest.id)
+      expect(projected.events.at(-1)?.participants).toContain(guest.id)
+      expect(projected.phones.some((phone) => phone.contactRef === guest.id)).toBe(true)
+      expect(projected.forums[0].answers.at(-2)?.replyTo).toBe(`${copied[2].id}:answer-0`)
+      expect(copied[3].interaction?.userText).toBe('用户 m1:entity:guest 原文')
+      expect(JSON.parse(copied[1].requestContext!)).toEqual({
+        source: { messageId: copied[0].id, blockId: 'b1' },
+        entities: [{ id: guest.id, name: 'm1' }],
+      })
+      expect((await exportArchive(archive.id)).messages).toEqual(original.messages)
+      await expect(importSave(await exportSave())).resolves.toBeDefined()
+    },
+  )
+  it.each([
+    { usage: {} },
+    { diagnostics: { elapsedMs: 1 } },
+    { createdAt: 9_000_000_000_000_000 },
+    { sequence: -1 },
+  ])('损坏的 v3 元数据拒绝覆盖：%j', async (invalid) => {
+    await db.archives.put(archive)
+    await expect(
+      importSave(save([{ ...messageFixture('invalid', 'user', '原文', 0), ...invalid } as never])),
+    ).rejects.toThrow()
+    expect(await db.archives.get(archive.id)).toEqual(archive)
   })
 })

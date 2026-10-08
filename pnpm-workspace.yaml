@@ -1,0 +1,5 @@
+packages:
+  - '.'
+
+# Use the stable releases recorded in the lockfile, including newly published ones.
+minimumReleaseAge: 0

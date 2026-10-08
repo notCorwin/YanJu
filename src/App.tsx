@@ -12,6 +12,7 @@ import {
   type Notify,
 } from '@/components/managers'
 import { WorldPlayer } from '@/components/world-player'
+import { RecoveryBoundary } from '@/components/recovery-boundary'
 import { Studio } from '@/components/studio'
 import { requestTrack } from '@/lib/media'
 import type { SourceRef } from '@/lib/domain-schema'
@@ -72,7 +73,11 @@ export default function App() {
         宴雎 · 正在打开篇章…
       </main>
     )
-  return <Workspace />
+  return (
+    <RecoveryBoundary title="界面暂时无法显示">
+      <Workspace />
+    </RecoveryBoundary>
+  )
 }
 function Workspace() {
   const settings = useLiveQuery(() => db.settings.get('app'))

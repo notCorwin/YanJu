@@ -1,3 +1,7 @@
+import { withArchiveOperation } from '@/lib/operations'
+import { MessageEditor } from './message-editor'
+import { RecoveryBoundary } from './recovery-boundary'
+import { RequestDetails } from './request-details'
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useLiveQuery } from 'dexie-react-hooks'
@@ -6,7 +10,7 @@ import {
   db,
   appendMessage,
   createArchiveData,
-  editMessage,
+  forkArchive,
   revise,
   refreshStory,
 } from '@/lib/db'
@@ -36,16 +40,6 @@ import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Progress } from './ui/progress'
 import { Select, SelectContent, SelectTrigger, SelectValue, SelectItem } from './ui/select'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from './ui/dialog'
-import { Textarea } from './ui/textarea'
-import { Field, FieldLabel } from './ui/field'
 import { NarrativeView, ForumView } from './replies'
 import { ConfirmDialog, IconButton, Prose } from './shared'
 import type { Notify } from './managers'
@@ -59,6 +53,7 @@ import {
   Trash2,
   ArrowDownToLine,
   BookOpen,
+  GitBranch,
 } from 'lucide-react'
 
 export interface ExternalChatRequest {
@@ -136,13 +131,14 @@ function ChatRunner({
   disabled: boolean
   onStudio: () => void
 }) {
+  const [visibleLimit, setVisibleLimit] = useState(60)
   const transport = useMemo(() => new BrowserChatTransport(), [])
   const finishedMessage = useRef<string | null>(null)
   const { messages, sendMessage, regenerate, setMessages, stop, status, error, clearError } =
     useChat<ChatMessage>({
       id: archive.id,
       transport,
-      messages: stored.map(toChatMessage),
+      messages: stored.slice(-visibleLimit).map(toChatMessage),
       generateId: () => crypto.randomUUID(),
       onError: (e) => notify(friendlyError(e), true),
       onFinish: ({ message }) => {
@@ -152,9 +148,9 @@ function ChatRunner({
   const [input, setInput] = useState(archive.draft)
   const [mode, setMode] = useState<RequestKind>('narrative')
   const [editing, setEditing] = useState<StoredMessage | null>(null)
-  const [editText, setEditText] = useState('')
   const [regenId, setRegenId] = useState('')
   const [clear, setClear] = useState(false)
+  const [preparing, setPreparing] = useState(false)
   const [compressing, setCompressing] = useState(false)
   const [forumRunning, setForumRunning] = useState(false)
   const [forumPartial, setForumPartial] = useState('')
@@ -163,7 +159,8 @@ function ChatRunner({
   const composing = useRef(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const controller = useRef<AbortController | null>(null)
-  const chatBusy = status === 'streaming' || status === 'submitted' || compressing || forumRunning
+  const chatBusy =
+    status === 'streaming' || status === 'submitted' || preparing || compressing || forumRunning
   const busy = chatBusy || disabled
 
   useEffect(() => {
@@ -178,8 +175,8 @@ function ChatRunner({
     [stop, onBusy],
   )
   useEffect(() => {
-    if (!lock.current && !busy) setMessages(stored.map(toChatMessage))
-  }, [stored, busy, setMessages])
+    if (!lock.current && !busy) setMessages(stored.slice(-visibleLimit).map(toChatMessage))
+  }, [stored, busy, setMessages, visibleLimit])
   useEffect(() => {
     if (insert) {
       setInput((v) => (v ? `${v}\n${insert}` : insert))
@@ -205,45 +202,61 @@ function ChatRunner({
     }
     const kind = explicitKind ?? (/^(\$发送帖子|新帖[：:]|回复.+[：:])/.test(text) ? 'forum' : mode)
     lock.current = true
+    setPreparing(true)
+    controller.current = new AbortController()
     onBusy(true)
     clearError()
     finishedMessage.current = null
     try {
-      const current = await archiveMessages(archive.id)
-      const user: StoredMessage = {
-        id: crypto.randomUUID(),
-        archiveId: archive.id,
-        role: 'user',
-        content: text,
-        userName: persona?.name ?? archive.userName ?? '沈辞玉',
-        createdAt: Date.now(),
-        sequence: (current.at(-1)?.sequence ?? -1) + 1,
-        kind,
-        status: 'complete',
-      }
-      await appendMessage(user, expectedRevision)
-      draft('')
-      await sendMessage(
-        {
-          id: user.id,
+      return await withArchiveOperation(archive.id, async (lease) => {
+        if (controller.current?.signal.aborted) throw new DOMException('已取消', 'AbortError')
+        const current = await archiveMessages(archive.id)
+        const user: StoredMessage = {
+          id: crypto.randomUUID(),
+          archiveId: archive.id,
           role: 'user',
-          parts: [{ type: 'text', text: user.content }],
-          metadata: { createdAt: user.createdAt, kind, status: 'complete' },
-        },
-        { body: { kind } },
-      )
-      const complete = finishedMessage.current
-        ? await db.messages.get(finishedMessage.current)
-        : undefined
-      return complete?.status === 'complete' && !complete.stale && complete.reply?.kind === kind
+          content: text,
+          userName: persona?.name ?? archive.userName ?? '沈辞玉',
+          createdAt: Date.now(),
+          sequence: (current.at(-1)?.sequence ?? -1) + 1,
+          kind,
+          status: 'complete',
+        }
+        await appendMessage(user, expectedRevision)
+        draft('')
+        await sendMessage(
+          {
+            id: user.id,
+            role: 'user',
+            parts: [{ type: 'text', text: user.content }],
+            metadata: { createdAt: user.createdAt, kind, status: 'complete' },
+          },
+          {
+            body: {
+              kind,
+              operationOwner: lease.owner,
+              operationSignal: controller.current?.signal,
+              channelId: channel.id,
+              personaId: persona?.id ?? '',
+            },
+          },
+        )
+        await transport.waitForIdle()
+        const complete = finishedMessage.current
+          ? await db.messages.get(finishedMessage.current)
+          : undefined
+        return complete?.status === 'complete' && !complete.stale && complete.reply?.kind === kind
+      })
     } catch (e) {
       notify(friendlyError(e), true)
       return false
     } finally {
       lock.current = false
+      setPreparing(false)
+      controller.current = null
       onBusy(false)
       try {
-        setMessages((await archiveMessages(archive.id)).map(toChatMessage))
+        setMessages((await archiveMessages(archive.id)).slice(-visibleLimit).map(toChatMessage))
       } catch (e) {
         notify(friendlyError(e), true)
       }
@@ -270,6 +283,12 @@ function ChatRunner({
   }, [externalMode, onModeHandled])
   useEffect(() => {
     if (!sourceMessage || busy) return
+    const sourceIndex = stored.findIndex((m) => m.id === sourceMessage)
+    if (sourceIndex >= 0 && stored.length - sourceIndex > visibleLimit) {
+      setVisibleLimit(stored.length - sourceIndex + 5)
+      return
+    }
+    if (sourceIndex >= 0 && !messages.some((m) => m.id === sourceMessage)) return
     const frame = requestAnimationFrame(() => {
       const element = document.getElementById(
         sourceBlock ? `source-block-${sourceMessage}-${sourceBlock}` : `message-${sourceMessage}`,
@@ -283,7 +302,7 @@ function ChatRunner({
       onSourceHandled(sourceMessage, sourceBlock)
     })
     return () => cancelAnimationFrame(frame)
-  }, [sourceMessage, sourceBlock, busy, notify, onSourceHandled])
+  }, [sourceMessage, sourceBlock, busy, notify, onSourceHandled, visibleLimit, stored, messages])
   const replyToForum = async (id: string, text: string) => {
     if (busy || lock.current) return
     lock.current = true
@@ -292,7 +311,7 @@ function ChatRunner({
     controller.current = new AbortController()
     try {
       const task = await executeAuxiliary(archive.id, 'forumReply', text, id, {
-        signal: controller.current.signal,
+        signal: controller.current!.signal,
       })
       if (task.status !== 'complete') notify(task.error ?? '论坛回复未完成，可在工作台重试。', true)
     } catch (error) {
@@ -310,28 +329,36 @@ function ChatRunner({
       return
     }
     lock.current = true
+    setPreparing(true)
+    controller.current = new AbortController()
     onBusy(true)
     clearError()
     try {
-      const current = await db.archives.get(archive.id)
-      const all = await archiveMessages(archive.id)
-      const target = all.findIndex((m) => m.id === id)
-      if (
-        current?.summary &&
-        target <= all.findIndex((m) => m.id === current.summary?.coveredThroughId)
-      )
-        await db.archives.put(revise(current, true))
-      await regenerate({
-        messageId: id,
-        body: { regenerateFromId: id, kind: all[target]?.kind === 'forum' ? 'forum' : 'narrative' },
+      await withArchiveOperation(archive.id, async (lease) => {
+        const all = await archiveMessages(archive.id)
+        const target = all.findIndex((m) => m.id === id)
+        await regenerate({
+          messageId: id,
+          body: {
+            regenerateFromId: id,
+            kind: all[target]?.kind === 'forum' ? 'forum' : 'narrative',
+            operationOwner: lease.owner,
+            operationSignal: controller.current?.signal,
+            channelId: channel.id,
+            personaId: persona?.id ?? '',
+          },
+        })
+        await transport.waitForIdle()
       })
     } catch (e) {
       notify(friendlyError(e), true)
     } finally {
       lock.current = false
+      setPreparing(false)
+      controller.current = null
       onBusy(false)
       try {
-        setMessages((await archiveMessages(archive.id)).map(toChatMessage))
+        setMessages((await archiveMessages(archive.id)).slice(-visibleLimit).map(toChatMessage))
       } catch (e) {
         notify(friendlyError(e), true)
       }
@@ -345,19 +372,21 @@ function ChatRunner({
     setCompressing(true)
     controller.current = new AbortController()
     try {
-      const current = await db.archives.get(archive.id)
-      if (current)
-        await compressArchive(
-          current,
-          channel,
-          persona,
-          await archiveMessages(archive.id),
-          controller.current.signal,
-          mode,
-          (d) => notify(d),
-          true,
-        )
-      notify('上下文压缩完成，原文保留。')
+      await withArchiveOperation(archive.id, async () => {
+        const current = await db.archives.get(archive.id)
+        if (current)
+          await compressArchive(
+            current,
+            channel,
+            persona,
+            await archiveMessages(archive.id),
+            controller.current!.signal,
+            mode,
+            (d) => notify(d),
+            true,
+          )
+        notify('上下文压缩完成，原文保留。')
+      })
     } catch (e) {
       notify(friendlyError(e), true)
     } finally {
@@ -372,9 +401,10 @@ function ChatRunner({
     controller.current?.abort()
     try {
       await stop()
+      await transport.waitForIdle()
       if (!compressing) await persistCancelledMessage(archive.id, messages.at(-1))
       await db.persistence.flush()
-      setMessages((await archiveMessages(archive.id)).map(toChatMessage))
+      setMessages((await archiveMessages(archive.id)).slice(-visibleLimit).map(toChatMessage))
     } catch (e) {
       notify(friendlyError(e), true)
     } finally {
@@ -423,6 +453,15 @@ function ChatRunner({
         <MessageScroller>
           <MessageScrollerViewport>
             <MessageScrollerContent className="mx-auto reading-width px-4 py-8 sm:px-6">
+              {stored.length > visibleLimit && (
+                <Button
+                  variant="outline"
+                  className="mb-4"
+                  onClick={() => setVisibleLimit((count) => count + 60)}
+                >
+                  加载较早消息（还有 {stored.length - visibleLimit} 条）
+                </Button>
+              )}
               {messages.map((message, i) => (
                 <MessageScrollerItem key={message.id} scrollAnchor={message.role === 'user'}>
                   <article
@@ -461,59 +500,69 @@ function ChatRunner({
                             )}
                           </span>
                         </MessageHeader>
-                        {message.role === 'user' ? (
-                          <Bubble variant="secondary" align="end">
-                            <BubbleContent>
-                              {message.parts.map((p, j) =>
-                                p.type === 'text' ? <Prose key={j} text={p.text} /> : null,
-                              )}
-                            </BubbleContent>
-                          </Bubble>
-                        ) : (
-                          <Bubble variant="ghost">
-                            <BubbleContent className="w-full">
-                              {message.parts.map((p, j) => {
-                                if (p.type === 'data-narrative')
-                                  return (
-                                    <NarrativeView key={j} reply={p.data} messageId={message.id} />
-                                  )
-                                if (p.type === 'data-forum')
-                                  return (
-                                    <ForumView
-                                      key={j}
-                                      reply={
-                                        story?.forums.find(
-                                          (f) => f.source.messageId === message.id,
-                                        ) ?? p.data
-                                      }
-                                      disabled={
-                                        busy || stored.find((m) => m.id === message.id)?.stale
-                                      }
-                                      onReply={(id, text) => void replyToForum(id, text)}
-                                      onSend={(text) => void send(text, 'forum')}
-                                    />
-                                  )
-                                if (p.type === 'data-notice')
-                                  return (
-                                    <img
-                                      key={j}
-                                      src={p.data}
-                                      alt="角色设定提示"
-                                      className="max-w-full rounded-lg"
-                                      loading="lazy"
-                                    />
-                                  )
-                                if (p.type === 'text') return <Prose key={j} text={p.text} />
-                                return null
-                              })}
-                            </BubbleContent>
-                          </Bubble>
-                        )}
+                        <RecoveryBoundary
+                          resetKey={JSON.stringify(message.parts)}
+                          title="这条消息暂时无法显示"
+                        >
+                          {message.role === 'user' ? (
+                            <Bubble variant="secondary" align="end">
+                              <BubbleContent>
+                                {message.parts.map((p, j) =>
+                                  p.type === 'text' ? <Prose key={j} text={p.text} /> : null,
+                                )}
+                              </BubbleContent>
+                            </Bubble>
+                          ) : (
+                            <Bubble variant="ghost">
+                              <BubbleContent className="w-full">
+                                {message.parts.map((p, j) => {
+                                  if (p.type === 'data-narrative')
+                                    return (
+                                      <NarrativeView
+                                        key={j}
+                                        reply={p.data}
+                                        messageId={message.id}
+                                      />
+                                    )
+                                  if (p.type === 'data-forum')
+                                    return (
+                                      <ForumView
+                                        key={j}
+                                        reply={
+                                          story?.forums.find(
+                                            (f) => f.source.messageId === message.id,
+                                          ) ?? p.data
+                                        }
+                                        disabled={
+                                          busy || stored.find((m) => m.id === message.id)?.stale
+                                        }
+                                        onReply={(id, text) => void replyToForum(id, text)}
+                                        onSend={(text) => void send(text, 'forum')}
+                                      />
+                                    )
+                                  if (p.type === 'data-notice')
+                                    return (
+                                      <img
+                                        key={j}
+                                        src={p.data}
+                                        alt="角色设定提示"
+                                        className="max-w-full rounded-lg"
+                                        loading="lazy"
+                                      />
+                                    )
+                                  if (p.type === 'text') return <Prose key={j} text={p.text} />
+                                  return null
+                                })}
+                              </BubbleContent>
+                            </Bubble>
+                          )}
+                        </RecoveryBoundary>
                         {message.metadata?.error && (
                           <p role="alert" className="text-sm text-destructive">
                             {message.metadata.error}
                           </p>
                         )}
+                        <RequestDetails value={message.metadata?.diagnostics} />
                         <MessageFooter>
                           <div className="flex flex-wrap gap-1">
                             <IconButton label="复制消息" onClick={() => copy(message)}>
@@ -526,23 +575,26 @@ function ChatRunner({
                                 const m = stored.find((m) => m.id === message.id)
                                 if (m) {
                                   setEditing(m)
-                                  setEditText(
-                                    m.reply
-                                      ? JSON.stringify(m.reply.value, null, 2)
-                                      : m.interaction
-                                        ? JSON.stringify(m.interaction, null, 2)
-                                        : m.effects
-                                          ? JSON.stringify(
-                                              { content: m.content, effects: m.effects },
-                                              null,
-                                              2,
-                                            )
-                                          : m.rawContent || m.content,
-                                  )
                                 }
                               }}
                             >
                               <Pencil />
+                            </IconButton>
+                            <IconButton
+                              label="从此分叉"
+                              disabled={busy}
+                              onClick={() =>
+                                void withArchiveOperation(archive.id, () =>
+                                  forkArchive(archive.id, message.id),
+                                )
+                                  .then((created) => {
+                                    window.location.hash = `#/chat/${created.id}`
+                                    notify('已创建剧情分支。')
+                                  })
+                                  .catch((error) => notify(friendlyError(error), true))
+                              }
+                            >
+                              <GitBranch />
                             </IconButton>
                             {message.role === 'assistant' &&
                               i > 0 &&
@@ -706,48 +758,20 @@ function ChatRunner({
           )}
         </div>
       </footer>
-      <Dialog open={editing !== null} onOpenChange={(v) => !v && setEditing(null)}>
-        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:page-width">
-          <DialogHeader>
-            <DialogTitle>编辑消息</DialogTitle>
-            <DialogDescription>
-              {editing?.reply || editing?.interaction || editing?.effects
-                ? '回复保存为 JSON 内容。修改后会检查结构；已覆盖这条消息的摘要会失效并在需要时重建。'
-                : '修改后保留这条消息的时间和所属存档；后续剧情会标记失效并重建状态。'}
-            </DialogDescription>
-          </DialogHeader>
-          <Field>
-            <FieldLabel htmlFor="edit-message">消息内容</FieldLabel>
-            <Textarea
-              id="edit-message"
-              value={editText}
-              onChange={(e) => setEditText(e.target.value)}
-              rows={12}
-            />
-          </Field>
-          <DialogFooter>
-            <Button
-              disabled={busy || !editText.trim()}
-              onClick={() => {
-                if (editing && !busy)
-                  void editMessage(editing.id, editText)
-                    .then(() => {
-                      setEditing(null)
-                      notify('消息已更新。')
-                    })
-                    .catch((e) => notify(friendlyError(e), true))
-              }}
-            >
-              保存修改
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {editing && (
+        <MessageEditor
+          key={editing.id}
+          message={editing}
+          disabled={busy}
+          onClose={() => setEditing(null)}
+          onSaved={() => notify('消息已更新。')}
+        />
+      )}
       <ConfirmDialog
         open={!!regenId}
         onClose={() => setRegenId('')}
         title="从这里重新生成？"
-        detail="成功后替换这条回复及其后续内容。生成失败或取消会保留原聊天，并保存收到的部分内容。"
+        detail="成功后将原分支保留为独立篇章，再替换这条回复及其后续内容。生成失败或取消会保留原聊天，并保存收到的部分内容。"
         destructive={false}
         onConfirm={() => retry(regenId)}
       />
@@ -759,18 +783,22 @@ function ChatRunner({
         onConfirm={async () => {
           if (busy || lock.current) return
           const data = createArchiveData()
-          await db.transaction(
-            'rw',
-            [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
-            async () => {
-              await db.messages.where('archiveId').equals(archive.id).delete()
-              await db.messages.put({ ...data.opening, archiveId: archive.id })
-              await db.tasks.where('archiveId').equals(archive.id).delete()
-              await db.requests.where('archiveId').equals(archive.id).delete()
-              const updated = { ...revise(archive, true), draft: '' }
-              await db.archives.put(updated)
-              await refreshStory(db, updated)
-            },
+          await withArchiveOperation(archive.id, () =>
+            db.transaction(
+              'rw',
+              [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
+              async () => {
+                await db.messages.where('archiveId').equals(archive.id).delete()
+                await db.messages.put({ ...data.opening, archiveId: archive.id })
+                await db.tasks.where('archiveId').equals(archive.id).delete()
+                await db.requests.where('archiveId').equals(archive.id).delete()
+                const current = await db.archives.get(archive.id)
+                if (!current) throw new Error('存档不存在。')
+                const updated = { ...revise(current, true), draft: '' }
+                await db.archives.put(updated)
+                await refreshStory(db, updated)
+              },
+            ),
           )
           draft('')
           notify('当前聊天已清空。')

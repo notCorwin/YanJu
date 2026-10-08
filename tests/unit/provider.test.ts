@@ -1,11 +1,22 @@
+import { errorDiagnostics } from '../../src/lib/request-trace'
 import { describe, it, expect, vi } from 'vitest'
 import {
   channelFingerprint,
   channelIsReady,
   generateReply,
   testChannel,
+  testChannelProtocols,
+  friendlyError,
 } from '../../src/lib/provider'
-import { narrativeFixture, channelFixture, capabilityFixture, sse, completion } from '../fixtures'
+import {
+  forumFixture,
+  compressionFixture,
+  narrativeFixture,
+  channelFixture,
+  capabilityFixture,
+  sse,
+  completion,
+} from '../fixtures'
 import type { DeepPartial } from 'ai'
 import type { NarrativeReply } from '../../src/lib/schemas'
 
@@ -26,6 +37,101 @@ function streaming(value: unknown, finishReason = 'stop'): Response {
   })
 }
 describe('OpenAI-compatible 严格协议', () => {
+  it('完整能力测试实际运行流式叙事、50 条论坛回答和摘要协议', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body))
+      const value =
+        body.response_format.json_schema.name === 'NarrativeReply'
+          ? narrativeFixture
+          : body.response_format.json_schema.name === 'ForumReply'
+            ? forumFixture
+            : body.response_format.json_schema.name === 'CompressionResult'
+              ? compressionFixture
+              : capabilityFixture
+      return body.stream ? streaming(value) : Response.json(completion(value))
+    })
+    const result = await testChannelProtocols(
+      channelFixture,
+      new AbortController().signal,
+      vi.fn(),
+      fetcher,
+    )
+    expect(result).toMatchObject({ ok: true, protocol: 'chat-completions', protocols: true })
+    expect(
+      fetcher.mock.calls.map(
+        (call) => JSON.parse(String(call[1]?.body)).response_format.json_schema.name,
+      ),
+    ).toEqual([
+      'ChannelCapability',
+      'ChannelCapability',
+      'NarrativeReply',
+      'ForumReply',
+      'CompressionResult',
+    ])
+  })
+  it('能力测试拒绝非流式成功但流式协议损坏的渠道', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(completion(capabilityFixture)))
+      .mockResolvedValueOnce(streaming({ ready: true }))
+    expect(await testChannel(channelFixture, undefined, fetcher)).toMatchObject({
+      ok: false,
+      checks: { 'chat-completions': { nonStreaming: 'passed', streaming: 'failed' } },
+    })
+  })
+  it('首包等待超时结束挂起流，保留诊断且不会重复请求', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(
+      async (_url, init) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), {
+                once: true,
+              })
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream', 'x-request-id': 'timeout-request' } },
+        ),
+    )
+    const options = { ...request(fetcher), channel: { ...channelFixture, requestTimeoutMs: 25 } }
+    let failure: unknown
+    try {
+      await generateReply(options)
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(Error)
+    expect(friendlyError(failure)).toContain('等待上限')
+    expect(errorDiagnostics(failure)).toMatchObject({
+      requestId: 'timeout-request',
+      httpStatus: 200,
+      corrections: 0,
+    })
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+  it.each([401, 429])('HTTP %s 失败返回可操作说明和请求编号', async (status) => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json(
+          { error: { message: 'request rejected', type: 'request_error' } },
+          { status, headers: { 'x-request-id': 'rejected-request' } },
+        ),
+      )
+    let failure: unknown
+    try {
+      await generateReply(request(fetcher))
+    } catch (error) {
+      failure = error
+    }
+    expect(errorDiagnostics(failure)).toMatchObject({
+      requestId: 'rejected-request',
+      httpStatus: status,
+    })
+    expect(friendlyError(failure)).toMatch(status === 401 ? /授权/ : /受限/)
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
   it('能力测试发送 json_schema / strict true，不使用 json_object', async () => {
     const fetcher = vi
       .fn<typeof fetch>()

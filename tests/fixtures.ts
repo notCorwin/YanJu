@@ -144,6 +144,7 @@ export const channelFixture: Channel = {
   temperature: 0.9,
   maxOutputTokens: 4096,
   contextWindow: 131072,
+  requestTimeoutMs: 300000,
   createdAt: 1,
 }
 export const messageFixture = (

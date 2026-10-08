@@ -419,7 +419,7 @@ describe('辅助任务完整链路', () => {
     expect((await db.tasks.get(task.id))?.output).toEqual(task.output)
     if (kind === 'persona' || kind === 'archiveMetadata') {
       await applyTask(task.id)
-      if (kind === 'persona') expect((await db.personas.toArray())[0].name).toBe('林晚')
+      if (kind === 'persona') expect((await db.personas.toArray()).some((p) => p.name === '林晚')).toBe(true)
       else expect((await db.archives.get(archive.id))?.description).toContain('书房')
     }
     expect((await db.storyStates.get(archive.id))!.events).toHaveLength(1)
@@ -459,12 +459,13 @@ describe('辅助任务完整链路', () => {
     expect((await db.storyStates.get(archive.id))!.states[0].value).toBe('更加平静')
   })
   it('失效版本、伪造证据、无效关联与媒体曲目不能应用', async () => {
+    const personaCount = await db.personas.count()
     const task = await executeAuxiliary(archive.id, 'persona', '生成读者', null, {
       fetcher: fake('persona'),
     })
     await appendMessage(messageFixture('new', 'user', '新的一轮', 3))
     await expect(applyTask(task.id)).rejects.toThrow(/变更/)
-    expect(await db.personas.count()).toBe(0)
+    expect(await db.personas.count()).toBe(personaCount)
     const invalidEvidence = fake('consistency', () => ({
       summary: '检查结果',
       issues: [

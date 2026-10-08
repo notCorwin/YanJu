@@ -13,9 +13,10 @@ export default defineConfig({
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     { name: 'mobile', use: { ...devices['iPhone 13'], defaultBrowserType: 'chromium' } },
+    { name: 'mobile-safari', use: { ...devices['iPhone 13'] } },
   ],
   webServer: {
-    command: `pnpm dev --port ${port} --strictPort`,
+    command: `pnpm ${process.env.YANJU_E2E_PREVIEW === '1' ? 'preview' : 'dev'} --port ${port} --strictPort`,
     url: baseURL,
     reuseExistingServer: false,
   },

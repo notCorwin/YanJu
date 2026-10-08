@@ -18,6 +18,9 @@ export interface ChannelCapability {
   protocol?: ApiProtocol
   checks?: Partial<Record<ApiProtocol, ProtocolCapability>>
   error?: string
+  protocols?: boolean
+  firstTokenMs?: number
+  elapsedMs?: number
 }
 export interface Channel {
   id: string
@@ -29,6 +32,7 @@ export interface Channel {
   temperature: number | null
   maxOutputTokens: number
   contextWindow: number
+  requestTimeoutMs?: number
   createdAt: number
   capability?: ChannelCapability
   calibration?: { ratio: number; samples: number }
@@ -87,6 +91,17 @@ export interface Archive {
   keywords?: string[]
 }
 export type MessageStatus = 'complete' | 'partial' | 'failed' | 'cancelled'
+export interface RequestDiagnostics {
+  startedAt: number
+  elapsedMs: number
+  firstTokenMs?: number
+  requestId?: string
+  httpStatus?: number
+  corrections: number
+  model: string
+  schema: string
+  finishReason?: string
+}
 export interface StoredMessage {
   id: string
   archiveId: string
@@ -105,6 +120,7 @@ export interface StoredMessage {
   correction?: string
   error?: string
   usage?: Usage
+  diagnostics?: RequestDiagnostics
   stale?: boolean
   requestContext?: string
   effects?: TurnEffects
@@ -143,6 +159,7 @@ export interface TaskRun {
   error?: string
   correction?: string
   usage?: Usage
+  diagnostics?: RequestDiagnostics
   applied?: boolean
 }
 export interface RequestRecord {
@@ -168,8 +185,10 @@ export interface RequestRecord {
   raw?: string
   error?: string
   usage?: Usage
+  diagnostics?: RequestDiagnostics
 }
 export interface MessageMeta {
+  diagnostics?: RequestDiagnostics
   createdAt: number
   kind: StoredMessage['kind']
   status: MessageStatus
@@ -225,6 +244,7 @@ export const newChannel = (): Channel => ({
   temperature: 0.9,
   maxOutputTokens: 8192,
   contextWindow: 65536,
+  requestTimeoutMs: 300000,
   createdAt: Date.now(),
 })
 export const newPersona = (): Persona => ({

@@ -6,7 +6,8 @@ import { estimatedProtocol } from './channels'
 import { taskDefinitions, taskSchemas, validateTask, type TaskKind, type TaskOutput } from './tasks'
 import { ContentValidationError, sanitizeSchemaPartial } from './schemas'
 import { saveRequestRecord } from './db'
-import type { ApiProtocol, Channel, Usage, RequestRecord } from './types'
+import { ChannelRequestError, requestTrace, requestTimeout } from './request-trace'
+import type { RequestDiagnostics, ApiProtocol, Channel, Usage, RequestRecord } from './types'
 
 export interface StructuredOptions<K extends TaskKind> {
   kind: K
@@ -53,7 +54,12 @@ function measuredUsage(
 }
 export async function runStructuredTask<K extends TaskKind>(
   options: StructuredOptions<K>,
-): Promise<{ value: TaskOutput<K>; usage: Usage | undefined; correction?: string }> {
+): Promise<{
+  value: TaskOutput<K>
+  usage: Usage | undefined
+  correction?: string
+  diagnostics: RequestDiagnostics
+}> {
   const { kind, channel, signal } = options
   const schema = taskSchemas[kind] as unknown as z.ZodType<TaskOutput<K>>
   const instructions = options.instructions ?? taskInstructions(kind)
@@ -65,9 +71,11 @@ export async function runStructuredTask<K extends TaskKind>(
   const protocol = options.protocol ?? estimatedProtocol(channel)
   const streaming = options.streaming !== false
   const executionId = crypto.randomUUID()
+  const trace = requestTrace(channel, taskDefinitions[kind].name, options.fetcher)
   let correction: string | undefined
   for (let attempt = 0; attempt < 2; attempt++) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+    trace.data.corrections = attempt
     const requestMessages: ModelMessage[] = [
       ...messages,
       ...(correction ? [{ role: 'user' as const, content: correction }] : []),
@@ -118,7 +126,7 @@ export async function runStructuredTask<K extends TaskKind>(
     let usage: Usage | undefined
     try {
       const request = {
-        ...channelRequest(channel, options.fetcher, options.protocol),
+        ...channelRequest(channel, trace.fetch, protocol),
         instructions,
         allowSystemInMessages: true,
         messages: requestMessages,
@@ -127,16 +135,23 @@ export async function runStructuredTask<K extends TaskKind>(
         ...(temperature === null ? {} : { temperature }),
         abortSignal: signal,
         maxRetries: 0,
+        timeout: requestTimeout(channel, streaming),
       }
       let generated: unknown
+      let finishReason: string | undefined
       if (!streaming) {
         const result = await generateText(request)
+        trace.chunk()
+        finishReason = result.finishReason
         usage = measuredUsage(channel, options.estimatedInput ?? estimated, result.usage)
         if (result.finishReason === 'length') throw new Error('truncated: token limit')
         generated = result.output
       } else {
         const stream = streamText({
           ...request,
+          onChunk: ({ chunk }) => {
+            if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') trace.chunk()
+          },
           onError: ({ error }) => {
             streamError = error
           },
@@ -159,6 +174,7 @@ export async function runStructuredTask<K extends TaskKind>(
           }
         }
         const finish = await stream.finishReason
+        finishReason = finish
         usage = measuredUsage(channel, options.estimatedInput ?? estimated, await stream.usage)
         if (finish === 'length') throw new Error('truncated: token limit')
         if (finish === 'content-filter') throw new Error('渠道未完成本次输出。')
@@ -171,8 +187,9 @@ export async function runStructuredTask<K extends TaskKind>(
       const value = validateTask(kind, generated)
       options.validate?.(value)
       await checkpoint
-      await saveRequestRecord({ ...record, status: 'complete', output: value, usage })
-      return { value, correction, usage }
+      const diagnostics = trace.finish(finishReason)
+      await saveRequestRecord({ ...record, status: 'complete', output: value, usage, diagnostics })
+      return { value, correction, usage, diagnostics }
     } catch (error) {
       const failure = streamError ?? error
       await checkpoint.catch(() => undefined)
@@ -181,6 +198,7 @@ export async function runStructuredTask<K extends TaskKind>(
         status: signal?.aborted ? 'cancelled' : 'failed',
         usage,
         error: friendlyError(failure),
+        diagnostics: trace.finish(signal?.aborted ? 'cancelled' : 'error'),
       })
       if (
         signal?.aborted ||
@@ -188,7 +206,10 @@ export async function runStructuredTask<K extends TaskKind>(
         options.allowCorrection === false ||
         !invalidOutput(failure)
       )
-        throw failure
+        throw new ChannelRequestError(
+          failure,
+          trace.finish(signal?.aborted ? 'cancelled' : 'error'),
+        )
       correction = `上次回复校验失败：${friendlyError(failure)}。请纠正并重新输出同一 schema 的完整对象，保留本轮意图，不省略必填模块。`
       options.onCorrection?.('回复未通过完整校验，正在使用相同 schema 纠正一次。', correction)
     }

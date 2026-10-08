@@ -1,6 +1,13 @@
 import type { SaveFile } from './types'
+import { OpfsSnapshotWriter, readOpfsSnapshot } from './opfs-snapshot'
 
 export const OPFS_SAVE_FILE = 'save.json'
+
+export interface PersistenceSnapshot {
+  data: SaveFile
+  messageIds?: string[]
+  committed: () => Promise<void>
+}
 
 export interface StorageStatus {
   phase: 'opening' | 'saving' | 'saved' | 'unavailable' | 'error'
@@ -18,10 +25,14 @@ export class OpfsPersistence {
   private preservePrevious = false
   private running?: Promise<void>
   private timer?: ReturnType<typeof setTimeout>
+  private messages = new Set<string>()
+  private fullSnapshot = true
+  private writer = new OpfsSnapshotWriter()
 
   constructor(
     private name: string,
-    private snapshot: () => Promise<SaveFile>,
+    private snapshot: (messageIds?: string[]) => Promise<SaveFile | PersistenceSnapshot>,
+    private incremental = false,
   ) {}
 
   getStatus = () => this.state
@@ -60,21 +71,16 @@ export class OpfsPersistence {
 
   async read(): Promise<unknown | undefined> {
     if (!this.available()) return undefined
-    try {
-      const directory = await this.directory()
-      const handle = await directory.getFileHandle(OPFS_SAVE_FILE)
-      const file = await handle.getFile()
-      return JSON.parse(await file.text()) as unknown
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'NotFoundError') return undefined
-      throw error
-    }
+    const read = async () => readOpfsSnapshot(await this.directory())
+    // A reader must keep the old manifest's files alive while a writer commits and cleans up.
+    return navigator.locks ? navigator.locks.request(`yanju-opfs:${this.name}`, read) : read()
   }
 
   async start() {
     this.enabled = true
     if (!this.available()) return
     void this.requestPersistence()
+    this.markDirty()
     await this.flush()
   }
 
@@ -95,22 +101,23 @@ export class OpfsPersistence {
     this.timer = undefined
   }
 
-  markDirty() {
+  markDirty(messageIds?: string[]) {
     if (!this.enabled) return
     this.dirty++
+    if (messageIds === undefined) this.fullSnapshot = true
+    else messageIds.forEach((id) => this.messages.add(id))
     if (!this.available()) return
     if (this.state.phase !== 'error') this.update({ phase: 'saving' })
     // Coalesce draft edits and streaming checkpoints; terminal replies flush immediately.
-    if (!this.timer)
-      this.timer = setTimeout(() => {
-        this.timer = undefined
-        void this.flush()
-      }, 100)
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      void this.flush()
+    }, 400)
   }
 
   async flush(): Promise<StorageStatus> {
     if (!this.enabled || !this.available()) return this.state
-    this.dirty++
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
     while (this.saved < this.dirty) {
@@ -130,11 +137,17 @@ export class OpfsPersistence {
     try {
       while (this.saved < this.dirty) {
         const revision = this.dirty
+        const messageIds = this.fullSnapshot ? undefined : [...this.messages]
+        this.fullSnapshot = false
+        this.messages.clear()
         const write = async () => {
           // Read inside the cross-tab lock so an older snapshot cannot overwrite a newer one.
-          const data = await this.snapshot()
+          const snapshot = await this.snapshot(this.incremental ? messageIds : undefined)
+          const data = 'data' in snapshot ? snapshot.data : snapshot
+          const changed = 'data' in snapshot ? snapshot.messageIds : messageIds
           const directory = await this.directory()
           const handle = await directory.getFileHandle(OPFS_SAVE_FILE, { create: true })
+          const preserveFiles = this.preservePrevious
           if (this.preservePrevious) {
             const previous = await (await handle.getFile()).text()
             const backup = await directory.getFileHandle('save-recovery.json', { create: true })
@@ -148,6 +161,11 @@ export class OpfsPersistence {
               throw error
             }
           }
+          if (this.incremental) {
+            await this.writer.write(directory, data, changed, preserveFiles)
+            if ('data' in snapshot) await snapshot.committed()
+            return
+          }
           const stream = await handle.createWritable()
           try {
             await stream.write(JSON.stringify(data))
@@ -158,8 +176,14 @@ export class OpfsPersistence {
             throw error
           }
         }
-        if (navigator.locks) await navigator.locks.request(`yanju-opfs:${this.name}`, write)
-        else await write()
+        try {
+          if (navigator.locks) await navigator.locks.request(`yanju-opfs:${this.name}`, write)
+          else await write()
+        } catch (error) {
+          if (messageIds === undefined) this.fullSnapshot = true
+          else messageIds.forEach((id) => this.messages.add(id))
+          throw error
+        }
         this.saved = revision
       }
       this.update({ phase: 'saved', error: undefined })
