@@ -1,110 +1,168 @@
 # 宴雎
 
-一个以宴雎角色资料为背景的叙事聊天应用。保留人设、多个模型渠道、场景、状态、手机、日记、论坛、音乐和本地存档，使用严格结构化输出与 React 组件呈现内容。
+以宴雎角色与世界设定为背景的叙事聊天应用。在浏览器中连接自己的模型渠道，创建人设、推进剧情，并管理人物关系、长期记忆和不同故事分支。
 
-在线应用：[notcorwin.github.io/YanJu](https://notcorwin.github.io/YanJu/)
+应用是纯静态 SPA：模型请求由浏览器直接发送，聊天、人设和配置保存在当前浏览器，无需部署后端。
+
+[在线体验](https://notcorwin.github.io/YanJu/) · [功能与协议覆盖矩阵](docs/structured-outputs-coverage.md) · [问题反馈](https://github.com/notCorwin/YanJu/issues)
+
+## 主要功能
+
+- **结构化叙事**：流式展示正文、场景、中英引语、方言翻译、角色状态、手机和日记；支持分区编辑与原始 JSON 编辑。
+- **多模型渠道**：从 Models.dev 搜索 Provider 和模型，使用官方或社区 SDK 调用服务商，通过严格结构化输出测试后启用。
+- **持续的剧情状态**：记录人物、地点、关系、知情范围、事件、事实、偏好和目标，来源可以定位到原消息与段落。
+- **创作与交互**：生成人设和开场、选择续写方向、局部改写、检查一致性；支持独立手机聊天和持续追加的论坛回复。
+- **存档与恢复**：自动保存、篇章分支、JSON 导入导出、合并导入和独立 Checkpoint；上下文压缩保留全部原始消息。
+- **阅读与媒体**：适配桌面和移动端，可调整字体、字号和背景，播放曲库音乐，导出剧情 Markdown、媒体描述及请求记录。
+
+## 开始使用
+
+打开[在线应用](https://notcorwin.github.io/YanJu/)，或按下文启动本地开发服务。
+
+1. 打开「渠道管理」，添加渠道，搜索并选择 Provider 和模型，填写 API Key；模型支持时可设置 Temperature。
+2. 点击「测试渠道」。非流式和流式结构化测试均通过后，点击「使用此渠道」。需要进一步验证时，可运行「完整协议测试」。
+3. 在「人设管理」中创建或选择人设，再打开「存档管理 → 新建」，为篇章命名并进入聊天。
+4. 阅读开场并发送回应，也可切换论坛模式，或打开「剧情工作台」使用创作、检索和交互功能。
+
+桌面端 `Enter` 发送、`Shift + Enter` 换行；移动端 `Enter` 换行，点击按钮发送。聊天与指令草稿会自动保存。
+
+### 渠道配置
+
+Provider、模型、API 地址、上下文容量与温度能力来自 Models.dev。目录只收录该 Provider 明确标记 `structured_output: true`、支持文本输入与输出的模型，不提供自定义 Provider、模型或地址。可手动刷新目录；网络不可用时可使用上次成功加载的浏览器缓存。
+
+OpenAI SDK 渠道支持自动探测、Responses 和 Chat Completions；自动探测优先 Responses。其他 SDK 使用服务商原生协议。正式请求使用测试通过的协议，结构化输出失败不会降级为 JSON Mode。Responses 请求设置 `store: false`，应用在本地管理上下文。
+
+服务商必须允许当前站点来源及认证、内容请求头的 CORS 请求，浏览器也需要能够访问目标网络。SDK 支持和模型目录标记不等于实际账户可用，请以应用内渠道测试结果为准。
+
+通常直接粘贴 API Key 即可。需要多个认证字段的云服务，在同一字段粘贴凭据 JSON，字段名使用渠道提示中的 Models.dev `env` 名称。
+
+<details>
+<summary>云服务与本机模型的凭据说明</summary>
+
+| Provider                 | 凭据内容                                                                                                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Azure                    | `AZURE_API_KEY`、`AZURE_RESOURCE_NAME`；部署名与模型 ID 不同时，增加 `deployments`，将模型 ID 映射到部署 ID。                                                                             |
+| Azure Cognitive Services | `AZURE_COGNITIVE_SERVICES_API_KEY`、`AZURE_COGNITIVE_SERVICES_RESOURCE_NAME`。                                                                                                            |
+| Vertex                   | Gemini Express 可使用 API Key；标准模式、Claude 和 MaaS 可粘贴完整 service-account JSON，包含 `project_id`、`client_email`、`private_key`。可带 `GOOGLE_VERTEX_LOCATION`，默认 `global`。 |
+| Bedrock（含 Mantle）     | Bedrock API Key，或 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选的 `AWS_SESSION_TOKEN`；`AWS_REGION` 默认 `us-east-1`。                                                             |
+| SAP AI Core              | 导出的 service-key JSON：`clientid`、`clientsecret`、`url`、`serviceurls.AI_API_URL`；资源组默认 `default`。                                                                              |
+| watsonx                  | `WATSONX_AI_APIKEY`、`WATSONX_AI_PROJECT_ID`。                                                                                                                                            |
+| Cloudflare AI Gateway    | `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_GATEWAY_ID`；在 Gateway 中配置上游认证。                                                                                     |
+| 地址含资源占位符的服务商 | 包含目录所列认证字段与资源字段，例如 `SNOWFLAKE_ACCOUNT`、`SNOWFLAKE_CORTEX_PAT`。                                                                                                        |
+
+QVAC 使用本机 external HTTP 服务 `http://127.0.0.1:11435/v1`，需先启动该服务并允许应用来源访问。浏览器不会启动 Node.js CLI，也不能读取凭据文件路径；服务账户请粘贴 JSON 内容。
+
+认证与路由的实现见 [provider-model.ts](src/lib/provider-model.ts) 和 [browser-providers.ts](src/lib/browser-providers.ts)。
+
+</details>
+
+## 剧情工作台
+
+进入篇章后，从聊天工具栏打开「剧情工作台」。六个入口共用当前篇章的剧情与历史记录。
+
+| 入口 | 用途                                                                                                         |
+| ---- | ------------------------------------------------------------------------------------------------------------ |
+| 档案 | 浏览世界与 NPC、人物状态、关系图、知情范围、事件时间线、事实、偏好和目标；搜索并定位原文来源。               |
+| 交互 | 与联系人独立聊天，查看备忘录、购买记录和日记日历；创建论坛帖子并继续回复。新帖生成 50 条回答，后续增量追加。 |
+| 创作 | 生成人设与开场、篇章名称与简介、三个续写方向，执行局部改写、一致性检查、章节整理和自然语言操作。             |
+| 资料 | 粘贴或导入 UTF-8 文本、Markdown、角色与世界 JSON，提取实体、关系和事实，预览后保存。                         |
+| 媒体 | 推荐并播放现有曲库音乐，编辑、保存和导出背景与语音描述；导出剧情 Markdown。                                  |
+| 任务 | 查看流式结果、部分内容和错误，重试未完成任务，导出冻结输入、schema、用量与错误等请求记录。                   |
+
+例如，在「创作」中选择「续写分支」，输入 `给当前剧情提供3个不同的后续分支。`；生成结果后选择一个方向，才会推进剧情。媒体入口生成的是背景与语音**描述**，可导出 JSON。
+
+各项功能的协议、持久化、恢复行为与测试入口见[覆盖矩阵](docs/structured-outputs-coverage.md)。
+
+## 存档与数据
+
+IndexedDB 是工作数据库，提交后自动同步到 OPFS（浏览器的源私有文件系统）。`yanju-v3/save.json` 保存索引，消息和背景图片分别存储；工作数据库为空时，启动会尝试从 OPFS 恢复。
+
+| 操作                  | 行为                                                                                                  |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| 导出全部 / 导入       | 导出完整 v3 JSON 存档；导入先校验并确认，再替换当前浏览器的全部资料。                                 |
+| 单篇章导出 / 合并导入 | 导出指定篇章，或保留现有资料并合并导入；编号冲突时重映射引用。                                        |
+| 分支 / 重说           | 从指定消息创建独立篇章；重说成功后保存原分支并替换，失败保留原分支。                                  |
+| Checkpoint            | 在「存档管理 → Checkpoint」创建、导入、导出、恢复或删除完整快照。导入只保存快照，恢复才替换工作资料。 |
+
+- 数据保存在当前浏览器和站点来源下，本地服务与在线应用各有独立存储。跨浏览器或设备继续使用时，先导出再导入；`#/chat/<archiveId>` 链接只打开本地已有篇章。
+- 完整存档和 Checkpoint 包含渠道凭据、任务、请求、人设、草稿与外观。请求记录的单独导出不包含认证头或渠道 Key。导入存档或恢复 Checkpoint 后，渠道须重新测试。
+- 应用会请求持久存储授权，结果由浏览器决定。清除站点数据会移除 IndexedDB 和 OPFS；未获授权的数据也可能被浏览器清理，请用导出文件保留备份。
+- 存档面板显示同步状态并提供失败重试。OPFS 不可用或同步失败时，聊天、IndexedDB 读写和 JSON 导入导出仍可使用；Checkpoint 需要 OPFS。
+- 当前仅使用 `yanju-v3` 数据库和版本 3 应用存档，不读取旧库或 localStorage，不导入 v1/v2 应用存档。
 
 ## 本地开发
 
-需要 Node.js 26.11.1+ 和 pnpm 12.10.1；`.nvmrc` 与部署环境使用相同版本。
+### 环境与启动
+
+需要 **Node.js 26.11.1+** 和 **pnpm 12.10.1**。Node 版本记录在 [.nvmrc](.nvmrc)，包管理器与脚本记录在 [package.json](package.json)。使用 nvm 时可执行 `nvm install`、`nvm use`。
 
 ```sh
+git clone https://github.com/notCorwin/YanJu.git
+cd YanJu
+
+npm install --global pnpm@12.10.1
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-访问终端显示的 `/YanJu/` 地址。应用是纯静态 SPA，不需要后端或构建时 API Key。
+打开终端显示的地址，默认是 `http://127.0.0.1:5173/YanJu/`。无需 `.env` 或构建时 API Key；运行应用后，在渠道管理中填写自己的凭据。
 
-首次使用时打开「渠道管理」，从下拉列表选择 Provider 和模型，填写 API Key，按需设置 Temperature，运行「测试渠道」，通过后点「使用此渠道」。服务商、模型、SDK、API 地址、输入与上下文容量及温度能力均来自 [Models.dev](https://models.dev/)。只列出该 Provider 明确标记 `structured_output: true` 的文本模型；支持模型级 SDK、API 和协议覆盖，不提供自定义 Provider、模型或地址。目录可刷新，浏览器缓存用于网络不可用时恢复最后一次成功加载的数据。
+### 常用命令
 
-请求全部由浏览器直接发送，GitHub Pages 只托管静态文件。以 Vercel AI SDK 的 `Output.object` 为统一执行入口，覆盖当前 Models.dev 的全部 SDK 类型，官方与社区 SDK 按需加载。Vertex 使用 Edge 入口；SAP orchestration v2、GitLab Duo direct access 和 QVAC external HTTP 使用同协议的浏览器适配，支持非流式与流式结构化生成。Cloudflare Gateway 使用其 SDK 的 Unified 路由，保留完整 Provider/model ID。没有符合条件模型的 SDK 暂不显示在目录中。
+| 命令                           | 用途                                              |
+| ------------------------------ | ------------------------------------------------- |
+| `pnpm dev`                     | 启动开发服务器。                                  |
+| `pnpm build`                   | 执行 TypeScript 编译检查，生成 `dist/` 静态产物。 |
+| `pnpm preview`                 | 本地预览已有生产构建。                            |
+| `pnpm check:tokens`            | 检查组件和样式是否遵循统一 Design Tokens。        |
+| `pnpm lint` / `pnpm typecheck` | 运行 ESLint / TypeScript 检查。                   |
+| `pnpm test`                    | 运行 Vitest 单元测试。                            |
+| `pnpm test:e2e`                | 通过独立开发服务运行 Playwright。                 |
+| `pnpm test:e2e:production`     | 通过独立生产预览服务运行 Playwright，需先构建。   |
+| `pnpm verify`                  | 顺序执行全部本地验收。                            |
 
-OpenAI SDK 渠道可通过下拉列表选择自动探测、Responses 或 Chat Completions；自动探测优先 Responses。其他 SDK 使用服务商原生协议。测试检查非流式和流式的嵌套严格 schema；正式请求使用通过测试的协议，失败不降级到 JSON Mode。Responses 请求设置 `store: false`，上下文由本地完整管理。
+### 技术栈与目录
 
-所有 Provider 共用浏览器 Fetch 适配，移除 SDK 附加的 `User-Agent`，由浏览器管理该请求头，避免 Firefox 和 Safari 因额外跨域预检而连接失败。认证、原生协议请求头、取消信号和流式响应保持完整。
+| 技术                      | 用途                                                            |
+| ------------------------- | --------------------------------------------------------------- |
+| React 19、Vite 8          | 界面、开发服务与静态构建。                                      |
+| TypeScript 7              | 原生编译器负责构建与类型检查；TypeScript 6 API 供 ESLint 使用。 |
+| Tailwind CSS 4、shadcn/ui | 基于统一 Design Tokens 的样式与交互组件。                       |
+| Vercel AI SDK 7、Zod 4    | 模型调用、流式结构化输出与数据校验。                            |
+| Dexie、IndexedDB、OPFS    | 工作数据库、事务与文件存档。                                    |
+| Vitest、Playwright        | 单元测试与跨浏览器验收。                                        |
 
-Provider 必须通过 CORS 允许本站来源以及其认证和内容请求头；浏览器也必须允许访问目标网络。纯前端无法绕过服务商拒绝的 CORS。SDK 覆盖和协议测试不代表任意账户、地区或网络下的服务必然可用；真实连接由用户凭据、服务商授权和应用内测试共同确认。
+```text
+src/
+├── app/              # 初始化、工作区与 Hash 路由
+├── features/         # 渠道、人设、聊天、外观、存档、世界与音乐
+├── components/       # 剧情工作台、结果展示与共享组件
+│   └── ui/           # shadcn/ui 组件
+├── content/          # 角色、文风、开场、世界、指令与曲库
+├── lib/              # 模型、任务协议、上下文与剧情状态
+│   └── storage/      # 数据库、事务、消息与导入导出
+└── styles/           # Design Tokens 与应用样式
+tests/unit/           # 单元测试
+tests/e2e/            # 浏览器测试
+docs/                 # 功能与协议文档
+scripts/              # 本地检查脚本
+.githooks/            # 推送前验收
+.github/workflows/    # GitHub Pages CD
+```
 
-仅需要单个 Key 的服务商直接粘贴 Key。需要云账户信息的服务商在同一 API Key 字段粘贴凭据 JSON，认证字段使用 Models.dev 的 `env` 名称，或以下服务商导出的凭据结构；不增加自定义地址设置：
+调整角色与内容时，从 [src/content](src/content) 入手：`character.txt` 是角色资料，`narrative-rules.txt` 和 `style.txt` 控制叙事规则与文风，`opening.txt` 是默认开场；`world.json`、`commands.json`、`music.json` 分别提供世界资料、常用指令和曲库。
 
-| Provider                 | API Key 凭据内容                                                                                                                                                                                                      |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Azure                    | `AZURE_API_KEY` 与 `AZURE_RESOURCE_NAME`；部署名称不等于模型 ID 时，在凭据内提供 `deployments` 的模型 ID 到部署 ID 映射                                                                                               |
-| Azure Cognitive Services | `AZURE_COGNITIVE_SERVICES_API_KEY` 与 `AZURE_COGNITIVE_SERVICES_RESOURCE_NAME`                                                                                                                                        |
-| Vertex                   | Gemini 支持 Express API Key；标准模式、Claude 和 MaaS 可粘贴完整 service-account JSON（`project_id`、`client_email`、`private_key`）；凭据可带 `GOOGLE_VERTEX_LOCATION`，默认 `global`，MaaS 地址从项目与区域自动展开 |
-| Bedrock（含 Mantle）     | Bedrock API Key，或 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选 `AWS_SESSION_TOKEN`；`AWS_REGION` 默认 `us-east-1`                                                                                             |
-| SAP AI Core              | 导出的 service-key JSON（`clientid`、`clientsecret`、`url`、`serviceurls.AI_API_URL`），自动查询运行中的 orchestration 部署；资源组默认 `default`                                                                     |
-| watsonx                  | `WATSONX_AI_APIKEY` 与 `WATSONX_AI_PROJECT_ID`                                                                                                                                                                        |
-| Cloudflare AI Gateway    | `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_GATEWAY_ID`；上游认证在 Gateway 配置                                                                                                                     |
-| 地址含资源占位符的服务商 | JSON 中包含 Models.dev 所列 Key 与地址中的资源字段，例如 `SNOWFLAKE_ACCOUNT`、`SNOWFLAKE_CORTEX_PAT`                                                                                                                  |
+### 开发约定
 
-QVAC 使用 SDK 的 external HTTP 默认地址 `http://127.0.0.1:11435/v1`，本机服务须在该端口运行并允许 Pages 来源访问。浏览器不能启动其 Node.js CLI 或读取本机凭据文件路径；服务账户请粘贴 JSON 内容。
-
-## 技术与设计
-
-- Vite 8、React 19、TypeScript 7、Tailwind CSS 4、shadcn/ui、AI SDK 7、Zod、Dexie。TypeScript 7 原生编译器与 ESLint 所需的 TypeScript 6 API 按[官方并行配置](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6-0)安装。
-- `src/styles/tokens.css` 是颜色、字体、字号、间距、圆角、边框、阴影与动效的唯一来源，映射到 Tailwind 语义工具类。外观设置只修改根 Token。`pnpm check:tokens` 阻止组件新增裸视觉值，包含 shadcn 源码。
-- 使用官方 shadcn MessageScroller / Message / Bubble，Field / InputGroup，Card / Accordion / Dialog / Sheet。共享组件和变体统一视觉与触控尺寸。
-- 角色、人设规则、文风、开场白、世界和常用指令保存在 `src/content`。文本不再嵌入脚本边界。源代码按应用、渠道、人设、聊天、外观、存档和世界功能拆分，存储逻辑集中在 `src/lib/storage`。
-- Hash 路由 `#/chat/<archiveId>` 支持存档链接及刷新；链接载入当前浏览器已有的存档，跨浏览器需要先导入存档。
-
-渠道与人设编辑器支持字段级提示、未保存修改保护和关闭后的键盘回焦，桌面、窄屏及横屏共用同一套组件与视觉 Token。提供商与模型选择器支持按名称或 ID 输入搜索，以及方向键、回车选择和 Esc 取消；关闭后重新打开会恢复完整列表。结构化回复可按正文、场景、状态、手机、日记或论坛分区编辑，也保留原始 JSON 编辑。存档支持搜索和创建时命名；聊天和指令草稿自动保存，移动端 Enter 换行、点击发送，桌面 Enter 发送、Shift + Enter 换行。
-
-## 回复协议
-
-`src/lib/tasks.ts` 注册全部任务，核心回复 schema 位于 `src/lib/schemas.ts`。每个任务使用独立严格根对象：
-
-| 请求              | 内容                                                             |
-| ----------------- | ---------------------------------------------------------------- |
-| NarrativeReply    | 场景和中英引语、叙述、方言与普通话翻译、状态、手机、日记与倒计时 |
-| ForumReply        | 帖子与完整 50 条回答，新帖完整生成，后续回复增量追加             |
-| CompressionResult | 人物关系、时间地点、关键事件、决定和未完成事项                   |
-| ChannelCapability | 嵌套对象、数组、枚举、数值、布尔与可空字段的渠道能力测试         |
-
-叙事同轮生成 `TurnEffects`：实体、状态、关系、知情范围、事件、长期事实与偏好、目标和剧情时钟。既有实体使用程序 ID，`new:` 临时引用由程序分配稳定 ID；事实携带消息和段落来源。完整回复、事件记录和当前状态在同一个 IndexedDB 事务中保存。剧情日期及倒计时由程序计算，未知日期显示「未知」。金额采用币种最小单位整数。
-
-其余 12 类按需任务分别处理手机回复、论坛回复、搜索条件、人设草稿、名称与简介、续写分支、改写、一致性检查、资料提取、章节、媒体描述和本地操作意图。输入冻结为明确的类型契约，输出使用独立严格 schema。所有任务共用执行器、预算、一次纠正、请求记录和恢复方式。
-
-浏览器 ChatTransport 连接 `useChat` 与 `streamText` / `Output.object`。部分对象以带固定 ID 的类型化 UIMessage 数据部件逐步更新，完整对象经过结构与条数、字数、非空校验后标记完成。数据型助手消息会序列化回模型上下文，避免连续对话遗失助手内容。
-
-结构或内容校验失败最多追加一次同 schema 纠正；网络、渠道不支持、取消及输出截断不自动重发。部分回复定期保存，停止时提交恢复记录。失败与取消可重试；重说只有在成功后才原子替换原分支。模型输出不包含界面代码。新版使用独立的数据协议。
-
-## 上下文与存档
-
-上下文和输入容量从 Models.dev 读取。应用不提供或保存输出上限，聊天、工作台任务、纠正和摘要请求均不设置可选输出限制。Anthropic API 必填 `max_tokens`，由 Models.dev 公布的模型完整输出容量填充，避免 SDK 的较小默认值；实际容量仍由服务商决定。估算计入角色资料、人设、schema、摘要、冻结事实与状态和有效历史，以中英文混合的保守估算及服务商实际 usage 校正；界面分别显示当前估算和上次实际输入/输出。
-
-发送前与完成后检查输入预算，达到 85% 时自动压缩，以 70% 以下为目标。默认保留最近 4 轮完整对话及当前输入；必要时减少到至少最新完整一轮及当前输入。较大历史按输入预算分批生成同渠道严格摘要。覆盖边界与会话版本一并校验，全部成功后一次性更新。无法容纳固定设定和最新输入时，提示选择容量更大的模型或缩短输入，保留原记录。
-
-压缩不删除消息。编辑已覆盖消息和从覆盖位置重说会使摘要失效，从原文重建。压缩失败/取消保留原摘要与全部原文，并提供重试操作。已取消或失败的部分助手回复不作为完成的模型历史发送。
-
-在渠道、模型、人设、回复协议及摘要保持不变时，普通续聊只在已发送上下文末尾追加消息。校验纠正请求中的追加消息随助手记录持久化，刷新或导入存档后继续重放；失败的部分回复仍不作为完成历史。压缩会重建摘要和历史前缀，这是正常的上下文重置边界；同一摘要下的后续对话继续追加。编辑、重说以及切换渠道、人设或回复协议也会改变上下文，服务端缓存命中还取决于渠道支持、缓存有效期和路由，不能保证每次请求都命中。
-
-IndexedDB 作为工作数据库保存消息、存档、渠道、人设、外观和摘要；所有提交通过事务内变更日志自动同步到 OPFS；`yanju-v3/save.json` 保存索引，消息使用不可变文件增量保存，背景图片独立保存。写入通过 `createWritable()` / `close()` 原子替换，支持 Web Locks 的浏览器按同源锁串行同步。完整回复、失败恢复记录和停止生成都会等待最终同步；完成后的自动压缩在后台继续，不阻塞存档载入、导出及下一轮聊天。工作数据库为空时，启动优先校验并恢复 OPFS 存档，保留同浏览器渠道测试状态；不可解析的旧文件在写入新存档前保留到 `save-recovery.json`。
-
-应用会请求 `navigator.storage.persist()`，授权结果由浏览器决定；OPFS 文件可跨刷新和浏览器重启保存，但未获持久存储授权时仍可能被浏览器清理。存档面板显示同步和授权状态。OPFS 不受支持或同步失败时，保留 IndexedDB 读写、载入、导出和聊天功能，并在面板提供说明及失败重试。清除站点数据会同时移除 OPFS 和 IndexedDB；需要跨浏览器恢复时请先导出文件。
-
-「存档管理 → Checkpoint」将独立完整快照保存到 `yanju-v3/checkpoints/<UUID>.json`，包含剧情、任务、请求、人设、渠道凭据、草稿与外观。支持创建、导出、导入、恢复和删除。导入先校验，再使用新 ID 存入 OPFS，保留当前工作进度；恢复确认后原子替换工作资料、同步自动存档并重新载入草稿，渠道须重新测试。删除只移除选中的 Checkpoint。Checkpoint 不回退到其他存储；不支持 OPFS 的浏览器仍可使用原有 JSON 存档导入导出。
-
-新版只使用 `yanju-v3` 数据库与版本 3 存档，不读取旧库或 localStorage，不导入 v1/v2 应用存档，原资料保留在原位置。v3 包含消息、冻结请求、剧情事件、状态投影、任务结果、渠道 Key、外观及摘要边界。导入替换前校验完整数据并显示确认操作。
-
-编辑历史消息会使后续剧情失效并重建状态；失效记录仍可查看，但不进入有效上下文。局部改写返回完整替换对象及修改段落清单，保留原段落 ID，合并后的正文、翻译、状态和引用全部重新校验。重说失败保留原分支，成功后先将原分支保存为独立篇章，再原子替换受影响分支。可从指定消息创建分支，单独导出篇章或合并导入；编号冲突时重映射消息、实体及来源引用。
-
-支持 Web Locks 的浏览器通过篇章锁防止多窗口同时生成、编辑或删除；其他浏览器使用可续期的数据库租约。导入持有全局锁，避免旧窗口排队写入恢复后的同名篇章。聊天默认显示最近 60 条消息，可按需加载更早内容。消息支持分区编辑和 JSON 编辑；局部展示错误可恢复、编辑与导出。请求可配置首包及后续内容等待上限，并保留耗时、HTTP 状态与请求编号。渠道的「完整协议测试」运行完整叙事、50 条论坛回答及压缩样例，测试结果不写入剧情。
-
-## 剧情工作台
-
-聊天工具栏的「剧情工作台」提供六个入口，桌面和移动端共用：
-
-- **档案**：实体与世界、NPC、状态、关系图、知情范围、事件时间线、事实与偏好、承诺。搜索结果及档案来源可定位到原消息和段落。
-- **交互**：独立联系人会话、备忘录、购买记录、日记日历和论坛历史。独立手机输入按原文保存并追加一条联系人回复；论坛首次生成 50 条回答，后续每次追加用户原文和一条关联 NPC 回复，数量持续累积并分批展开。
-- **创作**：可编辑保存的人设、完整开场、三个续写方向、用户选择的剧情分支、篇章名称与简介、局部改写、一致性检查、章节整理和自然语言操作。操作先显示意图，再执行查询、切换模式、选择曲目、打开档案或会话。
-- **资料**：粘贴文本，或导入 UTF-8 文本、Markdown、角色与世界 JSON；提取实体、关系、事实和未识别内容，预览后保存。应用存档通过存档管理导入，只接受 v3。
-- **媒体**：从现有曲库推荐配乐，点击或开启自动配乐后播放。背景与语音描述可编辑保存并导出 JSON；剧情可直接导出 Markdown，也可先整理章节。
-- **任务**：查看流式结果、错误和部分内容，重试未完成任务；导出包含冻结消息、严格 schema、实际用量和错误的请求记录。请求记录不包含认证头或渠道 Key。
-
-逐项入口、协议、持久化、展示、恢复与测试见 [覆盖矩阵](docs/structured-outputs-coverage.md)。
+- **统一视觉规范**：优先复用 [shadcn/ui 组件](src/components/ui)。[tokens.css](src/styles/tokens.css) 是颜色、字体、间距、圆角、边框、阴影和动效的唯一来源；样式主要通过 Tailwind 语义类实现，外观设置只修改根 Token。
+- **严格任务协议**：[tasks.ts](src/lib/tasks.ts) 注册 16 类任务，核心回复 schema 位于 [schemas.ts](src/lib/schemas.ts)。共用执行器、预算、请求记录和恢复流程；结构或内容校验失败最多纠正一次，取消、截断和网络错误不自动重发。
+- **完整提交与来源**：完整回复通过校验后，与剧情事件和状态在同一个 IndexedDB 事务中提交。实体使用稳定 ID，事实携带消息及段落来源；历史编辑会使后续剧情失效并重建状态。
+- **本地上下文管理**：估算计入设定、人设、schema、摘要和有效历史，并用实际 usage 校正。输入预算达到 85% 时自动压缩，目标为 70% 以下；保留最近完整对话及全部原文，压缩失败保留原摘要。应用不提供可选输出上限设置。
+- **技术选型**：使用最新稳定技术栈，依赖以锁文件为准；不要求旧版迁移或向后兼容。新增能力同步维护[覆盖矩阵](docs/structured-outputs-coverage.md)及相应测试。
 
 ## 本地验收
+
+首次运行浏览器测试前安装所需引擎，并启用推送前钩子：
 
 ```sh
 pnpm exec playwright install chromium firefox webkit
@@ -112,18 +170,28 @@ pnpm setup:hooks
 pnpm verify
 ```
 
-`verify` 顺序执行 Token 检查、ESLint、TypeScript、Vitest、生产构建及桌面 Chrome、移动 Chromium、移动 Safari Playwright，并使用 Firefox 验证渠道协议和真实跨域预检。测试使用模拟模型与真实 SDK 协议，不需要真实密钥。真实渠道由用户配置后在应用内执行能力测试。
+`verify` 依次运行 Design Token 检查、ESLint、TypeScript、Vitest、生产构建和 Playwright。浏览器测试覆盖桌面 Chrome、移动 Chromium、移动 Safari，并使用 Firefox 验证渠道协议与跨域预检。测试使用模拟模型和真实 SDK 协议，无需真实 API Key。
 
-`pnpm verify` 的 Playwright 启动当前工作目录的独立生产预览服务，不复用已有服务，避免多个 worktree 之间误测其他版本。`pnpm setup:hooks` 安装推送前钩子，每次推送执行完整本地验收。默认使用 5173 端口；端口已被占用时，可用 `YANJU_E2E_PORT=5174 pnpm verify` 指定其他端口。
+Playwright 启动当前工作目录的独立服务，不复用已有服务。默认端口为 `5173`，被占用时可指定其他端口：
 
-重点覆盖严格参数、缺字段、非空和数量、部分对象更新、一次纠正、取消/截断/重试、稳定引用与事实来源、知情范围、日期与金额、事务回滚、重复提交、多窗口冲突、编辑失效与重说、冻结前缀、分批压缩、旧版拒绝、v3 往返及 OPFS 恢复。桌面和移动端流程覆盖论坛追加、独立手机、来源定位、人设编辑、分支选择、改写、导入预览、媒体与请求记录导出。
+```sh
+YANJU_E2E_PORT=5174 pnpm verify
+```
 
-UI 回归还覆盖字段错误与未保存修改、焦点恢复、可点击的标签页、分区编辑、长草稿与最大字号、320px 窄屏及横屏、流式结束后的阅读状态、存档搜索与失效链接、音乐加载失败与音量状态，以及网络字体未响应时的正常使用。
+[pre-push 钩子](.githooks/pre-push)在每次推送前执行完整 `pnpm verify`。所有 CI 相关检查在本地执行，GitHub Actions 仅负责 CD。真实账户和网络下的渠道能力，由应用内测试确认。
 
-## 发布
+## 部署
 
-本地验收通过后提交并推送功能分支，通过面向 `master` 的 PR 发布。`.github/workflows/deploy.yml` 仅负责 CD：安装锁定依赖、构建、上传 Pages artifact 并发布。CI 检查在本地完成。
+本地验收通过后，提交并推送到主分支 **`master`**。[部署工作流](.github/workflows/deploy.yml)会安装锁定依赖、构建并发布到 GitHub Pages，也支持手动触发。
 
-GitHub 仓库须为公开的 `notCorwin/YanJu`，Pages 的 Build and deployment / Source 设为 GitHub Actions。Vite `base` 已设为 `/YanJu/`。音乐与网络字体由原有公开资源/字体服务提供；网络字体异步加载，未加载时使用本地衬线字体，保留界面显示和操作。
+仓库的 Pages 设置中，将 **Build and deployment → Source** 设为 **GitHub Actions**。[vite.config.ts](vite.config.ts) 的 `base` 为 `/YanJu/`，产物位于 `dist/`；部署到其他路径时须相应调整 `base`。
 
-背景上传、替换和移除显示保存状态。图片随 OPFS 检查点和 v3 JSON 存档一并保存；界面使用可释放的 Blob URL 预览。
+音乐与网络字体依赖外部资源。字体异步加载，未加载时使用本地衬线字体。
+
+## 维护、贡献与支持
+
+项目由 [notCorwin](https://github.com/notCorwin) 维护，欢迎提交问题和改进建议。
+
+- 查阅[功能与协议覆盖矩阵](docs/structured-outputs-coverage.md)，了解已有能力、恢复边界与测试位置。
+- 通过 [GitHub Issues](https://github.com/notCorwin/YanJu/issues)反馈问题，附上复现步骤、浏览器、Provider、模型与错误信息；需要时附去除私人内容的请求记录。
+- 贡献修改前启用本地钩子，遵循上述开发约定；相关测试及 `pnpm verify` 通过后提交。仓库维护流程默认直接推送 `master`，外部贡献者可通过 [Pull Request](https://github.com/notCorwin/YanJu/pulls) 提交修改。
