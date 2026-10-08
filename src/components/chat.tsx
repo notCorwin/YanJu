@@ -259,21 +259,21 @@ function ChatRunner({
     )
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {archive.compactionError && (
-        <div
-          role="alert"
-          className="flex flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) p-3 text-sm text-destructive"
-        >
-          <span className="min-w-0 flex-1 wrap-break-word">
-            压缩未完成：{archive.compactionError}
-          </span>
-          <Button disabled={busy} variant="outline" onClick={() => void compress()}>
-            重试压缩
-          </Button>
-        </div>
-      )}
-      <MessageScrollerProvider autoScroll={busy} defaultScrollPosition="end">
+    <MessageScrollerProvider autoScroll={busy} defaultScrollPosition="end">
+      <div className="flex min-h-0 flex-1 flex-col">
+        {archive.compactionError && (
+          <div
+            role="alert"
+            className="flex flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) p-3 text-sm text-destructive"
+          >
+            <span className="min-w-0 flex-1 wrap-break-word">
+              压缩未完成：{archive.compactionError}
+            </span>
+            <Button disabled={busy} variant="outline" onClick={() => void compress()}>
+              重试压缩
+            </Button>
+          </div>
+        )}
         <MessageScroller>
           <MessageScrollerViewport aria-label="聊天记录">
             <MessageScrollerContent className="mx-auto w-full reading-width px-4 py-8 sm:px-6">
@@ -305,9 +305,7 @@ function ChatRunner({
                             {message.metadata?.status && message.metadata.status !== 'complete' && (
                               <Badge variant="outline">
                                 {message.metadata.status === 'partial'
-                                  ? busy
-                                    ? '生成中'
-                                    : '未完成'
+                                  ? '生成中'
                                   : message.metadata.status === 'cancelled'
                                     ? '已停止'
                                     : '待恢复'}
@@ -423,7 +421,6 @@ function ChatRunner({
                               <IconButton
                                 label={
                                   message.metadata?.status === 'failed' ||
-                                  message.metadata?.status === 'partial' ||
                                   message.metadata?.status === 'cancelled'
                                     ? '重试回复'
                                     : '重新生成'
@@ -471,206 +468,216 @@ function ChatRunner({
               )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
-          <MessageScrollerButton aria-label="回到最新消息" size="icon" />
         </MessageScroller>
-      </MessageScrollerProvider>
-      <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-2 sm:px-6 sm:pt-3">
-        <div className="mx-auto flex reading-width flex-col gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-1">
-              <Select value={mode} onValueChange={(v) => setMode(v as RequestKind)} disabled={busy}>
-                <SelectTrigger aria-label="聊天模式">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="narrative">叙事</SelectItem>
-                    <SelectItem value="forum">论坛</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <IconButton label="世界、指令与音乐" onClick={onWorld}>
-                <BookOpen />
-              </IconButton>
-              <IconButton label="清空当前聊天" disabled={busy} onClick={() => setClear(true)}>
-                <Trash2 />
-              </IconButton>
-            </div>
-            {budget && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Button
-                  variant="ghost"
-                  onClick={() => setContextOpen(true)}
-                  aria-label="查看上下文详情"
+        <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-2 sm:px-6 sm:pt-3">
+          <div className="mx-auto flex reading-width flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1">
+                <Select
+                  value={mode}
+                  onValueChange={(v) => setMode(v as RequestKind)}
+                  disabled={busy}
                 >
-                  <span className="hidden sm:inline">上下文约</span>{' '}
-                  {Math.round(budget.percent * 100)}%
-                </Button>
-                <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
-                  <ArrowDownToLine />
+                  <SelectTrigger aria-label="聊天模式">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="narrative">叙事</SelectItem>
+                      <SelectItem value="forum">论坛</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <IconButton label="世界、指令与音乐" onClick={onWorld}>
+                  <BookOpen />
+                </IconButton>
+                <IconButton label="清空当前聊天" disabled={busy} onClick={() => setClear(true)}>
+                  <Trash2 />
                 </IconButton>
               </div>
+              {budget && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Button
+                    variant="ghost"
+                    onClick={() => setContextOpen(true)}
+                    aria-label="查看上下文详情"
+                  >
+                    <span className="hidden sm:inline">上下文约</span>{' '}
+                    {Math.round(budget.percent * 100)}%
+                  </Button>
+                  <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
+                    <ArrowDownToLine />
+                  </IconButton>
+                </div>
+              )}
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (!composing.current) void send()
+              }}
+            >
+              <InputGroup>
+                <InputGroupTextarea
+                  id="chat-input"
+                  ref={inputRef}
+                  aria-label="聊天输入"
+                  value={input}
+                  onChange={(e) => draft(e.target.value)}
+                  onCompositionStart={() => {
+                    composing.current = true
+                  }}
+                  onCompositionEnd={() => {
+                    composing.current = false
+                  }}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === 'Enter' &&
+                      !e.shiftKey &&
+                      (!touchInput || e.ctrlKey || e.metaKey) &&
+                      !e.nativeEvent.isComposing &&
+                      !composing.current &&
+                      e.keyCode !== 229
+                    ) {
+                      e.preventDefault()
+                      if (!busy) void send()
+                    }
+                  }}
+                  className="composer-height resize-none overflow-y-auto"
+                  rows={2}
+                  placeholder={mode === 'forum' ? '输入帖子或回复内容…' : '写下你的回应…'}
+                />
+                <InputGroupAddon align="block-end" className="justify-between">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <MessageScrollerButton
+                      aria-label="回到最新消息"
+                      title="回到最新消息"
+                      size="icon"
+                    />
+                    <span className="text-xs text-muted-foreground">
+                      {touchInput ? (
+                        '草稿自动保存 · 点击发送'
+                      ) : (
+                        <>
+                          <span>Enter 发送</span>
+                          <span className="hidden sm:inline"> · Shift + Enter 换行</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  {busy ? (
+                    <InputGroupButton
+                      aria-label="停止生成"
+                      onClick={() => void stopGeneration()}
+                      variant="secondary"
+                      size="sm"
+                    >
+                      <Square />
+                      停止
+                    </InputGroupButton>
+                  ) : (
+                    <InputGroupButton
+                      type="submit"
+                      aria-label="发送消息"
+                      variant="default"
+                      size="sm"
+                      disabled={!input.trim() || !channel || !channelIsReady(channel)}
+                    >
+                      <Send />
+                      发送
+                    </InputGroupButton>
+                  )}
+                </InputGroupAddon>
+              </InputGroup>
+            </form>
+            {error && (
+              <p role="alert" className="text-xs text-destructive">
+                {friendlyError(error)}
+              </p>
             )}
           </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (!composing.current) void send()
-            }}
-          >
-            <InputGroup>
-              <InputGroupTextarea
-                id="chat-input"
-                ref={inputRef}
-                aria-label="聊天输入"
-                value={input}
-                onChange={(e) => draft(e.target.value)}
-                onCompositionStart={() => {
-                  composing.current = true
-                }}
-                onCompositionEnd={() => {
-                  composing.current = false
-                }}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === 'Enter' &&
-                    !e.shiftKey &&
-                    (!touchInput || e.ctrlKey || e.metaKey) &&
-                    !e.nativeEvent.isComposing &&
-                    !composing.current &&
-                    e.keyCode !== 229
-                  ) {
-                    e.preventDefault()
-                    if (!busy) void send()
-                  }
-                }}
-                className="composer-height resize-none overflow-y-auto"
-                rows={2}
-                placeholder={mode === 'forum' ? '输入帖子或回复内容…' : '写下你的回应…'}
-              />
-              <InputGroupAddon align="block-end" className="justify-between">
-                <span className="text-xs text-muted-foreground">
-                  {touchInput ? (
-                    '草稿自动保存 · 点击发送'
-                  ) : (
-                    <>
-                      <span>Enter 发送</span>
-                      <span className="hidden sm:inline"> · Shift + Enter 换行</span>
-                    </>
-                  )}
-                </span>
-                {busy ? (
-                  <InputGroupButton
-                    aria-label="停止生成"
-                    onClick={() => void stopGeneration()}
-                    variant="secondary"
-                    size="sm"
-                  >
-                    <Square />
-                    停止
-                  </InputGroupButton>
-                ) : (
-                  <InputGroupButton
-                    type="submit"
-                    aria-label="发送消息"
-                    variant="default"
-                    size="sm"
-                    disabled={!input.trim() || !channel || !channelIsReady(channel)}
-                  >
-                    <Send />
-                    发送
-                  </InputGroupButton>
-                )}
-              </InputGroupAddon>
-            </InputGroup>
-          </form>
-          {error && (
-            <p role="alert" className="text-xs text-destructive">
-              {friendlyError(error)}
-            </p>
-          )}
-        </div>
-      </footer>
-      <Dialog open={contextOpen} onOpenChange={setContextOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>上下文与摘要</DialogTitle>
-            <DialogDescription>
-              接近容量上限时会自动整理旧对话，完整聊天记录会保留。
-            </DialogDescription>
-          </DialogHeader>
-          {budget && (
-            <div className="flex flex-col gap-3">
-              <p className="text-ui tabular-nums">
-                预计输入 {budget.estimated.toLocaleString('zh-CN')} /{' '}
-                {channel!.contextWindow.toLocaleString('zh-CN')} tokens ·{' '}
-                {Math.round(budget.percent * 100)}%
-              </p>
-              <Progress aria-label="估算上下文占用" value={Math.min(100, budget.percent * 100)} />
-              {archive.lastUsage && (
-                <p className="text-sm tabular-nums">
-                  上次实际输入 {archive.lastUsage.input.toLocaleString('zh-CN')} · 输出{' '}
-                  {archive.lastUsage.output.toLocaleString('zh-CN')} tokens
+        </footer>
+        <Dialog open={contextOpen} onOpenChange={setContextOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>上下文与摘要</DialogTitle>
+              <DialogDescription>
+                接近容量上限时会自动整理旧对话，完整聊天记录会保留。
+              </DialogDescription>
+            </DialogHeader>
+            {budget && (
+              <div className="flex flex-col gap-3">
+                <p className="text-ui tabular-nums">
+                  预计输入 {budget.estimated.toLocaleString('zh-CN')} /{' '}
+                  {channel!.contextWindow.toLocaleString('zh-CN')} tokens ·{' '}
+                  {Math.round(budget.percent * 100)}%
                 </p>
-              )}
-              <p className="text-sm text-muted-foreground">
-                {archive.summary
-                  ? `摘要已覆盖 ${archive.summary.coveredCount} 条消息。`
-                  : '当前还没有压缩摘要。'}
-              </p>
-              {archive.summary && <Prose text={archive.summary.value.summary} />}
-              <Button
-                disabled={busy}
-                onClick={() => {
-                  setContextOpen(false)
-                  void compress()
-                }}
-              >
-                整理并压缩历史
-              </Button>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-      {editing && (
-        <MessageEditor
-          key={editing.id}
-          message={editing}
-          onClose={() => setEditing(null)}
-          onSaved={() => notify('消息已更新。')}
+                <Progress aria-label="估算上下文占用" value={Math.min(100, budget.percent * 100)} />
+                {archive.lastUsage && (
+                  <p className="text-sm tabular-nums">
+                    上次实际输入 {archive.lastUsage.input.toLocaleString('zh-CN')} · 输出{' '}
+                    {archive.lastUsage.output.toLocaleString('zh-CN')} tokens
+                  </p>
+                )}
+                <p className="text-sm text-muted-foreground">
+                  {archive.summary
+                    ? `摘要已覆盖 ${archive.summary.coveredCount} 条消息。`
+                    : '当前还没有压缩摘要。'}
+                </p>
+                {archive.summary && <Prose text={archive.summary.value.summary} />}
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    setContextOpen(false)
+                    void compress()
+                  }}
+                >
+                  整理并压缩历史
+                </Button>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+        {editing && (
+          <MessageEditor
+            key={editing.id}
+            message={editing}
+            onClose={() => setEditing(null)}
+            onSaved={() => notify('消息已更新。')}
+          />
+        )}
+        <ConfirmDialog
+          open={!!regenId}
+          onClose={() => setRegenId('')}
+          title="从这里重新生成？"
+          detail="成功后将原分支保留为独立篇章，再替换这条回复及后续内容。生成失败或取消会保留原聊天，并保存收到的部分内容。"
+          destructive={false}
+          onConfirm={() => {
+            void retry(regenId)
+          }}
         />
-      )}
-      <ConfirmDialog
-        open={!!regenId}
-        onClose={() => setRegenId('')}
-        title="从这里重新生成？"
-        detail="成功后将原分支保留为独立篇章，再替换这条回复及后续内容。生成失败或取消会保留原聊天，并保存收到的部分内容。"
-        destructive={false}
-        onConfirm={() => {
-          void retry(regenId)
-        }}
-      />
-      <ConfirmDialog
-        open={clear}
-        onClose={() => setClear(false)}
-        title="清空当前聊天？"
-        detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
-        onConfirm={async () => {
-          const data = createArchiveData()
-          await withArchiveOperation(archive.id, () =>
-            db.transaction('rw', db.messages, db.archives, async () => {
-              const current = await db.archives.get(archive.id)
-              if (!current) throw new Error('存档不存在。')
-              await db.messages.where('archiveId').equals(archive.id).delete()
-              await db.messages.put({ ...data.opening, archiveId: archive.id })
-              await db.archives.put({ ...revise(current, true), draft: '' })
-            }),
-          )
-          draft('')
-          notify('当前聊天已清空。')
-        }}
-      />
-    </div>
+        <ConfirmDialog
+          open={clear}
+          onClose={() => setClear(false)}
+          title="清空当前聊天？"
+          detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
+          onConfirm={async () => {
+            const data = createArchiveData()
+            await withArchiveOperation(archive.id, () =>
+              db.transaction('rw', db.messages, db.archives, async () => {
+                const current = await db.archives.get(archive.id)
+                if (!current) throw new Error('存档不存在。')
+                await db.messages.where('archiveId').equals(archive.id).delete()
+                await db.messages.put({ ...data.opening, archiveId: archive.id })
+                await db.archives.put({ ...revise(current, true), draft: '' })
+              }),
+            )
+            draft('')
+            notify('当前聊天已清空。')
+          }}
+        />
+      </div>
+    </MessageScrollerProvider>
   )
 }
 

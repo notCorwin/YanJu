@@ -6,7 +6,7 @@
 
 ## 本地开发
 
-需要 Node.js 22.12+ 和 pnpm 10.28.2。
+需要 Node.js 24.21+（最新 LTS 系列）和 pnpm 12.10.1；`.nvmrc` 与部署环境使用相同版本。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -25,7 +25,8 @@ pnpm dev
 
 ## 技术与设计
 
-- Vite 8、React 19、TypeScript、Tailwind CSS 4、shadcn/ui、AI SDK 7、Zod、Dexie。
+- Vite 8、React 19、TypeScript 7、Tailwind CSS 4、shadcn/ui、AI SDK 7、Zod、Dexie。
+- 类型检查与生产构建使用 TypeScript 7 的原生编译器；ESLint 的编译器 API 使用官方 TypeScript 6 兼容包，采用 [TypeScript 官方并行方案](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/)。依赖锁定正式稳定版本，允许采用当天发布的稳定更新。
 - `src/styles/tokens.css` 是颜色、字体、字号、间距、圆角、边框、阴影与动效的唯一来源，映射到 Tailwind 语义工具类。外观设置只修改根 Token。`pnpm check:tokens` 阻止组件新增裸视觉值，包含 shadcn 源码。
 - 使用官方 shadcn MessageScroller / Message / Bubble，Field / InputGroup，Card / Accordion / Dialog / Sheet。共享组件和变体统一视觉与触控尺寸。
 - 角色、人设规则、文风、开场白、世界和常用指令保存在 `src/content`。文本不再嵌入脚本边界。原文件 `宴雎.html` 保留供旧版行为和数据格式参考，不参与生产构建。

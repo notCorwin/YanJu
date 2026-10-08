@@ -1117,6 +1117,8 @@ test('两个窗口争用同一篇章时拒绝重复发送，停止后锁可立�
     await route.fulfill({ contentType: 'text/event-stream', body: sse(narrativeFixture).join('') })
   })
   await second.goto(page.url())
+  await expect(second.getByText('跨窗口生成中的正文', { exact: true })).toBeVisible()
+  await expect(second.getByText('生成中', { exact: true })).toBeVisible()
   await expect(second.getByRole('button', { name: '重试回复', exact: true })).toHaveCount(0)
   await second.getByRole('textbox', { name: '聊天输入' }).fill('第二个窗口的请求')
   await second.getByRole('button', { name: '发送消息', exact: true }).click()

@@ -289,6 +289,20 @@ test('流式回复完成后保留已展开的回答', async ({ page }) => {
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '回复', exact: true })).toHaveCount(20)
   await expect(page.getByRole('button', { name: /展开更多回答/ })).toContainText('还有 30 条')
+  const reading = page.getByRole('region', { name: '聊天记录', exact: true })
+  await expect(page.getByRole('button', { name: '从此分叉', exact: true }).last()).toBeEnabled()
+  await reading.dispatchEvent('wheel', { deltaY: -10000 })
+  await reading.evaluate((element) => {
+    element.scrollTop = 0
+    element.dispatchEvent(new Event('scroll'))
+  })
+  const latest = page.getByRole('button', { name: '回到最新消息', exact: true })
+  await expect(latest).toBeVisible()
+  const readingBounds = (await reading.boundingBox())!
+  const latestBounds = (await latest.boundingBox())!
+  expect(latestBounds.y).toBeGreaterThanOrEqual(readingBounds.y + readingBounds.height)
+  await latest.click()
+  await expect(page.getByRole('button', { name: /展开更多回答/ })).toBeInViewport()
 })
 
 test('论坛的错误提示和未发送内容可以返回继续编辑', async ({ page }) => {
