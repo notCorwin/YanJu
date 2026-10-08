@@ -10,8 +10,18 @@ export interface Channel {
   temperature: number
   maxOutputTokens: number
   contextWindow: number
+  requestTimeoutMs?: number
   createdAt: number
-  capability?: { fingerprint: string; testedAt: number; ok: boolean; error?: string }
+  capability?: {
+    fingerprint: string
+    testedAt: number
+    ok: boolean
+    error?: string
+    streaming?: boolean
+    protocols?: boolean
+    firstTokenMs?: number
+    elapsedMs?: number
+  }
   calibration?: { ratio: number; samples: number }
 }
 export interface Persona {
@@ -81,6 +91,17 @@ export interface LegacyContent {
   forum?: ForumReply
 }
 export type MessageStatus = 'complete' | 'partial' | 'failed' | 'cancelled'
+export interface RequestDiagnostics {
+  startedAt: number
+  elapsedMs: number
+  firstTokenMs?: number
+  requestId?: string
+  httpStatus?: number
+  corrections: number
+  model: string
+  schema: string
+  finishReason?: string
+}
 export interface StoredMessage {
   id: string
   archiveId: string
@@ -100,12 +121,14 @@ export interface StoredMessage {
   correction?: string
   error?: string
   usage?: Usage
+  diagnostics?: RequestDiagnostics
 }
 export interface MessageMeta {
   createdAt: number
   kind: StoredMessage['kind']
   status: MessageStatus
   error?: string
+  diagnostics?: RequestDiagnostics
 }
 export type ChatMessage = UIMessage<
   MessageMeta,
@@ -152,6 +175,7 @@ export const newChannel = (): Channel => ({
   temperature: 0.9,
   maxOutputTokens: 4096,
   contextWindow: 32768,
+  requestTimeoutMs: 300000,
   createdAt: Date.now(),
 })
 export const newPersona = (): Persona => ({

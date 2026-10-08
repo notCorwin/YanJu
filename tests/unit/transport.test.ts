@@ -44,7 +44,12 @@ beforeEach(async () => {
   })
   await db.channels.put({
     ...channelFixture,
-    capability: { fingerprint: channelFingerprint(channelFixture), ok: true, testedAt: 1 },
+    capability: {
+      fingerprint: channelFingerprint(channelFixture),
+      ok: true,
+      streaming: true,
+      testedAt: 1,
+    },
   })
   await db.archives.put({
     id: 'archive-1',
@@ -148,6 +153,11 @@ describe('浏览器 ChatTransport 与持久化', () => {
     expect(complete).toHaveLength(2)
     expect(complete[0].id).toBe('m0')
     expect(complete[1].reply?.value).toEqual(narrativeFixture)
+    const previous = await db.archives.filter((archive) => archive.name.endsWith('重说前')).first()
+    expect(previous).toBeDefined()
+    expect(
+      (await archiveMessages(previous!.id)).slice(0, 5).map((message) => message.content),
+    ).toEqual(['第一轮输入', '第一轮回复', '第二轮输入', '第二轮回复', '当前输入'])
   })
   it('请求开始时冻结渠道，切换设置不会把结果写入另一存档', async () => {
     await db.archives.put({

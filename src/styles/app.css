@@ -2,3 +2,11 @@
 @import 'tw-animate-css';
 @import './tokens.css';
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* shadcn's state aliases must match the attributes emitted by Radix primitives. */
+@custom-variant data-open (&:is([data-open], [data-state='open']));
+@custom-variant data-closed (&:is([data-closed], [data-state='closed']));
+@custom-variant data-active (&:is([data-active], [data-state='active']));
+@custom-variant data-checked (&:is([data-checked], [data-state='checked']));
+@custom-variant data-horizontal (&:is([data-horizontal], [data-orientation='horizontal']));
+@custom-variant data-vertical (&:is([data-vertical], [data-orientation='vertical']));
