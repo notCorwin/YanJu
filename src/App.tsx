@@ -63,7 +63,7 @@ export default function App() {
   if (!ready)
     return (
       <main className="flex chat-height items-center justify-center text-primary" role="status">
-        盐焗 · 正在打开篇章…
+        宴雎 · 正在打开篇章…
       </main>
     )
   return (
@@ -128,10 +128,7 @@ function Workspace() {
             <Home />
           </IconButton>
           <div className="min-w-0">
-            <h1 className="text-lg text-primary">
-              盐焗
-              <span className="ml-2 font-serif text-sm italic text-muted-foreground">YanJu</span>
-            </h1>
+            <h1 className="text-lg text-primary">宴雎</h1>
             <p className="truncate text-xs text-muted-foreground">
               {chatting ? archive?.name || '存档未找到' : 'Abyss & Desire'}
             </p>

@@ -22,7 +22,7 @@ export class RecoveryBoundary extends Component<
   }
   private download = async () => {
     try {
-      downloadJson(await exportSave(), saveFileName('盐焗-恢复资料'))
+      downloadJson(await exportSave(), saveFileName('宴雎-恢复资料'))
     } catch (error) {
       this.setState({ exportError: error instanceof Error ? error.message : String(error) })
     }

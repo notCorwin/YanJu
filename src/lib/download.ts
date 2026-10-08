@@ -11,5 +11,5 @@ export function downloadJson(value: unknown, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-export const saveFileName = (name = '盐焗') =>
+export const saveFileName = (name = '宴雎') =>
   `${name.replace(/[\\/:*?"<>|]/g, '-')}-${new Date().toLocaleDateString('sv-SE')}.json`
