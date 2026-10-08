@@ -1,8 +1,27 @@
 import { describe, it, expect } from 'vitest'
-import { validateNarrative, validateForum, validateCompression } from '../../src/lib/schemas'
+import {
+  sanitizePartial,
+  validateNarrative,
+  validateForum,
+  validateCompression,
+} from '../../src/lib/schemas'
 import { narrativeFixture, forumFixture, compressionFixture } from '../fixtures'
 
 describe('严格内容协议', () => {
+  it('异常部分字段不会进入渲染，合法部分内容仍保留', () => {
+    const partial = sanitizePartial('narrative', {
+      scene: { time: 123, location: '书房', characters: '非法数组' },
+      blocks: [{ kind: 'narration', text: '已收到的文字', translation: '' }],
+      phone: { memos: '非法数组' },
+      diary: { text: { invalid: true } },
+    })
+    expect(partial.scene?.time).toBeUndefined()
+    expect(partial.scene?.location).toBe('书房')
+    expect(partial.scene?.characters).toBeUndefined()
+    expect(partial.blocks?.[0]?.text).toBe('已收到的文字')
+    expect(partial.phone?.memos).toBeUndefined()
+    expect(partial.diary?.text).toBeUndefined()
+  })
   it('完整回复满足各核心模块', () =>
     expect(validateNarrative(narrativeFixture)).toEqual(narrativeFixture))
   it('拒绝缺失核心模块和多余界面字段', () => {

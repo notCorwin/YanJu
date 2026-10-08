@@ -111,7 +111,7 @@ function Workspace() {
   return (
     <div className="relative isolate flex chat-height flex-col overflow-hidden bg-background">
       <div className="pointer-events-none fixed inset-0 backdrop-scene" aria-hidden="true" />
-      <header className="surface relative z-10 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-6">
+      <header className="surface relative z-10 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) px-3 py-2 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <IconButton
             label="返回首页"
@@ -154,7 +154,7 @@ function Workspace() {
       </header>
       {chatting && archive ? (
         <main className="relative z-10 flex min-h-0 flex-1 flex-col">
-          <div className="surface flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2 sm:px-6">
+          <div className="surface flex flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) px-4 py-2 sm:px-6">
             <div className="flex min-w-0 items-center gap-2">
               <Eyebrow>宴雎 / {persona?.name || '沈辞玉'}</Eyebrow>
             </div>
@@ -303,7 +303,7 @@ function Workspace() {
       {toast && (
         <div
           role={toast.error ? 'alert' : 'status'}
-          className="fixed top-20 right-4 z-50 flex max-w-[calc(100%-2rem)] panel-width items-start gap-3 rounded-lg border bg-popover p-4 shadow-lg"
+          className="fixed top-20 right-4 z-50 flex max-w-[calc(100%-2rem)] panel-width items-start gap-3 rounded-lg border-(length:--border-width) bg-popover p-4 shadow-lg"
         >
           <p
             className={`min-w-0 flex-1 wrap-break-word text-sm ${toast.error ? 'text-destructive' : 'text-foreground'}`}

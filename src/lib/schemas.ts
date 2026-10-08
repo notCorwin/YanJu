@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { DeepPartial } from 'ai'
 
 const text = z.string()
 const object = z.strictObject
@@ -68,6 +69,41 @@ export type CompressionResult = z.infer<typeof compressionSchema>
 export type Reply =
   { kind: 'narrative'; value: NarrativeReply } | { kind: 'forum'; value: ForumReply }
 export type RequestKind = Reply['kind']
+
+// Partial output has not passed the final schema yet. Ignore invalid display fields,
+// while the transport retains its original JSON for recovery and final validation.
+function partialSchema(schema: z.ZodType): z.ZodType {
+  if (schema instanceof z.ZodObject) {
+    return z
+      .object(
+        Object.fromEntries(
+          Object.entries(schema.shape).map(([key, child]) => [
+            key,
+            partialSchema(child as z.ZodType).optional(),
+          ]),
+        ),
+      )
+      .optional()
+      .catch(undefined)
+  }
+  if (schema instanceof z.ZodArray)
+    return z
+      .array(partialSchema(schema.element as z.ZodType))
+      .optional()
+      .catch(undefined)
+  return schema.optional().catch(undefined)
+}
+const partialNarrative = partialSchema(narrativeSchema)
+const partialForum = partialSchema(forumSchema)
+export function sanitizePartial(kind: 'narrative', input: unknown): DeepPartial<NarrativeReply>
+export function sanitizePartial(kind: 'forum', input: unknown): DeepPartial<ForumReply>
+export function sanitizePartial(
+  kind: RequestKind,
+  input: unknown,
+): DeepPartial<NarrativeReply> | DeepPartial<ForumReply>
+export function sanitizePartial(kind: RequestKind, input: unknown) {
+  return (kind === 'narrative' ? partialNarrative : partialForum).parse(input) ?? {}
+}
 
 export class ContentValidationError extends Error {
   constructor(public issues: string[]) {

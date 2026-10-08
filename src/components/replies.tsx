@@ -68,7 +68,11 @@ export function NarrativeView({ reply }: { reply: DeepPartial<NarrativeReply> })
             block && (
               <div
                 key={i}
-                className={block.kind === 'dialogue' ? 'border-l border-primary pl-4' : ''}
+                className={
+                  block.kind === 'dialogue'
+                    ? 'border-l-(length:--border-width) border-primary pl-4'
+                    : ''
+                }
               >
                 <Prose text={block.text} />
                 {block.kind === 'dialogue' && block.translation && (

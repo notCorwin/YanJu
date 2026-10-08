@@ -73,7 +73,7 @@ function BubbleContent({
     <Comp
       data-slot="bubble-content"
       className={cn(
-        'w-fit max-w-full min-w-0 overflow-hidden rounded-xl border border-transparent px-3 py-2 text-chat leading-prose wrap-break-word group-data-[align=end]/bubble:self-end [button]:text-left [button,a]:transition-colors [button,a]:outline-none [button,a]:focus-visible:border-ring [button,a]:focus-visible:ring-3 [button,a]:focus-visible:ring-focus-ring',
+        'w-fit max-w-full min-w-0 overflow-hidden rounded-xl border-(length:--border-width) border-transparent px-3 py-2 text-chat leading-prose wrap-break-word group-data-[align=end]/bubble:self-end [button]:text-left [button,a]:transition-colors [button,a]:outline-none [button,a]:focus-visible:border-ring [button,a]:focus-visible:ring-(length:--ring-width) [button,a]:focus-visible:ring-focus-ring',
         className,
       )}
       {...props}
@@ -82,7 +82,7 @@ function BubbleContent({
 }
 
 const bubbleReactionsVariants = cva(
-  'absolute z-10 flex w-fit shrink-0 items-center justify-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-sm ring-3 ring-card has-[button]:p-0',
+  'absolute z-10 flex w-fit shrink-0 items-center justify-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-sm ring-(length:--ring-width) ring-card has-[button]:p-0',
   {
     variants: {
       side: {

@@ -6,6 +6,7 @@ const rules = [
   ['裸颜色', /#[\da-f]{3,8}\b|\b(?:rgb|rgba|hsl|hsla|oklch|oklab)\s*\(/i],
   ['独立视觉数值', /\b(?:text|rounded(?:-[trblse]{1,2})?|shadow|bg|fill|stroke)-\[/],
   ['独立动效', /\b(?:duration|delay)-\d+|\bease-\[|\banimate-\[/],
+  ['独立边框宽度', /\b(?:border(?:-[trblsexy])?|ring)-(?:[1-9]\d*\b|\[)/],
   [
     '独立调色板',
     /\b(?:bg|text|border|ring|fill|stroke)-(?:white|black|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d+)\b/,

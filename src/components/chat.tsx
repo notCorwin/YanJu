@@ -248,8 +248,13 @@ function ChatRunner({
   }
   const stopGeneration = async () => {
     controller.current?.abort()
-    if (!compressing) await persistCancelledMessage(archive.id, messages.at(-1))
-    await stop()
+    try {
+      if (!compressing) await persistCancelledMessage(archive.id, messages.at(-1))
+    } catch (error) {
+      notify(friendlyError(error), true)
+    } finally {
+      await stop()
+    }
     setMessages((await archiveMessages(archive.id)).map(toChatMessage))
   }
   const budget = channel
@@ -280,7 +285,7 @@ function ChatRunner({
       {archive.compactionError && (
         <div
           role="alert"
-          className="flex flex-wrap items-center justify-between gap-2 border-b p-3 text-sm text-destructive"
+          className="flex flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) p-3 text-sm text-destructive"
         >
           <span className="min-w-0 flex-1 wrap-break-word">
             压缩未完成：{archive.compactionError}
@@ -439,7 +444,7 @@ function ChatRunner({
           <MessageScrollerButton aria-label="回到最新消息" size="icon" />
         </MessageScroller>
       </MessageScrollerProvider>
-      <footer className="surface safe-bottom shrink-0 border-t px-3 pt-3 sm:px-6">
+      <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-3 sm:px-6">
         <div className="mx-auto flex reading-width flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1">

@@ -195,7 +195,7 @@ export function WorldPlayer({
                     min={0}
                     max={1}
                     step={0.05}
-                    defaultValue={0.7}
+                    defaultValue={1}
                     onChange={(e) => {
                       if (audio.current) audio.current.volume = Number(e.target.value)
                     }}

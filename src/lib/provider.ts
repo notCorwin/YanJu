@@ -16,6 +16,7 @@ import {
   validateCompression,
   validateForum,
   validateNarrative,
+  sanitizePartial,
   type Reply,
   type RequestKind,
   type NarrativeReply,
@@ -87,7 +88,8 @@ export async function testChannel(channel: Channel, signal?: AbortSignal, fetche
     }),
     prompt:
       'Return ready=true and echo="YanJu strict output". This tests JSON Schema Structured Outputs.',
-    maxOutputTokens: 128,
+    maxOutputTokens: channel.maxOutputTokens,
+    temperature: channel.temperature,
     maxRetries: 0,
     abortSignal: signal,
     providerOptions: strictOptions,
@@ -138,7 +140,7 @@ interface GenerateOptions {
   messages: ModelMessage[]
   signal: AbortSignal
   estimatedInput: number
-  onPartial: (partial: DeepPartial<NarrativeReply> | DeepPartial<ForumReply>) => void
+  onPartial: (partial: DeepPartial<NarrativeReply> | DeepPartial<ForumReply>, raw?: string) => void
   onCorrection: (detail: string) => void
   fetcher?: typeof fetch
 }
@@ -188,7 +190,7 @@ export async function generateReply(options: GenerateOptions): Promise<Generatio
     try {
       for await (const partial of stream.partialOutputStream) {
         if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-        onPartial(partial)
+        onPartial(sanitizePartial(kind, partial), JSON.stringify(partial))
       }
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       const finishReason = await stream.finishReason

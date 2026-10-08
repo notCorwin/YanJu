@@ -11,6 +11,7 @@ import { buildInstructions, modelMessages } from './prompts'
 import { channelIsReady, friendlyError, generateReply, summarize } from './provider'
 import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from './types'
 import type { ForumReply, NarrativeReply, RequestKind } from './schemas'
+import { sanitizePartial } from './schemas'
 
 export function toChatMessage(message: StoredMessage): ChatMessage {
   const parts: ChatMessage['parts'] = []
@@ -20,9 +21,17 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
   else if (message.reply?.kind === 'forum')
     parts.push({ type: 'data-forum', id: 'reply', data: message.reply.value })
   else if (message.partial?.kind === 'narrative')
-    parts.push({ type: 'data-narrative', id: 'reply', data: message.partial.value })
+    parts.push({
+      type: 'data-narrative',
+      id: 'reply',
+      data: sanitizePartial('narrative', message.partial.value),
+    })
   else if (message.partial?.kind === 'forum')
-    parts.push({ type: 'data-forum', id: 'reply', data: message.partial.value })
+    parts.push({
+      type: 'data-forum',
+      id: 'reply',
+      data: sanitizePartial('forum', message.partial.value),
+    })
   else if (message.kind === 'notice') parts.push({ type: 'data-notice', data: message.content })
   else if (message.legacy) parts.push({ type: 'data-legacy', data: message.legacy })
   else parts.push({ type: 'text', text: message.content })
@@ -170,6 +179,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
       status: 'partial',
     }
     let partial: StoredMessage['partial']
+    let rawContent = ''
     let committed = false
     let checkpointAt = 0
     let pendingCheckpoint = Promise.resolve()
@@ -218,7 +228,8 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               messages: modelMessages(messages, summary),
               signal,
               estimatedInput: estimate.estimated,
-              onPartial: (value) => {
+              onPartial: (value, raw) => {
+                rawContent = raw ?? JSON.stringify(value)
                 if (kind === 'narrative') {
                   partial = { kind, value: value as DeepPartial<NarrativeReply> }
                   writer.write({ type: 'data-narrative', id: 'reply', data: partial.value })
@@ -237,6 +248,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
                             ...base,
                             partial,
                             content: partial ? JSON.stringify(partial.value) : '',
+                            rawContent,
                           })
                       }),
                     )
@@ -299,6 +311,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               partial,
               error: detail,
               content: partial ? JSON.stringify(partial.value) : '',
+              rawContent,
             }
             // Regeneration failures append recovery data; the old branch is still intact.
             try {

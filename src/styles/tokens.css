@@ -256,9 +256,13 @@
   line-height: var(--font-leading-tight);
 }
 @utility duration-ui {
+  --tw-duration: var(--motion-normal);
+  --tw-ease: var(--motion-ease);
   transition-duration: var(--motion-normal);
 }
 @utility duration-fast {
+  --tw-duration: var(--motion-fast);
+  --tw-ease: var(--motion-ease);
   transition-duration: var(--motion-fast);
 }
 @utility border-token {
