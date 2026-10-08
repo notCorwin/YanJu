@@ -16,6 +16,7 @@
     "verify": "pnpm check:tokens && pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e && pnpm build"
   },
   "dependencies": {
+    "@ai-sdk/openai": "4.0.89",
     "@ai-sdk/openai-compatible": "^3.0.66",
     "@ai-sdk/react": "^4.0.136",
     "@shadcn/react": "^0.3.1",

@@ -3,7 +3,7 @@ import { exportSave, initializeStorage, YanJuDatabase } from '../../src/lib/db'
 import { OPFS_SAVE_FILE, OpfsPersistence } from '../../src/lib/opfs'
 import { defaults, type SaveFile } from '../../src/lib/types'
 import { channelFixture, messageFixture, narrativeFixture } from '../fixtures'
-import { channelFingerprint } from '../../src/lib/provider'
+import { channelFingerprint, channelIsReady } from '../../src/lib/provider'
 
 const save: SaveFile = {
   version: 2,
@@ -18,7 +18,13 @@ const save: SaveFile = {
   channels: [
     {
       ...channelFixture,
-      capability: { fingerprint: channelFingerprint(channelFixture), ok: true, testedAt: 1 },
+      capability: {
+        fingerprint: channelFingerprint(channelFixture),
+        ok: true,
+        testedAt: 1,
+        protocol: 'chat-completions',
+        checks: { 'chat-completions': { nonStreaming: 'passed', streaming: 'passed' } },
+      },
     },
   ],
   masks: [],
@@ -133,18 +139,38 @@ describe('OPFS 完整存档', () => {
     expect(mock.write).toHaveBeenCalledTimes(3)
   })
 
-  it('空工作数据库从 OPFS 恢复结构化回复、草稿与渠道测试状态', async () => {
-    mock.files.set(OPFS_SAVE_FILE, JSON.stringify(save))
-    const database = new YanJuDatabase(`opfs-recovery-${crypto.randomUUID()}`)
-    databases.push(database)
-    stores.push(database.persistence)
-    await initializeStorage(database)
-    const recovered = await exportSave(database)
-    expect(recovered.messages).toEqual(save.messages)
-    expect(recovered.archives[0].name).toBe(save.archives[0].name)
-    expect(recovered.channels[0].capability).toEqual(save.channels[0].capability)
-    expect(recovered.settings.activeArchiveId).toBe('archive-1')
-  })
+  it.each(['responses', 'chat-completions'] as const)(
+    '空工作数据库从 OPFS 恢复结构化回复、草稿与 %s 渠道测试状态',
+    async (protocol) => {
+      const channel = { ...channelFixture, apiMode: 'auto' as const, temperature: null }
+      const snapshot = {
+        ...save,
+        channels: [
+          {
+            ...channel,
+            capability: {
+              fingerprint: channelFingerprint(channel),
+              ok: true,
+              testedAt: 1,
+              protocol,
+              checks: { [protocol]: { nonStreaming: 'passed', streaming: 'passed' } },
+            },
+          },
+        ],
+      }
+      mock.files.set(OPFS_SAVE_FILE, JSON.stringify(snapshot))
+      const database = new YanJuDatabase(`opfs-recovery-${crypto.randomUUID()}`)
+      databases.push(database)
+      stores.push(database.persistence)
+      await initializeStorage(database)
+      const recovered = await exportSave(database)
+      expect(recovered.messages).toEqual(save.messages)
+      expect(recovered.archives[0].name).toBe(save.archives[0].name)
+      expect(recovered.channels).toEqual(snapshot.channels)
+      expect(channelIsReady(recovered.channels[0])).toBe(true)
+      expect(recovered.settings.activeArchiveId).toBe('archive-1')
+    },
+  )
 
   it('无法解析的旧 OPFS 文件先保留恢复副本，仍可打开并保存新篇章', async () => {
     const unreadable = '{"version":2,"messages":'
