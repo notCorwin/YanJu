@@ -183,7 +183,7 @@ const list = (v: unknown) => z.array(z.unknown()).parse(v ?? [])
 export function normalizeImport(input: unknown, restore = false): SaveFile {
   const raw = record(input)
   if (raw.version !== 1 && raw.version !== 2)
-    throw new Error('仅支持版本 1 和版本 2 的盐焗 JSON 存档。')
+    throw new Error('仅支持版本 1 和版本 2 的宴雎 JSON 存档。')
   const channels: Channel[] = list(raw.channels).map((value) => {
     const c = record(value)
     const apiMode = c.apiMode

@@ -742,7 +742,7 @@ export function ArchivesSheet({
       )
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = `盐焗-v2-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.download = `宴雎-v2-${new Date().toISOString().slice(0, 10)}.json`
       anchor.click()
       URL.revokeObjectURL(url)
       notify('全部存档、人设、渠道和外观已导出。')
