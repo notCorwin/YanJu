@@ -1,7 +1,7 @@
 import Dexie from 'dexie'
 import { describe, expect, it, vi } from 'vitest'
-import { db, exportSave, initializeStorage, YanJuDatabase, importSave } from '../../src/lib/db'
 import { acquireArchiveOperation } from '../../src/lib/operations'
+import { db, exportSave, importSave, initializeStorage, YanJuDatabase } from '../../src/lib/storage'
 import { defaults } from '../../src/lib/types'
 import { messageFixture } from '../fixtures'
 
@@ -36,9 +36,7 @@ describe('跨窗口会话操作', () => {
     await seed()
     const operation = await acquireArchiveOperation('archive-1')
     try {
-      await expect(importSave({ version: 2, archives: [], messages: [] })).rejects.toThrow(
-        /另一个窗口/,
-      )
+      await expect(importSave(await exportSave())).rejects.toThrow(/另一个窗口/)
       expect((await db.archives.get('archive-1'))?.name).toBe('篇章')
     } finally {
       await operation.release()

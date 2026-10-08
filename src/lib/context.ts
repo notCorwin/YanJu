@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { ModelMessage } from 'ai'
 import {
   compressionSchema,
   forumSchema,
@@ -12,7 +13,7 @@ import {
   modelMessages,
   serializeMessage,
 } from './prompts'
-import type { Archive, Channel, Persona, StoredMessage, Summary } from './types'
+import type { ApiProtocol, Archive, Channel, Persona, StoredMessage, Summary } from './types'
 import { estimatedProtocol } from './channels'
 
 export const COMPRESSION_THRESHOLD = 0.85
@@ -31,16 +32,17 @@ export const requestSchema = (kind: RequestKind) =>
   kind === 'forum' ? forumSchema : narrativeSchema
 export const schemaString = (kind: RequestKind) =>
   JSON.stringify(z.toJSONSchema(requestSchema(kind)))
-function serializeRequest(
+export function serializeRequest(
   channel: Channel,
   instructions: string,
-  history: ReturnType<typeof modelMessages>,
+  history: ModelMessage[],
   schema: unknown,
   name: string,
+  protocol: ApiProtocol = estimatedProtocol(channel),
 ) {
   const format = { name, strict: true, schema }
   return JSON.stringify(
-    estimatedProtocol(channel) === 'responses'
+    protocol === 'responses'
       ? {
           input: [
             { role: 'system', content: instructions },
@@ -134,12 +136,14 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
   const before = contextBudget(channel, persona, kind, messages, valid)
   if (!options.force && !before.mustCompress) return valid
   checkAbort(signal)
-  const userStarts = messages.map((m, i) => (m.role === 'user' ? i : -1)).filter((i) => i >= 0)
+  const userStarts = messages
+    .map((m, i) => (m.role === 'user' && !m.stale ? i : -1))
+    .filter((i) => i >= 0)
   if (!userStarts.length) return valid
   const completeStarts = userStarts.filter((start, index) =>
     messages
       .slice(start + 1, userStarts[index + 1] ?? messages.length)
-      .some((m) => m.role === 'assistant' && m.status === 'complete'),
+      .some((m) => m.role === 'assistant' && m.status === 'complete' && !m.stale),
   )
   let covered = valid ? messages.findIndex((m) => m.id === valid.coveredThroughId) : -1
   let value = valid?.value
@@ -170,7 +174,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     if (end <= covered) continue
     const pending = messages
       .slice(covered + 1, end + 1)
-      .filter((m) => m.role === 'user' || m.status === 'complete')
+      .filter((m) => !m.stale && (m.role === 'user' || m.status === 'complete'))
     let batch: CompressionInput['messages'] = []
     let batchNumber = 0
     const flush = async () => {
@@ -184,7 +188,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     }
     for (const message of pending) {
       const raw = serializeMessage(message)
-      // Split exceptionally large legacy messages. No prefix is committed until every segment succeeds.
+      // Split exceptionally large messages. No prefix is committed until every segment succeeds.
       const charBudget = Math.max(
         128,
         Math.floor(

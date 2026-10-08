@@ -1,37 +1,40 @@
-import { useId, useRef, useState } from 'react'
-import { z } from 'zod'
-import type { StoredMessage } from '@/lib/types'
-import { editMessage } from '@/lib/db'
+import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
 import { withArchiveOperation } from '@/lib/operations'
 import { friendlyError } from '@/lib/provider'
-import { ContentValidationError, narrativeSchema, forumSchema } from '@/lib/schemas'
-import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
+import { ContentValidationError, forumSchema, narrativeSchema } from '@/lib/schemas'
+import { editMessage } from '@/lib/storage'
+import type { StoredMessage } from '@/lib/types'
+import { LoaderCircle, Plus, Trash2 } from 'lucide-react'
+import { useId, useRef, useState } from 'react'
+import { z } from 'zod'
+import { ConfirmDialog, FormField, IconButton } from './shared'
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion'
+import { Alert, AlertDescription, AlertTitle } from './ui/alert'
+import { Button } from './ui/button'
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from './ui/dialog'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs'
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './ui/accordion'
-import { Field, FieldGroup, FieldLabel, FieldSet, FieldLegend } from './ui/field'
+import { Field, FieldGroup, FieldLabel, FieldLegend, FieldSet } from './ui/field'
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from './ui/select'
-import { Alert, AlertTitle, AlertDescription } from './ui/alert'
-import { Button } from './ui/button'
-import { FormField, ConfirmDialog, IconButton } from './shared'
-import { LoaderCircle, Plus, Trash2 } from 'lucide-react'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 
 const labels: Record<string, string> = {
   scene: '场景',
+  effects: '剧情变化',
+  speakerRef: '说话人引用',
+  entityRefs: '人物引用',
   blocks: '正文',
   state: '状态',
   phone: '手机',
@@ -95,6 +98,8 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
 
 function emptyValue(schema?: z.ZodType, name = ''): unknown {
+  if (schema instanceof z.ZodNullable) return null
+  if (schema instanceof z.ZodBoolean) return false
   if (name === 'id') return crypto.randomUUID()
   if (schema instanceof z.ZodObject)
     return Object.fromEntries(
@@ -127,7 +132,13 @@ function PrimitiveField({
   const [longText] = useState(
     multiline.has(name) || (typeof value === 'string' && value.length > 80),
   )
-  if (name === 'kind')
+  if (schema instanceof z.ZodBoolean)
+    return (
+      <Button type="button" variant="outline" onClick={() => onChange(!value)}>
+        {label}：{value ? '是' : '否'}
+      </Button>
+    )
+  if (schema instanceof z.ZodEnum)
     return (
       <Field>
         <FieldLabel htmlFor={id}>{label}</FieldLabel>
@@ -137,8 +148,11 @@ function PrimitiveField({
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="narration">叙述</SelectItem>
-              <SelectItem value="dialogue">对白</SelectItem>
+              {schema.options.map((option) => (
+                <SelectItem key={option} value={String(option)}>
+                  {option === 'narration' ? '叙述' : option === 'dialogue' ? '对白' : option}
+                </SelectItem>
+              ))}
             </SelectGroup>
           </SelectContent>
         </Select>
@@ -275,6 +289,30 @@ function ValueFields({
   schema?: z.ZodType
   onChange: (value: unknown) => void
 }) {
+  if (schema instanceof z.ZodNullable)
+    return (
+      <FieldGroup>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() =>
+            onChange(value === null ? emptyValue(schema.unwrap() as z.ZodType, name) : null)
+          }
+        >
+          {value === null
+            ? `${labels[name] || name}：未知，点击填写`
+            : `${labels[name] || name}：改为未知`}
+        </Button>
+        {value !== null && (
+          <ValueFields
+            value={value}
+            name={name}
+            schema={schema.unwrap() as z.ZodType}
+            onChange={onChange}
+          />
+        )}
+      </FieldGroup>
+    )
   if (Array.isArray(value) || schema instanceof z.ZodArray)
     return (
       <ArrayFields
@@ -297,7 +335,8 @@ function ValueFields({
               schema instanceof z.ZodObject ? (schema.shape[key] as z.ZodType) : undefined
             return (typeof child === 'object' && child !== null) ||
               childSchema instanceof z.ZodObject ||
-              childSchema instanceof z.ZodArray ? (
+              childSchema instanceof z.ZodArray ||
+              childSchema instanceof z.ZodNullable ? (
               <FieldSet key={key}>
                 <FieldLegend variant="label">{labels[key] || key}</FieldLegend>
                 <ValueFields
@@ -334,16 +373,24 @@ function ValueFields({
 
 export function MessageEditor({
   message,
+  disabled = false,
   onClose,
   onSaved,
 }: {
   message: StoredMessage
+  disabled?: boolean
   onClose: () => void
   onSaved: () => void
 }) {
   const original = message.reply
     ? JSON.stringify(message.reply.value, null, 2)
-    : message.rawContent || message.content
+    : message.interaction
+      ? JSON.stringify(message.interaction, null, 2)
+      : message.effects
+        ? JSON.stringify({ content: message.content, effects: message.effects }, null, 2)
+        : typeof (message.rawContent || message.content) === 'string'
+          ? message.rawContent || message.content
+          : JSON.stringify(message.rawContent || message.content, null, 2)
   const [text, setText] = useState(original)
   const [tab, setTab] = useState(message.reply?.kind === 'forum' ? 'post' : 'blocks')
   const [saving, setSaving] = useState(false)
@@ -372,9 +419,10 @@ export function MessageEditor({
           ['state', '状态'],
           ['phone', '手机'],
           ['diary', '日记'],
+          ['effects', '剧情变化'],
         ]
   const save = async () => {
-    if (saving) return
+    if (disabled || saving) return
     setSaving(true)
     setError('')
     try {
@@ -390,7 +438,7 @@ export function MessageEditor({
           e.issues
             .map((issue) =>
               issue.replace(
-                /\b(?:scene|blocks|state|phone|diary|post|answers)(?:\.[\w]+)*/g,
+                /\b(?:scene|blocks|state|phone|diary|effects|post|answers)(?:\.[\w]+)*/g,
                 (path) =>
                   path
                     .split('.')
@@ -482,7 +530,7 @@ export function MessageEditor({
                     className="min-h-0 overflow-y-auto overscroll-contain p-1"
                   >
                     {parsed ? (
-                      <fieldset disabled={saving}>
+                      <fieldset disabled={disabled || saving}>
                         <ValueFields
                           value={parsed[key]}
                           name={key}
@@ -506,7 +554,7 @@ export function MessageEditor({
                     value={text}
                     onChange={change}
                     multiline
-                    disabled={saving}
+                    disabled={disabled || saving}
                     help="适合直接修改数据结构；保存时仍会检查所有字段。"
                     className="max-h-96 font-mono"
                   />
@@ -519,7 +567,7 @@ export function MessageEditor({
                   value={text}
                   onChange={change}
                   multiline
-                  disabled={saving}
+                  disabled={disabled || saving}
                   autoFocus
                   className="max-h-96"
                 />
@@ -529,12 +577,12 @@ export function MessageEditor({
               <Button
                 type="button"
                 variant="outline"
-                disabled={saving}
+                disabled={disabled || saving}
                 onClick={() => guard(onClose)}
               >
                 取消
               </Button>
-              <Button type="submit" disabled={saving}>
+              <Button type="submit" disabled={disabled || saving}>
                 {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
                 保存修改
               </Button>

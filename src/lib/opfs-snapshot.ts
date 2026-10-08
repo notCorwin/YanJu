@@ -34,7 +34,7 @@ async function writeFile(directory: FileSystemDirectoryHandle, name: string, con
 const removeFile = (directory: FileSystemDirectoryHandle, name: string) =>
   directory.removeEntry?.(name).catch(() => undefined)
 
-/** Export remains v2. Only the internal OPFS layout uses immutable message files. */
+/** Export remains v3. Only the internal OPFS layout uses immutable message files. */
 export async function readOpfsSnapshot(directory: FileSystemDirectoryHandle): Promise<unknown> {
   let raw: unknown
   try {

@@ -1,6 +1,7 @@
 import { expect, type Page } from '@playwright/test'
 import { test } from './fixtures'
 import {
+  channelFixture,
   capabilityFixture,
   completion,
   forumFixture,
@@ -9,65 +10,9 @@ import {
   responseSse,
   sse,
 } from '../fixtures'
+import { defaults, type SaveFile } from '../../src/lib/types'
 
 async function prepareUI(page: Page, archiveCount = 2) {
-  await page.addInitScript((count) => {
-    if (localStorage.getItem('ui-seeded')) return
-    localStorage.setItem('ui-seeded', 'true')
-    localStorage.setItem(
-      'yanju_archives',
-      JSON.stringify(
-        Array.from({ length: count }, (_, index) => ({
-          id: `archive-${index + 1}`,
-          name: index ? `阅读计划 ${index + 1}` : '午后的书房',
-          createdAt: 1,
-          updatedAt: count - index,
-          messages: [
-            {
-              id: `opening-${index}`,
-              role: 'assistant',
-              content: `篇章 ${index + 1}：午后的书房很安静。`,
-              timestamp: 1,
-            },
-          ],
-        })),
-      ),
-    )
-    localStorage.setItem(
-      'yanju_masks',
-      JSON.stringify([
-        {
-          id: 'persona-1',
-          name: '林知遥',
-          gender: '其他',
-          identity: '读者',
-          prefer: '阅读',
-          force: '不允许代替我说话。',
-          createdAt: 1,
-        },
-      ]),
-    )
-    localStorage.setItem(
-      'yanju_channels',
-      JSON.stringify([
-        {
-          id: 'channel-1',
-          name: '阅读渠道',
-          baseUrl: 'https://mock.example/v1',
-          apiKey: 'test-key-not-real',
-          model: 'test-model',
-          apiMode: 'chat-completions',
-          temperature: 0.9,
-          maxTokens: 4096,
-          contextWindow: 131072,
-          createdAt: 1,
-        },
-      ]),
-    )
-    localStorage.setItem('yanju_archive_cur', JSON.stringify('archive-1'))
-    localStorage.setItem('yanju_channel_cur', JSON.stringify('channel-1'))
-    localStorage.setItem('yanju_mask_cur', JSON.stringify('persona-1'))
-  }, archiveCount)
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort())
   await page.route('https://fonts.gstatic.com/**', (route) => route.abort())
   await page.route('https://mock.example/v1/**', async (route) => {
@@ -92,6 +37,64 @@ async function prepareUI(page: Page, archiveCount = 2) {
   })
   await page.goto('./')
   await expect(page.getByRole('button', { name: '进入聊天' })).toBeVisible()
+  const data: SaveFile = {
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    archives: Array.from({ length: archiveCount }, (_, index) => ({
+      id: `archive-${index + 1}`,
+      name: index ? `阅读计划 ${index + 1}` : '午后的书房',
+      createdAt: 1,
+      updatedAt: archiveCount - index,
+      revision: 0,
+      draft: '',
+      userName: '林知遥',
+    })),
+    messages: Array.from({ length: archiveCount }, (_, index) => ({
+      id: `opening-${index}`,
+      archiveId: `archive-${index + 1}`,
+      role: 'assistant',
+      kind: 'opening',
+      status: 'complete',
+      content: `篇章 ${index + 1}：午后的书房很安静。`,
+      sequence: 0,
+      createdAt: 1,
+    })),
+    channels: [{ ...channelFixture, name: '阅读渠道' }],
+    masks: [
+      {
+        id: 'persona-1',
+        name: '林知遥',
+        gender: '其他',
+        identity: '读者',
+        prefer: '阅读',
+        force: '不允许代替我说话。',
+        createdAt: 1,
+      },
+    ],
+    settings: {
+      ...defaults,
+      activeArchiveId: 'archive-1',
+      activeChannelId: 'channel-1',
+      activePersonaId: 'persona-1',
+    },
+    storyStates: [],
+    storyEvents: [],
+    tasks: [],
+    requests: [],
+  }
+  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  await page.getByLabel('导入存档文件').setInputFiles({
+    name: 'ui-fixture-v3.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(data)),
+  })
+  await page
+    .getByRole('dialog', { name: '导入并替换当前资料？', exact: true })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect(page.getByText('存档导入完成。渠道须重新测试。', { exact: true })).toBeVisible()
+  await page.goto('./')
+  await expect(page.getByRole('button', { name: '进入聊天', exact: true })).toBeVisible()
 }
 
 async function connectUI(page: Page) {

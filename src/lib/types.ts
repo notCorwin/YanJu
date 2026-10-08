@@ -1,5 +1,8 @@
-import type { DeepPartial, UIMessage } from 'ai'
+import type { DeepPartial, UIMessage, ModelMessage } from 'ai'
 import type { CompressionResult, ForumReply, NarrativeReply, Reply, RequestKind } from './schemas'
+import type { TurnEffects } from './domain-schema'
+import type { StoryState, StoryEvent } from './story'
+import type { AuxiliaryKind, TaskInput, TaskKind } from './tasks'
 
 export type ApiProtocol = 'chat-completions' | 'responses'
 export type ApiMode = 'auto' | ApiProtocol
@@ -56,6 +59,7 @@ export interface Settings extends Appearance {
   activePersonaId: string
   activeArchiveId: string
   migrated: boolean
+  autoMusic: boolean
 }
 export interface Usage {
   input: number
@@ -82,23 +86,9 @@ export interface Archive {
   lastUsage?: Usage
   draft: string
   compactionError?: string
-}
-export interface LegacyPanel {
-  title: string
-  sections: { heading: string; text: string }[]
-}
-export interface LegacyContent {
-  body: string
-  scene?: {
-    time: string
-    location: string
-    characters: string
-    quoteZh: string
-    quoteEn: string
-    source: string
-  }
-  panels: LegacyPanel[]
-  forum?: ForumReply
+  userName?: string
+  description?: string
+  keywords?: string[]
 }
 export type MessageStatus = 'complete' | 'partial' | 'failed' | 'cancelled'
 export interface RequestDiagnostics {
@@ -119,33 +109,96 @@ export interface StoredMessage {
   content: string
   createdAt: number
   sequence: number
-  kind: RequestKind | 'legacy' | 'notice'
+  kind: RequestKind | 'notice' | 'opening' | 'material' | 'interaction'
   status: MessageStatus
   reply?: Reply
   partial?:
     | { kind: 'narrative'; value: DeepPartial<NarrativeReply> }
     | { kind: 'forum'; value: DeepPartial<ForumReply> }
-  legacy?: LegacyContent
   rawContent?: string
   /** A user message already sent to correct this generation, replayed before the assistant reply. */
   correction?: string
   error?: string
   usage?: Usage
   diagnostics?: RequestDiagnostics
+  stale?: boolean
+  requestContext?: string
+  effects?: TurnEffects
+  userName?: string
+  interaction?:
+    | {
+        kind: 'phone'
+        contactRef: string
+        userText: string
+        speaker: string
+        time: string
+        text: string
+      }
+    | {
+        kind: 'forum'
+        postId: string
+        replyTo: string
+        userText: string
+        author: string
+        time: string
+        content: string
+      }
+}
+export interface TaskRun {
+  id: string
+  archiveId: string
+  revision: number
+  kind: AuxiliaryKind
+  input: TaskInput
+  channelId: string
+  createdAt: number
+  status: MessageStatus
+  output?: unknown
+  partial?: unknown
+  raw?: string
+  error?: string
+  correction?: string
+  usage?: Usage
+  diagnostics?: RequestDiagnostics
+  applied?: boolean
+}
+export interface RequestRecord {
+  id: string
+  archiveId: string | null
+  ownerId: string | null
+  kind: TaskKind
+  attempt: number
+  createdAt: number
+  channel: { id: string; name: string; baseUrl: string; model: string; protocol: ApiProtocol }
+  request: {
+    instructions: string
+    messages: ModelMessage[]
+    schema: unknown
+    maxOutputTokens: number
+    temperature: number | null
+    streaming: boolean
+  }
+  estimatedInput: number
+  status: MessageStatus
+  output?: unknown
+  partial?: unknown
+  raw?: string
+  error?: string
+  usage?: Usage
+  diagnostics?: RequestDiagnostics
 }
 export interface MessageMeta {
+  diagnostics?: RequestDiagnostics
   createdAt: number
   kind: StoredMessage['kind']
   status: MessageStatus
   error?: string
-  diagnostics?: RequestDiagnostics
 }
 export type ChatMessage = UIMessage<
   MessageMeta,
   {
     narrative: DeepPartial<NarrativeReply>
     forum: DeepPartial<ForumReply>
-    legacy: LegacyContent
     notice: string
     status: {
       phase: 'compressing' | 'generating' | 'correcting' | 'complete' | 'failed' | 'cancelled'
@@ -155,13 +208,17 @@ export type ChatMessage = UIMessage<
   Record<string, never>
 >
 export interface SaveFile {
-  version: 2
+  version: 3
   exportedAt: string
   archives: Archive[]
   messages: StoredMessage[]
   channels: Channel[]
   masks: Persona[]
   settings: Settings
+  storyStates: StoryState[]
+  storyEvents: StoryEvent[]
+  tasks: TaskRun[]
+  requests: RequestRecord[]
 }
 
 export const defaults: Settings = {
@@ -170,6 +227,7 @@ export const defaults: Settings = {
   activePersonaId: '',
   activeArchiveId: '',
   migrated: false,
+  autoMusic: false,
   fontChat: 16,
   fontUi: 14,
   fontFamily: 'Noto Serif SC',
@@ -184,8 +242,8 @@ export const newChannel = (): Channel => ({
   model: '',
   apiMode: 'auto',
   temperature: 0.9,
-  maxOutputTokens: 4096,
-  contextWindow: 32768,
+  maxOutputTokens: 8192,
+  contextWindow: 65536,
   requestTimeoutMs: 300000,
   createdAt: Date.now(),
 })

@@ -40,7 +40,15 @@ describe('严格内容协议', () => {
     expect(() =>
       validateNarrative({
         ...narrativeFixture,
-        blocks: [{ kind: 'dialogue', text: '一句话', translation: '' }],
+        blocks: [
+          {
+            id: 'b1',
+            speakerRef: 'character-yanju',
+            kind: 'dialogue',
+            text: '一句话',
+            translation: '',
+          },
+        ],
       }),
     ).toThrow(/750|翻译/)
     expect(() =>

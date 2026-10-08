@@ -230,6 +230,7 @@
   textarea,
   select {
     font-size: var(--font-base-size);
+    accent-color: var(--primary);
   }
   textarea {
     resize: vertical;

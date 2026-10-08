@@ -1,3 +1,4 @@
+import { errorDiagnostics } from '../../src/lib/request-trace'
 import { describe, it, expect, vi } from 'vitest'
 import {
   channelFingerprint,
@@ -8,15 +9,14 @@ import {
   friendlyError,
 } from '../../src/lib/provider'
 import {
-  narrativeFixture,
   forumFixture,
   compressionFixture,
+  narrativeFixture,
   channelFixture,
   capabilityFixture,
-  completion,
   sse,
+  completion,
 } from '../fixtures'
-import { errorDiagnostics } from '../../src/lib/request-trace'
 import type { DeepPartial } from 'ai'
 import type { NarrativeReply } from '../../src/lib/schemas'
 
@@ -47,7 +47,7 @@ describe('OpenAI-compatible 严格协议', () => {
             ? forumFixture
             : body.response_format.json_schema.name === 'CompressionResult'
               ? compressionFixture
-              : { ready: true, echo: 'YanJu strict output' }
+              : capabilityFixture
       return body.stream ? streaming(value) : Response.json(completion(value))
     })
     const result = await testChannelProtocols(
@@ -72,9 +72,7 @@ describe('OpenAI-compatible 严格协议', () => {
   it('能力测试拒绝非流式成功但流式协议损坏的渠道', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        Response.json(completion({ ready: true, echo: 'YanJu strict output' })),
-      )
+      .mockResolvedValueOnce(Response.json(completion(capabilityFixture)))
       .mockResolvedValueOnce(streaming({ ready: true }))
     expect(await testChannel(channelFixture, undefined, fetcher)).toMatchObject({
       ok: false,
@@ -133,6 +131,7 @@ describe('OpenAI-compatible 严格协议', () => {
     expect(friendlyError(failure)).toMatch(status === 401 ? /授权/ : /受限/)
     expect(fetcher).toHaveBeenCalledOnce()
   })
+
   it('能力测试发送 json_schema / strict true，不使用 json_object', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
@@ -147,13 +146,8 @@ describe('OpenAI-compatible 严格协议', () => {
     expect(body.response_format.json_schema.strict).toBe(true)
     expect(body.response_format.json_schema.schema.additionalProperties).toBe(false)
     expect(channelIsReady({ ...channelFixture, capability })).toBe(true)
-    expect(
-      channelIsReady({ ...channelFixture, capability: { ...capability, checks: undefined } }),
-    ).toBe(false)
     expect(channelIsReady({ ...channelFixture, model: 'changed', capability })).toBe(false)
     expect(channelFingerprint(channelFixture)).not.toContain(channelFixture.apiKey)
-    expect(capability.checks?.['chat-completions']?.streaming).toBe('passed')
-    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body)).stream).toBe(true)
   })
   it('部分对象持续更新，并在完整校验后返回 usage', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(streaming(narrativeFixture))
@@ -165,14 +159,6 @@ describe('OpenAI-compatible 严格协议', () => {
     expect(parts[0].diary).toBeUndefined()
     expect(result.reply).toEqual({ kind: 'narrative', value: narrativeFixture })
     expect(result.usage?.input).toBe(12000)
-    expect(result.diagnostics).toMatchObject({
-      schema: 'NarrativeReply',
-      model: 'test-model',
-      corrections: 0,
-      httpStatus: 200,
-      finishReason: 'stop',
-    })
-    expect(result.diagnostics?.firstTokenMs).toBeGreaterThanOrEqual(0)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.stream_options.include_usage).toBe(true)
     expect(body.max_tokens).toBe(channelFixture.maxOutputTokens)

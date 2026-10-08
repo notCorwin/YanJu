@@ -63,14 +63,14 @@ export const test = base.extend({
             for (const key of Object.keys(localStorage))
               if (key.startsWith('yanju_') || key === 'test-seeded') localStorage.removeItem(key)
             await new Promise<void>((resolve, reject) => {
-              const request = indexedDB.deleteDatabase('yanju-v2')
+              const request = indexedDB.deleteDatabase('yanju-v3')
               request.onsuccess = () => resolve()
               request.onerror = () => reject(request.error)
               request.onblocked = () => reject(new Error('测试工作数据库仍有连接'))
             })
             const root = await navigator.storage.getDirectory()
             try {
-              await root.removeEntry('yanju-v2', { recursive: true })
+              await root.removeEntry('yanju-v3', { recursive: true })
             } catch (error) {
               if (!(error instanceof DOMException) || error.name !== 'NotFoundError') throw error
             }

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { calibrate, compactContext, contextBudget, shouldCompact } from '../../src/lib/context'
+import { channelFingerprint } from '../../src/lib/channels'
 import { modelMessages } from '../../src/lib/prompts'
 import type { Archive, Channel } from '../../src/lib/types'
-import { channelFingerprint } from '../../src/lib/channels'
 import { channelFixture, compressionFixture, messageFixture } from '../fixtures'
 
 const archive: Archive = {
@@ -91,7 +91,7 @@ describe('上下文预算与压缩事务', () => {
     async (apiMode) => {
       const commit = vi.fn()
       const summarize = vi.fn().mockResolvedValue(compressionFixture)
-      const channel = { ...channelFixture, apiMode, contextWindow: 65536 }
+      const channel = { ...channelFixture, apiMode, contextWindow: 131072 }
       const summary = await compactContext({
         archive,
         channel,

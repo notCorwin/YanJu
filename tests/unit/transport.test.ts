@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { db, archiveMessages, appendMessage } from '../../src/lib/db'
-import { defaults } from '../../src/lib/types'
-import { channelFingerprint } from '../../src/lib/provider'
-import { BrowserChatTransport, toChatMessage } from '../../src/lib/transport'
-import { modelMessages } from '../../src/lib/prompts'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as context from '../../src/lib/context'
+import { modelMessages } from '../../src/lib/prompts'
+import { channelFingerprint } from '../../src/lib/provider'
+import { appendMessage, archiveMessages, db } from '../../src/lib/storage'
+import { BrowserChatTransport, toChatMessage } from '../../src/lib/transport'
+import { defaults } from '../../src/lib/types'
 import {
   channelFixture,
   compressionFixture,

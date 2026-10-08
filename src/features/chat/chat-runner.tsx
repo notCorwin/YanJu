@@ -1,112 +1,93 @@
+import { MessageEditor } from '@/components/message-editor'
+import { RecoveryBoundary } from '@/components/recovery-boundary'
+import { RequestDetails } from '@/components/request-details'
+import { ConfirmDialog, IconButton, Prose } from '@/components/shared'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Bubble, BubbleContent } from '@/components/ui/bubble'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from '@/components/ui/input-group'
+import { Message, MessageContent, MessageFooter, MessageHeader } from '@/components/ui/message'
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from '@/components/ui/message-scroller'
+import { Progress } from '@/components/ui/progress'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { ForumView } from '@/features/chat/replies/forum-view'
+import { NarrativeView } from '@/features/chat/replies/narrative-view'
+import type { ExternalChatRequest } from '@/features/chat/types'
+import { contextBudget } from '@/lib/context'
+import type { Notify } from '@/lib/notify'
+import { withArchiveOperation } from '@/lib/operations'
+import { channelIsReady, friendlyError } from '@/lib/provider'
+import type { RequestKind } from '@/lib/schemas'
+import {
+  appendMessage,
+  archiveMessages,
+  createArchiveData,
+  db,
+  forkArchive,
+  refreshStory,
+  revise,
+} from '@/lib/storage'
+import {
+  BrowserChatTransport,
+  compressArchive,
+  persistCancelledMessage,
+  toChatMessage,
+} from '@/lib/transport'
+import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from '@/lib/types'
+import { executeAuxiliary } from '@/lib/workflows'
+import { useChat } from '@ai-sdk/react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import {
+  ArrowDownToLine,
+  BookOpen,
+  Copy,
+  FileJson,
+  GitBranch,
+  LoaderCircle,
+  Pencil,
+  RotateCcw,
+  Send,
+  Square,
+  Trash2,
+} from 'lucide-react'
 import {
   memo,
-  useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from 'react'
-import { useChat } from '@ai-sdk/react'
-import { useLiveQuery } from 'dexie-react-hooks'
-import {
-  contextArchiveMessages,
-  recentArchiveMessages,
-  db,
-  forkArchive,
-  createArchiveData,
-  revise,
-} from '@/lib/db'
-import { BrowserChatTransport, toChatMessage } from '@/lib/transport'
-import { contextBudget } from '@/lib/context'
-import { channelIsReady, friendlyError } from '@/lib/provider'
-import { useChatOperations } from '@/hooks/use-chat-operations'
-import { withArchiveOperation } from '@/lib/operations'
-import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from '@/lib/types'
-import type { RequestKind } from '@/lib/schemas'
-import {
-  MessageScrollerProvider,
-  MessageScroller,
-  MessageScrollerViewport,
-  MessageScrollerContent,
-  MessageScrollerItem,
-  MessageScrollerButton,
-} from './ui/message-scroller'
-import { Message, MessageContent, MessageHeader, MessageFooter } from './ui/message'
-import { Bubble, BubbleContent } from './ui/bubble'
-import { InputGroup, InputGroupTextarea, InputGroupAddon, InputGroupButton } from './ui/input-group'
-import { Button } from './ui/button'
-import { Badge } from './ui/badge'
-import { Progress } from './ui/progress'
-import {
-  Select,
-  SelectContent,
-  SelectTrigger,
-  SelectValue,
-  SelectItem,
-  SelectGroup,
-} from './ui/select'
-import { Alert, AlertTitle, AlertDescription } from './ui/alert'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
-import { NarrativeView, ForumView, LegacyView } from './replies'
-import { RecoveryBoundary } from './recovery-boundary'
-import { MessageEditor } from './message-editor'
-import { RequestDetails } from './request-details'
-import { ConfirmDialog, IconButton, Prose } from './shared'
-import type { Notify } from './managers'
-import {
-  Send,
-  Square,
-  Copy,
-  Pencil,
-  RotateCcw,
-  LoaderCircle,
-  Trash2,
-  ArrowDownToLine,
-  BookOpen,
-  GitBranch,
-  FileJson,
-} from 'lucide-react'
 
-export function ChatSession(props: {
-  archive: Archive
-  channel?: Channel
-  persona?: Persona
-  notify: Notify
-  onBusy: (value: boolean) => void
-  onWorld: () => void
-  onChannels: () => void
-  insert: string
-  onInserted: () => void
-}) {
-  const [limit, setLimit] = useState(60)
-  const stored = useLiveQuery(
-    () => recentArchiveMessages(props.archive.id, limit),
-    [props.archive.id, limit],
-  )
-  const context = useLiveQuery(
-    () => contextArchiveMessages(props.archive),
-    [props.archive.id, props.archive.revision, props.archive.summary?.createdAt],
-  )
-  const loadEarlier = useCallback(() => setLimit((value) => value + 60), [])
-  if (!stored || !context)
-    return (
-      <p role="status" className="p-6 text-muted-foreground">
-        正在读取存档…
-      </p>
-    )
-  return (
-    <ChatRunner
-      {...props}
-      stored={stored.messages}
-      context={context}
-      limit={limit}
-      remaining={stored.count - stored.messages.length}
-      onLoadEarlier={loadEarlier}
-    />
-  )
-}
-function ChatRunner({
+export function ChatRunner({
   archive,
   channel,
   persona,
@@ -115,12 +96,17 @@ function ChatRunner({
   onWorld,
   onChannels,
   stored,
-  context,
-  limit,
-  remaining,
-  onLoadEarlier,
   insert,
   onInserted,
+  externalRequest,
+  onExternalHandled,
+  externalMode,
+  onModeHandled,
+  sourceMessage,
+  sourceBlock,
+  onSourceHandled,
+  disabled,
+  onStudio,
 }: {
   archive: Archive
   channel?: Channel
@@ -130,50 +116,44 @@ function ChatRunner({
   onWorld: () => void
   onChannels: () => void
   stored: StoredMessage[]
-  context: StoredMessage[]
-  limit: number
-  remaining: number
-  onLoadEarlier: () => void
   insert: string
   onInserted: () => void
+  externalRequest: ExternalChatRequest | null
+  onExternalHandled: () => void
+  externalMode: RequestKind | null
+  onModeHandled: () => void
+  sourceMessage?: string
+  sourceBlock?: string
+  onSourceHandled: (messageId: string, blockId?: string) => void
+  disabled: boolean
+  onStudio: () => void
 }) {
+  const [visibleLimit, setVisibleLimit] = useState(60)
   const transport = useMemo(() => new BrowserChatTransport(), [])
-  const initialMessages = useMemo(() => stored.map(toChatMessage), [stored])
-  const chat = useChat<ChatMessage>({
-    id: archive.id,
-    transport,
-    messages: initialMessages,
-    generateId: () => crypto.randomUUID(),
-    onError: (e) => notify(friendlyError(e), true),
-  })
+  const finishedMessage = useRef<string | null>(null)
+  const { messages, sendMessage, regenerate, setMessages, stop, status, error, clearError } =
+    useChat<ChatMessage>({
+      id: archive.id,
+      transport,
+      messages: stored.slice(-visibleLimit).map(toChatMessage),
+      generateId: () => crypto.randomUUID(),
+      onError: (e) => notify(friendlyError(e), true),
+      onFinish: ({ message }) => {
+        finishedMessage.current = message.id
+      },
+    })
+  const [input, setInput] = useState(archive.draft)
   const [mode, setMode] = useState<RequestKind>('narrative')
   const [contextOpen, setContextOpen] = useState(false)
   const [editing, setEditing] = useState<StoredMessage | null>(null)
   const [regenId, setRegenId] = useState('')
   const [clear, setClear] = useState(false)
-  const { messages, setMessages, error } = chat
-  const {
-    input,
-    draft,
-    inputRef,
-    send,
-    retry,
-    compress,
-    stopGeneration,
-    busy,
-    compressing,
-    localLock: lock,
-  } = useChatOperations({
-    archive,
-    channel,
-    persona,
-    mode,
-    limit,
-    chat,
-    notify,
-    onBusy,
-    settle: transport.waitForIdle,
-  })
+  const [preparing, setPreparing] = useState(false)
+  const [compressing, setCompressing] = useState(false)
+  const [forumRunning, setForumRunning] = useState(false)
+  const [forumPartial, setForumPartial] = useState('')
+  const story = useLiveQuery(() => db.storyStates.get(archive.id), [archive.id])
+  const lock = useRef(false)
   const composing = useRef(false)
   const touchInput = useSyncExternalStore(
     (notify) => {
@@ -183,16 +163,262 @@ function ChatRunner({
     },
     () => window.matchMedia('(pointer: coarse)').matches,
   )
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const controller = useRef<AbortController | null>(null)
+  const chatBusy =
+    status === 'streaming' || status === 'submitted' || preparing || compressing || forumRunning
+  const busy = chatBusy || disabled
+
   useEffect(() => {
-    if (!lock.current && !busy) setMessages(stored.map(toChatMessage))
-  }, [stored, busy, setMessages, lock])
+    onBusy(chatBusy)
+  }, [chatBusy, onBusy])
+  useEffect(
+    () => () => {
+      void stop()
+      controller.current?.abort()
+      onBusy(false)
+    },
+    [stop, onBusy],
+  )
   useEffect(() => {
-    if (insert) {
-      draft(input ? `${input}\n${insert}` : insert)
-      onInserted()
-      inputRef.current?.focus()
+    if (!lock.current && !busy) setMessages(stored.slice(-visibleLimit).map(toChatMessage))
+  }, [stored, busy, setMessages, visibleLimit])
+  const insertDraft = useEffectEvent((text: string) => {
+    const value = input ? `${input}\n${text}` : text
+    setInput(value)
+    void db.archives.update(archive.id, { draft: value })
+    onInserted()
+    inputRef.current?.focus()
+  })
+  useEffect(() => {
+    if (insert) insertDraft(insert)
+  }, [insert])
+  const draft = (text: string) => {
+    setInput(text)
+    void db.archives.update(archive.id, { draft: text })
+  }
+
+  const send = async (
+    text = input,
+    explicitKind?: RequestKind,
+    expectedRevision?: number,
+    fromStudio = false,
+  ) => {
+    if (!text.trim() || chatBusy || (!fromStudio && disabled) || lock.current) return false
+    if (!channel || !channelIsReady(channel)) {
+      notify('请先配置渠道，并通过严格结构化和浏览器连接测试。', true)
+      return false
     }
-  }, [insert, input, draft, inputRef, onInserted])
+    const kind = explicitKind ?? (/^(\$发送帖子|新帖[：:]|回复.+[：:])/.test(text) ? 'forum' : mode)
+    lock.current = true
+    setPreparing(true)
+    controller.current = new AbortController()
+    onBusy(true)
+    clearError()
+    finishedMessage.current = null
+    try {
+      return await withArchiveOperation(archive.id, async (lease) => {
+        if (controller.current?.signal.aborted) throw new DOMException('已取消', 'AbortError')
+        const current = await archiveMessages(archive.id)
+        const user: StoredMessage = {
+          id: crypto.randomUUID(),
+          archiveId: archive.id,
+          role: 'user',
+          content: text,
+          userName: persona?.name ?? archive.userName ?? '沈辞玉',
+          createdAt: Date.now(),
+          sequence: (current.at(-1)?.sequence ?? -1) + 1,
+          kind,
+          status: 'complete',
+        }
+        await appendMessage(user, expectedRevision)
+        draft('')
+        await sendMessage(
+          {
+            id: user.id,
+            role: 'user',
+            parts: [{ type: 'text', text: user.content }],
+            metadata: { createdAt: user.createdAt, kind, status: 'complete' },
+          },
+          {
+            body: {
+              kind,
+              operationOwner: lease.owner,
+              operationSignal: controller.current?.signal,
+              channelId: channel.id,
+              personaId: persona?.id ?? '',
+            },
+          },
+        )
+        await transport.waitForIdle()
+        const complete = finishedMessage.current
+          ? await db.messages.get(finishedMessage.current)
+          : undefined
+        return complete?.status === 'complete' && !complete.stale && complete.reply?.kind === kind
+      })
+    } catch (e) {
+      notify(friendlyError(e), true)
+      return false
+    } finally {
+      lock.current = false
+      setPreparing(false)
+      controller.current = null
+      onBusy(false)
+      try {
+        setMessages((await archiveMessages(archive.id)).slice(-visibleLimit).map(toChatMessage))
+      } catch (e) {
+        notify(friendlyError(e), true)
+      }
+    }
+  }
+  const external = useEffectEvent(async (request: ExternalChatRequest) => {
+    onExternalHandled()
+    let committed = false
+    try {
+      committed = await send(request.text, request.kind, request.expectedRevision, true)
+    } finally {
+      request.complete(committed)
+    }
+  })
+  useEffect(() => {
+    if (externalRequest && !chatBusy && !lock.current) void external(externalRequest)
+  }, [externalRequest, chatBusy])
+  useEffect(() => {
+    if (externalMode) {
+      setMode(externalMode)
+      onModeHandled()
+    }
+  }, [externalMode, onModeHandled])
+  useEffect(() => {
+    if (!sourceMessage || busy) return
+    const sourceIndex = stored.findIndex((m) => m.id === sourceMessage)
+    if (sourceIndex >= 0 && stored.length - sourceIndex > visibleLimit) {
+      setVisibleLimit(stored.length - sourceIndex + 5)
+      return
+    }
+    if (sourceIndex >= 0 && !messages.some((m) => m.id === sourceMessage)) return
+    const frame = requestAnimationFrame(() => {
+      const element = document.getElementById(
+        sourceBlock ? `source-block-${sourceMessage}-${sourceBlock}` : `message-${sourceMessage}`,
+      )
+      if (!element) {
+        notify('这条消息已被重说替换，可在工作台的请求记录中查看原结果。', true)
+      } else {
+        element.scrollIntoView({ block: 'center' })
+        element.focus({ preventScroll: true })
+      }
+      onSourceHandled(sourceMessage, sourceBlock)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [sourceMessage, sourceBlock, busy, notify, onSourceHandled, visibleLimit, stored, messages])
+  const replyToForum = async (id: string, text: string) => {
+    if (busy || lock.current) return
+    lock.current = true
+    setForumRunning(true)
+    setForumPartial('')
+    controller.current = new AbortController()
+    try {
+      const task = await executeAuxiliary(archive.id, 'forumReply', text, id, {
+        signal: controller.current!.signal,
+      })
+      if (task.status !== 'complete') notify(task.error ?? '论坛回复未完成，可在工作台重试。', true)
+    } catch (error) {
+      notify(friendlyError(error), true)
+    } finally {
+      lock.current = false
+      setForumRunning(false)
+      controller.current = null
+    }
+  }
+  const retry = async (id: string) => {
+    if (busy || lock.current) return
+    if (!channel || !channelIsReady(channel)) {
+      notify('请先通过渠道测试。', true)
+      return
+    }
+    lock.current = true
+    setPreparing(true)
+    controller.current = new AbortController()
+    onBusy(true)
+    clearError()
+    try {
+      await withArchiveOperation(archive.id, async (lease) => {
+        const all = await archiveMessages(archive.id)
+        const target = all.findIndex((m) => m.id === id)
+        await regenerate({
+          messageId: id,
+          body: {
+            regenerateFromId: id,
+            kind: all[target]?.kind === 'forum' ? 'forum' : 'narrative',
+            operationOwner: lease.owner,
+            operationSignal: controller.current?.signal,
+            channelId: channel.id,
+            personaId: persona?.id ?? '',
+          },
+        })
+        await transport.waitForIdle()
+      })
+    } catch (e) {
+      notify(friendlyError(e), true)
+    } finally {
+      lock.current = false
+      setPreparing(false)
+      controller.current = null
+      onBusy(false)
+      try {
+        setMessages((await archiveMessages(archive.id)).slice(-visibleLimit).map(toChatMessage))
+      } catch (e) {
+        notify(friendlyError(e), true)
+      }
+    }
+  }
+  const compress = async () => {
+    if (busy || !channel || !channelIsReady(channel)) {
+      notify('请先通过渠道测试。', true)
+      return
+    }
+    setCompressing(true)
+    controller.current = new AbortController()
+    try {
+      await withArchiveOperation(archive.id, async () => {
+        const current = await db.archives.get(archive.id)
+        if (current)
+          await compressArchive(
+            current,
+            channel,
+            persona,
+            await archiveMessages(archive.id),
+            controller.current!.signal,
+            mode,
+            (d) => notify(d),
+            true,
+          )
+        notify('上下文压缩完成，原文保留。')
+      })
+    } catch (e) {
+      notify(friendlyError(e), true)
+    } finally {
+      setCompressing(false)
+    }
+  }
+  const stopGeneration = async () => {
+    if (forumRunning) {
+      controller.current?.abort()
+      return
+    }
+    controller.current?.abort()
+    try {
+      await stop()
+      await transport.waitForIdle()
+      if (!compressing) await persistCancelledMessage(archive.id, messages.at(-1))
+      await db.persistence.flush()
+      setMessages((await archiveMessages(archive.id)).slice(-visibleLimit).map(toChatMessage))
+    } catch (e) {
+      notify(friendlyError(e), true)
+    } finally {
+      onBusy(false)
+    }
+  }
   const summaryJson = JSON.stringify(
     archive.summary?.revision === archive.revision ? archive.summary : undefined,
   )
@@ -203,17 +429,11 @@ function ChatRunner({
             channel,
             persona,
             mode,
-            context,
+            stored,
             summaryJson ? (JSON.parse(summaryJson) as Summary) : undefined,
           )
         : undefined,
-    [channel, persona, mode, context, summaryJson],
-  )
-  const onForumSend = useCallback(
-    (text: string) => {
-      void send(text, 'forum')
-    },
-    [send],
+    [channel, persona, mode, stored, summaryJson],
   )
   const latestStatus = messages.at(-1)?.parts.find((p) => p.type === 'data-status')
   const copy = (message: ChatMessage, raw = false) => {
@@ -247,8 +467,7 @@ function ChatRunner({
               ]
                 .filter(Boolean)
                 .join('\n\n')
-            : source?.legacy?.body ||
-              source?.content ||
+            : source?.content ||
               message.parts
                 .filter((part) => part.type === 'text')
                 .map((part) => part.text)
@@ -259,7 +478,7 @@ function ChatRunner({
     )
   }
   return (
-    <MessageScrollerProvider autoScroll={busy} defaultScrollPosition="end">
+    <MessageScrollerProvider autoScroll={chatBusy} defaultScrollPosition="end">
       <div className="flex min-h-0 flex-1 flex-col">
         {archive.compactionError && (
           <div
@@ -277,9 +496,13 @@ function ChatRunner({
         <MessageScroller>
           <MessageScrollerViewport aria-label="聊天记录">
             <MessageScrollerContent className="mx-auto w-full reading-width px-4 py-8 sm:px-6">
-              {remaining > 0 && (
-                <Button variant="outline" disabled={busy} onClick={onLoadEarlier}>
-                  加载较早消息（还有 {remaining} 条）
+              {stored.length > visibleLimit && (
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setVisibleLimit((count) => count + 60)}
+                >
+                  加载较早消息（还有 {stored.length - visibleLimit} 条）
                 </Button>
               )}
               {messages.map((message, i) => (
@@ -288,12 +511,23 @@ function ChatRunner({
                   messageId={message.id}
                   scrollAnchor={message.role === 'user'}
                 >
-                  <article aria-label={message.role === 'user' ? '你的消息' : '宴雎的回复'}>
+                  <article
+                    id={`message-${message.id}`}
+                    tabIndex={-1}
+                    aria-label={message.role === 'user' ? '你的消息' : '宴雎的回复'}
+                  >
                     <Message align={message.role === 'user' ? 'end' : 'start'}>
                       <MessageContent>
                         <MessageHeader>
                           <span className="flex min-w-0 flex-wrap items-center gap-2">
-                            {message.role === 'user' ? persona?.name || '你' : '宴雎'}
+                            {message.role === 'user'
+                              ? (stored.find((m) => m.id === message.id)?.userName ??
+                                persona?.name ??
+                                '你')
+                              : '宴雎'}
+                            {stored.find((m) => m.id === message.id)?.stale && (
+                              <Badge variant="outline">已失效 · 历史记录</Badge>
+                            )}
                             {message.metadata?.createdAt && (
                               <time dateTime={new Date(message.metadata.createdAt).toISOString()}>
                                 {new Date(message.metadata.createdAt).toLocaleTimeString('zh-CN', {
@@ -313,7 +547,10 @@ function ChatRunner({
                             )}
                           </span>
                         </MessageHeader>
-                        <RecoveryBoundary resetKey={message.parts} title="这条消息暂时无法显示">
+                        <RecoveryBoundary
+                          resetKey={JSON.stringify(message.parts)}
+                          title="这条消息暂时无法显示"
+                        >
                           {message.role === 'user' ? (
                             <Bubble variant="secondary" align="end">
                               <BubbleContent>
@@ -328,23 +565,30 @@ function ChatRunner({
                                 {message.parts.map((p, j) => {
                                   const key = 'id' in p ? `${p.type}:${p.id}` : `${p.type}:${j}`
                                   if (p.type === 'data-narrative')
-                                    return <MemoNarrativeView key={key} reply={p.data} />
+                                    return (
+                                      <MemoNarrativeView
+                                        key={key}
+                                        reply={p.data}
+                                        messageId={message.id}
+                                      />
+                                    )
                                   if (p.type === 'data-forum')
                                     return (
                                       <MemoForumView
                                         key={key}
-                                        reply={p.data}
-                                        disabled={busy || !channel || !channelIsReady(channel)}
-                                        onSend={onForumSend}
-                                      />
-                                    )
-                                  if (p.type === 'data-legacy')
-                                    return (
-                                      <MemoLegacyView
-                                        key={key}
-                                        value={p.data}
-                                        disabled={busy || !channel || !channelIsReady(channel)}
-                                        onSend={onForumSend}
+                                        reply={
+                                          story?.forums.find(
+                                            (f) => f.source.messageId === message.id,
+                                          ) ?? p.data
+                                        }
+                                        disabled={
+                                          busy ||
+                                          stored.find((m) => m.id === message.id)?.stale ||
+                                          !channel ||
+                                          !channelIsReady(channel)
+                                        }
+                                        onReply={(id, text) => void replyToForum(id, text)}
+                                        onSend={(text) => void send(text, 'forum')}
                                       />
                                     )
                                   if (p.type === 'data-notice')
@@ -417,23 +661,25 @@ function ChatRunner({
                             >
                               <GitBranch />
                             </IconButton>
-                            {message.role === 'assistant' && i > 0 && (
-                              <IconButton
-                                label={
-                                  message.metadata?.status === 'failed' ||
-                                  message.metadata?.status === 'cancelled'
-                                    ? '重试回复'
-                                    : '重新生成'
-                                }
-                                disabled={busy}
-                                onClick={() => {
-                                  if (i < messages.length - 1) setRegenId(message.id)
-                                  else void retry(message.id)
-                                }}
-                              >
-                                <RotateCcw />
-                              </IconButton>
-                            )}
+                            {message.role === 'assistant' &&
+                              i > 0 &&
+                              ['narrative', 'forum'].includes(message.metadata?.kind ?? '') && (
+                                <IconButton
+                                  label={
+                                    message.metadata?.status === 'failed' ||
+                                    message.metadata?.status === 'cancelled'
+                                      ? '重试回复'
+                                      : '重新生成'
+                                  }
+                                  disabled={busy}
+                                  onClick={() => {
+                                    if (i < messages.length - 1) setRegenId(message.id)
+                                    else void retry(message.id)
+                                  }}
+                                >
+                                  <RotateCcw />
+                                </IconButton>
+                              )}
                           </div>
                         </MessageFooter>
                       </MessageContent>
@@ -452,18 +698,21 @@ function ChatRunner({
                   </AlertDescription>
                 </Alert>
               )}
-              {busy && (
+              {forumRunning && forumPartial && <Prose text={forumPartial} />}
+              {chatBusy && (
                 <div
                   role="status"
                   aria-live="polite"
                   className="flex items-center gap-2 text-ui text-primary"
                 >
                   <LoaderCircle className="size-4 animate-spin" />
-                  {compressing
-                    ? '正在压缩历史…'
-                    : latestStatus?.type === 'data-status'
-                      ? latestStatus.data.detail
-                      : '准备生成…'}
+                  {forumRunning
+                    ? '正在生成论坛回复…'
+                    : compressing
+                      ? '正在压缩历史…'
+                      : latestStatus?.type === 'data-status'
+                        ? latestStatus.data.detail
+                        : '准备生成…'}
                 </div>
               )}
             </MessageScrollerContent>
@@ -488,6 +737,13 @@ function ChatRunner({
                     </SelectGroup>
                   </SelectContent>
                 </Select>
+                <IconButton
+                  className="hidden sm:inline-flex"
+                  label="打开剧情工作台"
+                  onClick={onStudio}
+                >
+                  <BookOpen />
+                </IconButton>
                 <IconButton label="世界、指令与音乐" onClick={onWorld}>
                   <BookOpen />
                 </IconButton>
@@ -568,7 +824,7 @@ function ChatRunner({
                       )}
                     </span>
                   </div>
-                  {busy ? (
+                  {chatBusy ? (
                     <InputGroupButton
                       aria-label="停止生成"
                       onClick={() => void stopGeneration()}
@@ -584,7 +840,7 @@ function ChatRunner({
                       aria-label="发送消息"
                       variant="default"
                       size="sm"
-                      disabled={!input.trim() || !channel || !channelIsReady(channel)}
+                      disabled={busy || !input.trim() || !channel || !channelIsReady(channel)}
                     >
                       <Send />
                       发送
@@ -645,6 +901,7 @@ function ChatRunner({
           <MessageEditor
             key={editing.id}
             message={editing}
+            disabled={busy}
             onClose={() => setEditing(null)}
             onSaved={() => notify('消息已更新。')}
           />
@@ -665,15 +922,24 @@ function ChatRunner({
           title="清空当前聊天？"
           detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
           onConfirm={async () => {
+            if (busy || lock.current) return
             const data = createArchiveData()
             await withArchiveOperation(archive.id, () =>
-              db.transaction('rw', db.messages, db.archives, async () => {
-                const current = await db.archives.get(archive.id)
-                if (!current) throw new Error('存档不存在。')
-                await db.messages.where('archiveId').equals(archive.id).delete()
-                await db.messages.put({ ...data.opening, archiveId: archive.id })
-                await db.archives.put({ ...revise(current, true), draft: '' })
-              }),
+              db.transaction(
+                'rw',
+                [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
+                async () => {
+                  await db.messages.where('archiveId').equals(archive.id).delete()
+                  await db.messages.put({ ...data.opening, archiveId: archive.id })
+                  await db.tasks.where('archiveId').equals(archive.id).delete()
+                  await db.requests.where('archiveId').equals(archive.id).delete()
+                  const current = await db.archives.get(archive.id)
+                  if (!current) throw new Error('存档不存在。')
+                  const updated = { ...revise(current, true), draft: '' }
+                  await db.archives.put(updated)
+                  await refreshStory(db, updated)
+                },
+              ),
             )
             draft('')
             notify('当前聊天已清空。')
@@ -684,6 +950,6 @@ function ChatRunner({
   )
 }
 
-const MemoNarrativeView = memo(NarrativeView)
-const MemoForumView = memo(ForumView)
-const MemoLegacyView = memo(LegacyView)
+export const MemoNarrativeView = memo(NarrativeView)
+
+export const MemoForumView = memo(ForumView)

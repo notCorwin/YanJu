@@ -1,45 +1,24 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createOpenAI } from '@ai-sdk/openai'
-import {
-  generateText,
-  APICallError,
-  Output,
-  streamText,
-  wrapLanguageModel,
-  type DeepPartial,
-  type ModelMessage,
-  type LanguageModelUsage,
-} from 'ai'
-import { z } from 'zod'
-import {
-  ContentValidationError,
-  compressionSchema,
-  narrativeSchema,
-  forumSchema,
-  validateCompression,
-  validateForum,
-  validateNarrative,
-  sanitizePartial,
-  type Reply,
-  type RequestKind,
-  type NarrativeReply,
-  type ForumReply,
-} from './schemas'
+import { APICallError, wrapLanguageModel, type DeepPartial, type ModelMessage } from 'ai'
+import type { Reply, RequestKind, NarrativeReply, ForumReply } from './schemas'
 import type {
+  RequestDiagnostics,
   ApiProtocol,
   Channel,
   ChannelCapability,
   ProtocolCapability,
-  RequestDiagnostics,
   Usage,
 } from './types'
 import { channelFingerprint, channelIsReady, protocolLabels } from './channels'
 import { responsesLifecycle, ResponseLifecycleError } from './responses'
 export { channelFingerprint, channelIsReady } from './channels'
-import { buildInstructions, compressionInstructions } from './prompts'
+import { compressionInstructions } from './prompts'
 import type { CompressionInput } from './context'
+import { ChannelRequestError } from './request-trace'
+import { buildInstructions } from './prompts'
+import { runStructuredTask } from './task-runner'
 
-import { ChannelRequestError, requestTimeout, requestTrace } from './request-trace'
 export function channelValidationErrors(channel: Channel) {
   const errors: Partial<Record<keyof Channel, string>> = {}
   if (!channel.name.trim()) errors.name = '请输入渠道名称。'
@@ -108,6 +87,12 @@ export function channelRequest(channel: Channel, fetcher?: typeof fetch, protoco
 export const strictOptions = { yanju: { strictJsonSchema: true } }
 
 export function friendlyError(error: unknown) {
+  if (
+    error instanceof DOMException &&
+    error.name === 'TimeoutError' &&
+    error.message === '测试超时'
+  )
+    return '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
   const causes: { name?: unknown; message?: unknown; cause?: unknown }[] = []
   for (
     let current = error;
@@ -184,11 +169,12 @@ export async function testChannel(
   onProgress?: (detail: string) => void,
 ): Promise<ChannelCapability> {
   validateChannel(channel)
-  const trace = requestTrace(channel, 'ChannelCapability', fetcher)
   const protocols: ApiProtocol[] =
     channel.apiMode === 'auto' ? ['responses', 'chat-completions'] : [channel.apiMode]
   const checks: ChannelCapability['checks'] = {}
   let selected: ApiProtocol | undefined
+  let firstTokenMs: number | undefined
+  const startedAt = Date.now()
   for (const protocol of protocols) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     const check: ProtocolCapability = { nonStreaming: 'untested', streaming: 'untested' }
@@ -199,60 +185,26 @@ export async function testChannel(
         `正在测试 ${protocolLabels[protocol]} · ${streaming ? '流式' : '非流式'}严格输出…`,
       )
       try {
-        const output = await timedProbe(async (abortSignal) => {
-          const request = {
-            ...channelRequest(channel, trace.fetch, protocol),
-            output: Output.object({
-              schema: z.strictObject({ ready: z.boolean(), echo: z.string() }),
-              name: 'ChannelCapability',
-            }),
-            prompt:
-              'Return ready=true and echo="YanJu strict output". This tests JSON Schema Structured Outputs.',
-            maxOutputTokens: channel.maxOutputTokens,
-            ...(channel.temperature === null
-              ? {}
-              : { temperature: streaming ? channel.temperature : 0.3 }),
-            maxRetries: 0,
-            abortSignal,
-            timeout: requestTimeout(channel, streaming),
-          }
-          if (!streaming) {
-            const result = await generateText(request)
-            if (result.finishReason === 'length') throw new Error('truncated: token limit')
-            return result.output
-          }
-          let streamError: unknown
-          const result = streamText({
-            ...request,
-            onChunk: ({ chunk }) => {
-              if (chunk.type === 'text-delta') trace.chunk()
-            },
-            onError: ({ error }) => {
-              streamError = error
-            },
+        await timedProbe(async (abortSignal) => {
+          const result = await runStructuredTask({
+            kind: 'capability',
+            channel,
+            protocol,
+            streaming,
+            allowCorrection: false,
+            input: { test: 'nested strict schema' },
+            signal: abortSignal,
+            fetcher,
+            temperature:
+              channel.temperature === null ? null : streaming ? channel.temperature : 0.3,
           })
-          const outcome = result.output.then(
-            (value) => ({ value }),
-            (error) => ({ error }),
-          )
-          // Drain without updating the conversation; these are independent capability probes.
-          for await (const partial of result.partialOutputStream) void partial
-          if (streamError) throw streamError
-          if ((await result.finishReason) === 'length') throw new Error('truncated: token limit')
-          const resolved = await outcome
-          if ('error' in resolved) throw resolved.error
-          return resolved.value
+          if (streaming) firstTokenMs ??= result.diagnostics.firstTokenMs
         }, signal)
-        if (!output.ready || output.echo !== 'YanJu strict output')
-          throw new Error('渠道结构化测试返回内容不符合测试要求。')
         check[stage] = 'passed'
       } catch (error) {
         if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
         check[stage] = 'failed'
-        check.error =
-          error instanceof DOMException && error.name === 'TimeoutError'
-            ? '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
-            : friendlyError(error)
+        check.error = friendlyError(error)
         break
       }
     }
@@ -266,8 +218,8 @@ export async function testChannel(
     ok: selected !== undefined,
     protocol: selected,
     checks,
-    firstTokenMs: trace.data.firstTokenMs,
-    elapsedMs: trace.finish().elapsedMs,
+    firstTokenMs,
+    elapsedMs: Date.now() - startedAt,
     error: selected
       ? undefined
       : protocols.map((p) => `${protocolLabels[p]}：${checks[p]?.error}`).join('；'),
@@ -279,45 +231,32 @@ export async function summarize(
   input: CompressionInput,
   signal: AbortSignal,
   fetcher?: typeof fetch,
+  archiveId?: string,
 ) {
-  const trace = requestTrace(channel, 'CompressionResult', fetcher)
-  let correction = ''
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const result = await generateText({
-        ...channelRequest(channel, trace.fetch),
-        instructions: compressionInstructions,
-        prompt: JSON.stringify(input) + correction,
-        output: Output.object({ schema: compressionSchema, name: 'CompressionResult' }),
-        maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
-        ...(channel.temperature === null ? {} : { temperature: 0.3 }),
-        abortSignal: signal,
-        maxRetries: 0,
-        timeout: requestTimeout(channel, false),
-      })
-      if (result.finishReason === 'length')
-        throw new Error('摘要被输出上限截断。请增加输出上限后重试压缩。')
-      return validateCompression(result.output)
-    } catch (error) {
-      const invalid =
-        error instanceof ContentValidationError ||
-        (error instanceof Error &&
-          /NoObjectGenerated|NoOutputGenerated|JSONParse|TypeValidation|ZodError/i.test(error.name))
-      if (attempt || signal.aborted || !invalid)
-        throw new ChannelRequestError(error, trace.finish('error'))
-      correction = `\n修正上次结果：${friendlyError(error)}。返回相同 schema 的完整非空摘要。`
-    }
-  }
-  throw new Error('摘要校验失败')
+  const result = await runStructuredTask({
+    kind: 'compression',
+    channel,
+    input,
+    signal,
+    instructions: compressionInstructions,
+    maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
+    temperature: channel.temperature === null ? null : 0.3,
+    streaming: false,
+    fetcher,
+    archiveId,
+  })
+  return result.value
 }
 
 export interface GenerationResult {
   reply: Reply
   usage: Usage | undefined
   correction?: string
-  diagnostics?: RequestDiagnostics
+  diagnostics: RequestDiagnostics
 }
 interface GenerateOptions {
+  archiveId?: string
+  ownerId?: string
   channel: Channel
   kind: RequestKind
   instructions: string
@@ -327,104 +266,32 @@ interface GenerateOptions {
   onPartial: (partial: DeepPartial<NarrativeReply> | DeepPartial<ForumReply>, raw?: string) => void
   onCorrection: (detail: string, correction: string) => void
   fetcher?: typeof fetch
+  validate?: (reply: Reply) => void
 }
-function usageData(
-  channel: Channel,
-  usage: LanguageModelUsage,
-  estimated: number,
-): Usage | undefined {
-  if (usage.inputTokens === undefined) return undefined
-  return {
-    input: usage.inputTokens,
-    output: usage.outputTokens ?? 0,
-    total: usage.totalTokens ?? usage.inputTokens + (usage.outputTokens ?? 0),
-    measuredAt: Date.now(),
-    estimatedInput: estimated,
-    channelId: channel.id,
-  }
-}
-
 export async function generateReply(options: GenerateOptions): Promise<GenerationResult> {
-  const { channel, kind, instructions, messages, signal, onPartial, onCorrection } = options
-  const trace = requestTrace(
-    channel,
-    kind === 'narrative' ? 'NarrativeReply' : 'ForumReply',
-    options.fetcher,
-  )
-  let correction: string | undefined
-  try {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      let streamError: unknown
-      const stream = streamText({
-        ...channelRequest(channel, trace.fetch),
-        instructions,
-        // The system message in modelMessages is our own committed history summary.
-        allowSystemInMessages: true,
-        messages: [
-          ...messages,
-          ...(correction ? [{ role: 'user' as const, content: correction }] : []),
-        ],
-        output:
-          kind === 'narrative'
-            ? Output.object({ schema: narrativeSchema, name: 'NarrativeReply' })
-            : Output.object({ schema: forumSchema, name: 'ForumReply' }),
-        maxOutputTokens: channel.maxOutputTokens,
-        ...(channel.temperature === null ? {} : { temperature: channel.temperature }),
-        abortSignal: signal,
-        maxRetries: 0,
-        timeout: requestTimeout(channel, true),
-        onChunk: ({ chunk }) => {
-          if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') trace.chunk()
-        },
-        onError: ({ error }) => {
-          streamError = error
-        },
-      })
-      // Consume the final output promise immediately so malformed output never causes an unhandled rejection.
-      const outcome = Promise.resolve(stream.output).then(
-        (value) => ({ value }),
-        (error) => ({ error }),
-      )
-      try {
-        for await (const partial of stream.partialOutputStream) {
-          if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-          onPartial(sanitizePartial(kind, partial), JSON.stringify(partial))
-        }
-        if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-        const finishReason = await stream.finishReason
-        if (finishReason === 'length') throw new Error('truncated: token limit')
-        if (streamError) throw streamError
-        const resolved = await outcome
-        if ('error' in resolved) throw resolved.error
-        const reply: Reply =
-          kind === 'narrative'
-            ? { kind, value: validateNarrative(resolved.value) }
-            : { kind, value: validateForum(resolved.value) }
-        return {
-          reply,
-          usage: usageData(channel, await stream.usage, options.estimatedInput),
-          correction,
-          diagnostics: trace.finish(finishReason),
-        }
-      } catch (error) {
-        if (signal.aborted || attempt || /truncated|token limit/i.test(friendlyError(error)))
-          throw error
-        if (streamError) throw streamError
-        // Only schema/content failures receive one same-schema correction. Network/auth/capability errors surface immediately.
-        const invalid =
-          error instanceof ContentValidationError ||
-          (error instanceof Error &&
-            /NoObjectGenerated|NoOutputGenerated|JSONParse|TypeValidation/i.test(error.name))
-        if (!invalid) throw error
-        const detail = friendlyError(error)
-        trace.data.corrections++
-        correction = `上次回复校验失败：${detail}。请纠正并重新输出同一 schema 的完整对象，保留本轮剧情意图，不能省略任何必填模块。`
-        onCorrection('回复未通过完整校验，正在使用相同 schema 纠正一次。', correction)
-      }
+  if (options.kind === 'narrative') {
+    const result = await runStructuredTask({
+      ...options,
+      kind: 'narrative',
+      validate: (value) => options.validate?.({ kind: 'narrative', value }),
+    })
+    return {
+      reply: { kind: 'narrative', value: result.value },
+      usage: result.usage,
+      correction: result.correction,
+      diagnostics: result.diagnostics,
     }
-    throw new Error('结构化回复校验失败')
-  } catch (error) {
-    throw new ChannelRequestError(error, trace.finish('error'))
+  }
+  const result = await runStructuredTask({
+    ...options,
+    kind: 'forum',
+    validate: (value) => options.validate?.({ kind: 'forum', value }),
+  })
+  return {
+    reply: { kind: 'forum', value: result.value },
+    usage: result.usage,
+    correction: result.correction,
+    diagnostics: result.diagnostics,
   }
 }
 

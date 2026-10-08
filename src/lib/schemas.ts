@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { DeepPartial } from 'ai'
+import { effectsSchema, validDate, validDateTime } from './domain-schema'
 
 const text = z.string()
 const object = z.strictObject
@@ -12,8 +13,18 @@ export const narrativeSchema = object({
     quoteZh: text,
     quoteEn: text,
     source: text,
+    locationRef: text.nullable(),
+    characterRefs: z.array(text),
   }),
-  blocks: z.array(object({ kind: z.enum(['narration', 'dialogue']), text, translation: text })),
+  blocks: z.array(
+    object({
+      id: text,
+      speakerRef: text.nullable(),
+      kind: z.enum(['narration', 'dialogue']),
+      text,
+      translation: text,
+    }),
+  ),
   state: object({
     innerVoice: text,
     desire: text,
@@ -24,12 +35,29 @@ export const narrativeSchema = object({
   phone: object({
     memos: z.array(text),
     recommendations: z.array(object({ brand: text, item: text, reaction: text })),
-    purchases: z.array(object({ item: text, price: text, reason: text })),
+    purchases: z.array(
+      object({
+        item: text,
+        price: text,
+        reason: text,
+        amountMinor: z.number().int().nonnegative().nullable(),
+        currency: text.nullable(),
+      }),
+    ),
     conversations: z.array(
-      object({ contact: text, messages: z.array(object({ speaker: text, time: text, text })) }),
+      object({
+        contact: text,
+        contactRef: text,
+        messages: z.array(object({ speaker: text, time: text, text })),
+      }),
     ),
   }),
-  diary: object({ text, countdownDays: z.number().int().nonnegative(), explanation: text }),
+  diary: object({
+    text,
+    countdownDays: z.number().int().nonnegative().nullable(),
+    explanation: text,
+  }),
+  effects: effectsSchema,
 })
 
 export const forumSchema = object({
@@ -93,6 +121,8 @@ function partialSchema(schema: z.ZodType): z.ZodType {
       .catch(undefined)
   return schema.optional().catch(undefined)
 }
+export const sanitizeSchemaPartial = (schema: z.ZodType, input: unknown): unknown =>
+  partialSchema(schema).parse(input) ?? {}
 const partialNarrative = partialSchema(narrativeSchema)
 const partialForum = partialSchema(forumSchema)
 export function sanitizePartial(kind: 'narrative', input: unknown): DeepPartial<NarrativeReply>
@@ -139,6 +169,8 @@ export function validateNarrative(input: unknown): NarrativeReply {
   const v = result.data
   const issues = nonempty(v)
   if (!v.scene.characters.length) issues.push('场景人物至少 1 位')
+  if (!v.scene.characterRefs.length) issues.push('场景须有角色引用')
+  if (new Set(v.blocks.map((b) => b.id)).size !== v.blocks.length) issues.push('段落 ID 不得重复')
   if (length(v.scene.quoteZh) < 30 || length(v.scene.quoteZh) > 50)
     issues.push('中文引语须为 30–50 字')
   const words = v.scene.quoteEn.trim().split(/\s+/).length
@@ -170,8 +202,62 @@ export function validateNarrative(input: unknown): NarrativeReply {
   )
     issues.push('微信须为 3 组，每组 4 条消息')
   if (length(v.diary.text) < 300) issues.push('日记至少 300 字')
+  for (const p of v.phone.purchases)
+    if ((p.amountMinor === null) !== (p.currency === null))
+      issues.push('金额与币种须同时已知或同时未知')
+  for (const p of v.phone.purchases)
+    if (p.currency !== null && !/^[A-Z]{3}$/.test(p.currency))
+      issues.push('币种须为三位大写货币代码')
+  issues.push(
+    ...validateEffects(
+      v.effects,
+      v.blocks.map((b) => b.id),
+    ),
+  )
   if (issues.length) throw new ContentValidationError(issues)
   return v
+}
+
+export function validateEffects(input: unknown, blockIds?: string[]): string[] {
+  const effects = effectsSchema.parse(input)
+  const issues = nonempty(effects)
+  if (new Set(effects.states.map((s) => `${s.entityRef}\0${s.key}`)).size !== effects.states.length)
+    issues.push('同轮状态键不得重复')
+  for (const key of [
+    'entities',
+    'relationships',
+    'knowledge',
+    'events',
+    'memories',
+    'goals',
+  ] as const) {
+    if (new Set(effects[key].map((e) => e.ref)).size !== effects[key].length)
+      issues.push(`${key} 引用不得重复`)
+  }
+  for (const records of [
+    effects.entities,
+    effects.states,
+    effects.relationships,
+    effects.knowledge,
+    effects.events,
+    effects.memories,
+    effects.goals,
+  ]) {
+    for (const r of records)
+      if (blockIds && r.sourceBlockId !== null && !blockIds.includes(r.sourceBlockId))
+        issues.push(`来源段落不存在：${r.sourceBlockId}`)
+  }
+  if (effects.clock.dateTime !== null && !validDateTime(effects.clock.dateTime))
+    issues.push('剧情时间须为有效 ISO 日期时间（含时区）')
+  if (effects.clock.proposalDate !== null && !validDate(effects.clock.proposalDate))
+    issues.push('求婚目标须为有效 YYYY-MM-DD 日期')
+  for (const goal of effects.goals)
+    if (goal.dueDate !== null && !validDate(goal.dueDate))
+      issues.push('目标期限须为有效 YYYY-MM-DD 日期')
+  for (const event of effects.events)
+    if (event.time !== null && !validDate(event.time) && !validDateTime(event.time))
+      issues.push('事件时间须为有效 YYYY-MM-DD 或含时区的 ISO 日期时间')
+  return issues
 }
 
 export function validateForum(input: unknown): ForumReply {

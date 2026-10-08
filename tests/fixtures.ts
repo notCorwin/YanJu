@@ -1,4 +1,5 @@
 import type { NarrativeReply, ForumReply, CompressionResult } from '../src/lib/schemas'
+import { emptyEffects } from '../src/lib/domain-schema'
 import type { Channel, StoredMessage } from '../src/lib/types'
 
 const sentence = '午后书房的窗边很安静，他把今天要读的书放好，又记下明天的安排。'
@@ -10,10 +11,18 @@ export const narrativeFixture: NarrativeReply = {
     quoteZh: '窗外的光静静经过书页，让此刻的相遇留下温暖的回响与明天仍然可以继续的故事。',
     quoteEn: 'The quiet afternoon holds our words gently until the light returns again.',
     source: '测试用书',
+    locationRef: 'new:study',
+    characterRefs: ['character-yanju', 'character-user'],
   },
   blocks: [
-    { kind: 'narration', text: sentence.repeat(35), translation: '' },
-    { kind: 'dialogue', text: '侬要看哪一本呀。', translation: '你想看哪一本呀。' },
+    { id: 'b1', speakerRef: null, kind: 'narration', text: sentence.repeat(35), translation: '' },
+    {
+      id: 'b2',
+      speakerRef: 'character-yanju',
+      kind: 'dialogue',
+      text: '侬要看哪一本呀。',
+      translation: '你想看哪一本呀。',
+    },
   ],
   state: {
     innerVoice: sentence.repeat(5),
@@ -35,10 +44,13 @@ export const narrativeFixture: NarrativeReply = {
     purchases: Array.from({ length: 5 }, () => ({
       item: '羊毛围巾',
       price: '两千元',
+      amountMinor: 200000,
+      currency: 'CNY',
       reason: '为了迎接明天的凉风挑选了柔软材质与适合日常穿着的浅色款式',
     })),
     conversations: Array.from({ length: 3 }, (_, i) => ({
       contact: `联系人${i + 1}`,
+      contactRef: ['character-shendu', 'character-father', 'character-mother'][i],
       messages: Array.from({ length: 4 }, (_, j) => ({
         speaker: j % 2 ? '宴雎' : `联系人${i + 1}`,
         time: '14:00',
@@ -47,6 +59,53 @@ export const narrativeFixture: NarrativeReply = {
     })),
   },
   diary: { text: sentence.repeat(14), countdownDays: 60, explanation: '希望那天也有这样的阳光。' },
+  effects: {
+    ...emptyEffects(),
+    entities: [
+      {
+        ref: 'new:study',
+        kind: 'location',
+        name: '书房',
+        description: '庄园书房',
+        sourceBlockId: 'b1',
+      },
+    ],
+    states: [
+      { entityRef: 'character-yanju', key: '心情', value: '期待一起阅读', sourceBlockId: 'b1' },
+    ],
+    events: [
+      {
+        ref: 'new:reading',
+        title: '一起选书',
+        time: '2019-06-01',
+        locationRef: 'new:study',
+        participants: ['character-yanju', 'character-user'],
+        description: '在书房讨论阅读',
+        sourceBlockId: 'b1',
+      },
+    ],
+    memories: [
+      {
+        ref: 'new:reading',
+        kind: 'fact',
+        content: '两人在书房讨论阅读',
+        entityRefs: ['character-yanju', 'character-user'],
+        status: 'active',
+        sourceBlockId: 'b1',
+      },
+    ],
+    goals: [
+      {
+        ref: 'new:notes',
+        ownerRef: 'character-yanju',
+        description: '明天整理笔记',
+        dueDate: '2019-06-02',
+        status: 'open',
+        sourceBlockId: 'b1',
+      },
+    ],
+    clock: { dateTime: '2019-06-01T14:00:00+08:00', proposalDate: '2019-07-31' },
+  },
 }
 export const forumFixture: ForumReply = {
   post: {
@@ -109,6 +168,7 @@ export function completion(value: unknown, finishReason = 'stop') {
     object: 'chat.completion',
     created: 1,
     model: 'test-model',
+    apiMode: 'chat-completions',
     choices: [
       {
         index: 0,
@@ -132,7 +192,18 @@ export function sse(value: unknown, finishReason = 'stop', step = 150) {
   return chunks
 }
 
-export const capabilityFixture = { ready: true, echo: 'YanJu strict output' }
+export const capabilityFixture = {
+  ready: true,
+  echo: 'YanJu strict output',
+  probe: {
+    mode: 'strict',
+    count: 2,
+    samples: [
+      { label: 'nested', note: null, enabled: true },
+      { label: 'array', note: 'ok', enabled: false },
+    ],
+  },
+}
 
 export function response(value: unknown, status = 'completed', reason?: string) {
   return {

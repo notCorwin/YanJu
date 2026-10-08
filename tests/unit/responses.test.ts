@@ -426,7 +426,7 @@ describe('原生 Responses 结构化业务协议', () => {
     expect(fetcher).toHaveBeenCalledTimes(2)
     const bodies = fetcher.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))
     expect(bodies[0].text.format).toEqual(bodies[1].text.format)
-    expect(JSON.stringify(bodies[1].input)).toContain('修正上次结果')
+    expect(JSON.stringify(bodies[1].input)).toContain('校验失败')
     expect(JSON.stringify(bodies[1].input)).toContain(compressionFixture.summary)
   })
   it('流式 refusal 清晰报错且不触发纠正', async () => {

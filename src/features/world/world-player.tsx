@@ -1,37 +1,39 @@
-import { useEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
-import world from '@/content/world.json'
-import commands from '@/content/commands.json'
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from './ui/sheet'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './ui/accordion'
-import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
-import { Button } from './ui/button'
-import { Input } from './ui/input'
-import { Alert, AlertTitle, AlertDescription } from './ui/alert'
-import { IconButton, Prose } from './shared'
-import type { Notify } from './managers'
+import { IconButton, Prose } from '@/components/shared'
 import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import commands from '@/content/commands.json'
+import world from '@/content/world.json'
+import { tracks } from '@/lib/media'
+import type { Notify } from '@/lib/notify'
+import {
+  Copy,
+  LoaderCircle,
+  Music2,
   Pause,
   Play,
+  Repeat,
   SkipBack,
   SkipForward,
-  Copy,
-  Repeat,
-  Music2,
-  LoaderCircle,
 } from 'lucide-react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 
-const tracks = [
-  ['熄灭', 'ximie'],
-  ['true', 'true'],
-  ['Stay with me', 'staywithme'],
-  ['来自天堂的魔鬼', 'mogui'],
-  ['A.I.N.Y 爱你', 'ainy'],
-].map(([name, file]) => ({
-  name,
-  url: `https://cdn.jsdelivr.net/gh/hmt20061008-oss/music@main/${file}.mp3`,
-}))
 const time = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
 export function WorldPlayer({
@@ -107,6 +109,22 @@ export function WorldPlayer({
       if (attempt === playAttempt.current) setLoading(false)
     }
   }
+  const receiveTrack = useEffectEvent((detail: { id: string; play: boolean }) => {
+    const next = tracks.findIndex((track) => track.id === detail.id)
+    if (next < 0) return
+    setIndex(next)
+    setElapsed(0)
+    if (audio.current) {
+      audio.current.src = tracks[next].url
+      if (detail.play) void play(tracks[next].url)
+    }
+  })
+  useEffect(() => {
+    const listener = (event: Event) =>
+      receiveTrack((event as CustomEvent<{ id: string; play: boolean }>).detail)
+    window.addEventListener('yanju-track', listener)
+    return () => window.removeEventListener('yanju-track', listener)
+  }, [])
   const switchTrack = (next: number) => {
     const value = (next + tracks.length) % tracks.length
     // Commit the media source before playing, within the activation gesture.
