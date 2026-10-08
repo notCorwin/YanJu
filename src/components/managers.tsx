@@ -628,7 +628,7 @@ export function ArchivesSheet({
       )
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = `盐焗-v2-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.download = `盐焗-v3-${new Date().toISOString().slice(0, 10)}.json`
       anchor.click()
       URL.revokeObjectURL(url)
       notify('全部存档、人设、渠道和外观已导出。')
@@ -753,9 +753,12 @@ export function ArchivesSheet({
           title="删除存档？"
           detail="将删除这个篇章的全部消息和摘要。建议先导出。"
           onConfirm={async () => {
-            await db.transaction('rw', db.messages, db.archives, async () => {
+            await db.transaction('rw', [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks], async () => {
               await db.messages.where('archiveId').equals(removeId).delete()
               await db.archives.delete(removeId)
+              await db.storyStates.delete(removeId)
+              await db.storyEvents.where('archiveId').equals(removeId).delete()
+              await db.tasks.where('archiveId').equals(removeId).delete()
             })
             const next = await db.archives.toCollection().first()
             if (removeId === activeId) onSelect(next?.id || (await createArchive()).id)

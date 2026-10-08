@@ -9,6 +9,9 @@ afterEach(async () => {
     db.channels.clear(),
     db.personas.clear(),
     db.settings.clear(),
+    db.storyStates.clear(),
+    db.storyEvents.clear(),
+    db.tasks.clear(),
   ])
   localStorage.clear()
 })

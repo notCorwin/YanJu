@@ -6,8 +6,11 @@ import { channelFixture, messageFixture, narrativeFixture } from '../fixtures'
 import { channelFingerprint } from '../../src/lib/provider'
 
 const save: SaveFile = {
-  version: 2,
+  version: 3,
   exportedAt: '2026-10-08T00:00:00.000Z',
+  storyStates: [],
+  storyEvents: [],
+  tasks: [],
   archives: [{ id: 'archive-1', name: '篇章', createdAt: 1, updatedAt: 1, revision: 1, draft: '' }],
   messages: [
     {

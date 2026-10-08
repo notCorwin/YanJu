@@ -1,5 +1,8 @@
 import type { DeepPartial, UIMessage } from 'ai'
 import type { CompressionResult, ForumReply, NarrativeReply, Reply, RequestKind } from './schemas'
+import type { TurnEffects } from './domain-schema'
+import type { StoryState, StoryEvent } from './story'
+import type { AuxiliaryKind, TaskInput } from './tasks'
 
 export interface Channel {
   id: string
@@ -36,6 +39,7 @@ export interface Settings extends Appearance {
   activePersonaId: string
   activeArchiveId: string
   migrated: boolean
+  autoMusic: boolean
 }
 export interface Usage {
   input: number
@@ -62,6 +66,9 @@ export interface Archive {
   lastUsage?: Usage
   draft: string
   compactionError?: string
+  userName?: string
+  description?: string
+  keywords?: string[]
 }
 export interface LegacyPanel {
   title: string
@@ -88,7 +95,7 @@ export interface StoredMessage {
   content: string
   createdAt: number
   sequence: number
-  kind: RequestKind | 'legacy' | 'notice'
+  kind: RequestKind | 'legacy' | 'notice' | 'opening' | 'material' | 'interaction'
   status: MessageStatus
   reply?: Reply
   partial?:
@@ -100,6 +107,45 @@ export interface StoredMessage {
   correction?: string
   error?: string
   usage?: Usage
+  stale?: boolean
+  requestContext?: string
+  effects?: TurnEffects
+  userName?: string
+  interaction?:
+    | {
+        kind: 'phone'
+        contactRef: string
+        userText: string
+        speaker: string
+        time: string
+        text: string
+      }
+    | {
+        kind: 'forum'
+        postId: string
+        replyTo: string
+        userText: string
+        author: string
+        time: string
+        content: string
+      }
+}
+export interface TaskRun {
+  id: string
+  archiveId: string
+  revision: number
+  kind: AuxiliaryKind
+  input: TaskInput
+  channelId: string
+  createdAt: number
+  status: MessageStatus
+  output?: unknown
+  partial?: unknown
+  raw?: string
+  error?: string
+  correction?: string
+  usage?: Usage
+  applied?: boolean
 }
 export interface MessageMeta {
   createdAt: number
@@ -122,13 +168,16 @@ export type ChatMessage = UIMessage<
   Record<string, never>
 >
 export interface SaveFile {
-  version: 2
+  version: 3
   exportedAt: string
   archives: Archive[]
   messages: StoredMessage[]
   channels: Channel[]
   masks: Persona[]
   settings: Settings
+  storyStates: StoryState[]
+  storyEvents: StoryEvent[]
+  tasks: TaskRun[]
 }
 
 export const defaults: Settings = {
@@ -137,6 +186,7 @@ export const defaults: Settings = {
   activePersonaId: '',
   activeArchiveId: '',
   migrated: false,
+  autoMusic: false,
   fontChat: 16,
   fontUi: 14,
   fontFamily: 'Noto Serif SC',

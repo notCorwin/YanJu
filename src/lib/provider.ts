@@ -1,30 +1,10 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import {
-  generateText,
-  Output,
-  streamText,
-  type DeepPartial,
-  type ModelMessage,
-  type LanguageModelUsage,
-} from 'ai'
-import { z } from 'zod'
-import {
-  ContentValidationError,
-  compressionSchema,
-  narrativeSchema,
-  forumSchema,
-  validateCompression,
-  validateForum,
-  validateNarrative,
-  sanitizePartial,
-  type Reply,
-  type RequestKind,
-  type NarrativeReply,
-  type ForumReply,
-} from './schemas'
+import type { DeepPartial, ModelMessage } from 'ai'
+import type { Reply, RequestKind, NarrativeReply, ForumReply } from './schemas'
 import type { Channel, Usage } from './types'
 import { compressionInstructions } from './prompts'
 import type { CompressionInput } from './context'
+import { runStructuredTask } from './task-runner'
 
 export function channelFingerprint(channel: Channel) {
   // Bound capability results to exactly this endpoint/key/model, without storing another plaintext key.
@@ -80,53 +60,27 @@ export function friendlyError(error: unknown) {
 }
 
 export async function testChannel(channel: Channel, signal?: AbortSignal, fetcher?: typeof fetch) {
-  const result = await generateText({
-    model: channelModel(channel, fetcher),
-    output: Output.object({
-      schema: z.strictObject({ ready: z.boolean(), echo: z.string() }),
-      name: 'ChannelCapability',
-    }),
-    prompt:
-      'Return ready=true and echo="YanJu strict output". This tests JSON Schema Structured Outputs.',
-    maxOutputTokens: channel.maxOutputTokens,
-    temperature: channel.temperature,
-    maxRetries: 0,
-    abortSignal: signal,
-    providerOptions: strictOptions,
+  await runStructuredTask({
+    kind: 'capability',
+    channel,
+    signal,
+    fetcher,
+    input: { test: 'nested strict schema' },
   })
-  if (!result.output.ready || result.output.echo !== 'YanJu strict output')
-    throw new Error('渠道结构化测试返回内容不符合测试要求。')
   return { fingerprint: channelFingerprint(channel), testedAt: Date.now(), ok: true }
 }
 
 export async function summarize(channel: Channel, input: CompressionInput, signal: AbortSignal) {
-  let correction = ''
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const result = await generateText({
-        model: channelModel(channel),
-        instructions: compressionInstructions,
-        prompt: JSON.stringify(input) + correction,
-        output: Output.object({ schema: compressionSchema, name: 'CompressionResult' }),
-        maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
-        temperature: 0.3,
-        providerOptions: strictOptions,
-        abortSignal: signal,
-        maxRetries: 0,
-      })
-      if (result.finishReason === 'length')
-        throw new Error('摘要被输出上限截断。请增加输出上限后重试压缩。')
-      return validateCompression(result.output)
-    } catch (error) {
-      const invalid =
-        error instanceof ContentValidationError ||
-        (error instanceof Error &&
-          /NoObjectGenerated|NoOutputGenerated|JSONParse|TypeValidation|ZodError/i.test(error.name))
-      if (attempt || signal.aborted || !invalid) throw error
-      correction = `\n修正上次结果：${friendlyError(error)}。返回相同 schema 的完整非空摘要。`
-    }
-  }
-  throw new Error('摘要校验失败')
+  const result = await runStructuredTask({
+    kind: 'compression',
+    channel,
+    input,
+    signal,
+    instructions: compressionInstructions,
+    maxOutputTokens: Math.min(channel.maxOutputTokens, 4096),
+    temperature: 0.3,
+  })
+  return result.value
 }
 
 export interface GenerationResult {
@@ -144,89 +98,29 @@ interface GenerateOptions {
   onPartial: (partial: DeepPartial<NarrativeReply> | DeepPartial<ForumReply>, raw?: string) => void
   onCorrection: (detail: string, correction: string) => void
   fetcher?: typeof fetch
+  validate?: (reply: Reply) => void
 }
-function usageData(
-  channel: Channel,
-  usage: LanguageModelUsage,
-  estimated: number,
-): Usage | undefined {
-  if (usage.inputTokens === undefined) return undefined
-  return {
-    input: usage.inputTokens,
-    output: usage.outputTokens ?? 0,
-    total: usage.totalTokens ?? usage.inputTokens + (usage.outputTokens ?? 0),
-    measuredAt: Date.now(),
-    estimatedInput: estimated,
-    channelId: channel.id,
-  }
-}
-
 export async function generateReply(options: GenerateOptions): Promise<GenerationResult> {
-  const { channel, kind, instructions, messages, signal, onPartial, onCorrection } = options
-  let correction: string | undefined
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let streamError: unknown
-    const stream = streamText({
-      model: channelModel(channel, options.fetcher),
-      instructions,
-      // The system message in modelMessages is our own committed history summary.
-      allowSystemInMessages: true,
-      messages: [
-        ...messages,
-        ...(correction ? [{ role: 'user' as const, content: correction }] : []),
-      ],
-      output:
-        kind === 'narrative'
-          ? Output.object({ schema: narrativeSchema, name: 'NarrativeReply' })
-          : Output.object({ schema: forumSchema, name: 'ForumReply' }),
-      maxOutputTokens: channel.maxOutputTokens,
-      temperature: channel.temperature,
-      abortSignal: signal,
-      maxRetries: 0,
-      providerOptions: strictOptions,
-      onError: ({ error }) => {
-        streamError = error
-      },
+  if (options.kind === 'narrative') {
+    const result = await runStructuredTask({
+      ...options,
+      kind: 'narrative',
+      validate: (value) => options.validate?.({ kind: 'narrative', value }),
     })
-    // Consume the final output promise immediately so malformed output never causes an unhandled rejection.
-    const outcome = Promise.resolve(stream.output).then(
-      (value) => ({ value }),
-      (error) => ({ error }),
-    )
-    try {
-      for await (const partial of stream.partialOutputStream) {
-        if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-        onPartial(sanitizePartial(kind, partial), JSON.stringify(partial))
-      }
-      if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-      const finishReason = await stream.finishReason
-      if (finishReason === 'length') throw new Error('truncated: token limit')
-      if (streamError) throw streamError
-      const resolved = await outcome
-      if ('error' in resolved) throw resolved.error
-      const reply: Reply =
-        kind === 'narrative'
-          ? { kind, value: validateNarrative(resolved.value) }
-          : { kind, value: validateForum(resolved.value) }
-      return {
-        reply,
-        usage: usageData(channel, await stream.usage, options.estimatedInput),
-        correction,
-      }
-    } catch (error) {
-      if (signal.aborted || attempt || /truncated|token limit/i.test(friendlyError(error)))
-        throw error
-      if (streamError) throw streamError
-      // Only schema/content failures receive one same-schema correction. Network/auth/capability errors surface immediately.
-      const invalid =
-        error instanceof ContentValidationError ||
-        (error instanceof Error &&
-          /NoObjectGenerated|NoOutputGenerated|JSONParse|TypeValidation/i.test(error.name))
-      if (!invalid) throw error
-      const detail = friendlyError(error)
-      correction = `上次回复校验失败：${detail}。请纠正并重新输出同一 schema 的完整对象，保留本轮剧情意图，不能省略任何必填模块。`
-      onCorrection('回复未通过完整校验，正在使用相同 schema 纠正一次。', correction)
+    return {
+      reply: { kind: 'narrative', value: result.value },
+      usage: result.usage,
+      correction: result.correction,
     }
   }
-  throw new Error('结构化回复校验失败')
+  const result = await runStructuredTask({
+    ...options,
+    kind: 'forum',
+    validate: (value) => options.validate?.({ kind: 'forum', value }),
+  })
+  return {
+    reply: { kind: 'forum', value: result.value },
+    usage: result.usage,
+    correction: result.correction,
+  }
 }

@@ -8,9 +8,11 @@ import {
   exportSave,
   importSave,
   normalizeImport,
+  YanJuDatabase,
+  initializeStorage,
 } from '../../src/lib/db'
-import { convertLegacy } from '../../src/lib/legacy'
 import { defaults, type Archive } from '../../src/lib/types'
+import { modelMessages } from '../../src/lib/prompts'
 import { channelFixture, compressionFixture, messageFixture, narrativeFixture } from '../fixtures'
 
 const archive: Archive = {
@@ -20,93 +22,74 @@ const archive: Archive = {
   updatedAt: 2,
   revision: 0,
   draft: '',
+  userName: '沈辞玉',
 }
-describe('IndexedDB 与存档迁移', () => {
-  it('v1 保留消息、渠道、人设、时间与外观，升级为 v2', async () => {
-    const v1 = {
-      version: 1,
-      archives: [
-        {
-          id: archive.id,
-          name: '旧存档',
-          createdAt: 1,
-          updatedAt: 2,
-          messages: [
-            {
-              id: 'old-msg',
-              role: 'assistant',
-              content: '纯文本',
-              rawContent:
-                '<div class="censy-lux-header"><div class="censy-meta-val">2019年</div><div class="censy-meta-val">书房</div><div class="censy-meta-val">宴雎</div></div><p>旧正文</p><div class="lux_wrap"><details><div class="lux_lab">STATE / INTERNAL</div><div class="lux_sec"><div class="lux_h">心声</div><div class="lux_ph">旧心声</div></div></details><details><div class="lux_lab">ARCHIVE / PROTOCOL</div><div>短中长记忆</div></details></div><script>window.legacyExecuted=true</script>',
-              timestamp: 123,
-            },
-          ],
-        },
-      ],
-      channels: [
-        {
-          ...channelFixture,
-          maxTokens: 2048,
-          maxOutputTokens: undefined,
-          contextWindow: undefined,
-        },
-      ],
-      masks: [
-        {
-          id: 'mask',
-          name: '旧人设',
-          gender: '其他',
-          identity: '读者',
-          prefer: '阅读',
-          force: '不要替我说话',
-          createdAt: 3,
-        },
-      ],
-      settings: {
-        fontChat: 18,
-        fontUi: 14,
-        fontFamily: 'KaiTi',
-        bgImage: 'data:image/png;base64,test',
-        bgOpacity: 25,
-      },
-    }
-    const result = await importSave(v1)
-    expect(result.channels[0].maxOutputTokens).toBe(2048)
-    expect(result.channels[0].contextWindow).toBe(32768)
-    expect(result.messages[0].createdAt).toBe(123)
-    expect(result.messages[0].legacy?.panels).toHaveLength(1)
-    expect(result.messages[0].legacy?.scene?.location).toBe('书房')
-    expect(result.messages[0].legacy?.body).toContain('旧正文')
-    expect(result.messages[0].legacy?.body).not.toContain('legacyExecuted')
-    const exported = await exportSave()
-    expect(exported.version).toBe(2)
-    expect(exported.channels[0].apiKey).toBe(channelFixture.apiKey)
-    expect(exported.settings.bgOpacity).toBe(25)
-    expect(exported.masks[0].force).toBe(v1.masks[0].force)
-    await importSave(JSON.parse(JSON.stringify(exported)))
-    expect((await exportSave()).messages).toEqual(exported.messages)
-    expect((await exportSave()).settings).toEqual(exported.settings)
+const save = (messages = [messageFixture('m-0', 'user', '开始阅读', 0)]) => ({
+  version: 3,
+  exportedAt: new Date().toISOString(),
+  archives: [archive],
+  messages,
+  channels: [channelFixture],
+  masks: [],
+  settings: defaults,
+  storyStates: [],
+  storyEvents: [],
+  tasks: [],
+})
+
+describe('v3 IndexedDB 与独立存档协议', () => {
+  it('默认使用新库，不读取旧 localStorage 或旧数据库', async () => {
+    expect(db.name).toBe('yanju-v3')
+    localStorage.setItem('YanJu_Save', JSON.stringify({ version: 1, archives: [{ id: 'old' }] }))
+    const fresh = new YanJuDatabase('v3-fresh-test')
+    await initializeStorage(fresh)
+    expect(await fresh.archives.count()).toBe(1)
+    expect(await fresh.archives.get('old')).toBeUndefined()
+    expect((await fresh.messages.toArray())[0].kind).toBe('opening')
+    expect(localStorage.getItem('YanJu_Save')).toContain('old')
+    await fresh.delete()
   })
-  it('旧论坛 XML 转换为帖子与全部回答', () => {
-    const xml = `<zf><g5>旧标题</g5><g6>旧时间</g6><g7>旧帖子正文</g7>${Array.from({ length: 50 }, (_, i) => `<r>${i}|作者${i}|今天|回答${i}|${i}|回复</r>`).join('')}</zf>`
-    const converted = convertLegacy(xml)
-    expect(converted.forum?.post.title).toBe('旧标题')
-    expect(converted.forum?.answers).toHaveLength(50)
-  })
-  it('非法导入在修改数据库前失败', async () => {
+  it('明确拒绝 v1、v2，非法导入不改变现有资料', async () => {
     await db.archives.put(archive)
-    await expect(
-      importSave({ version: 2, archives: [archive, archive], messages: [] }),
-    ).rejects.toThrow(/重复/)
+    for (const version of [1, 2])
+      await expect(importSave({ ...save(), version })).rejects.toThrow(/版本 3/)
+    await expect(importSave({ ...save(), archives: [archive, archive] })).rejects.toThrow(/重复/)
     expect(await db.archives.count()).toBe(1)
     expect(() => normalizeImport({ version: 3 })).toThrow()
   })
-  it('追加保留覆盖边界，编辑已覆盖消息使摘要失效', async () => {
-    await db.archives.put(archive)
-    await db.messages.bulkPut([
-      messageFixture('m-0', 'user', '原消息', 0),
-      messageFixture('m-1', 'assistant', '原回复', 1),
-    ])
+  it('完整往返重建事实、来源、投影，并保留请求冻结内容和草稿', async () => {
+    const m = {
+      ...messageFixture('m-0', 'assistant', '', 0),
+      reply: { kind: 'narrative' as const, value: narrativeFixture },
+      correction: '请纠正完整回复',
+      requestContext: '冻结的事实',
+    }
+    await importSave({ ...save([m]), archives: [{ ...archive, draft: '未发出的输入' }] })
+    const exported = await exportSave()
+    expect(exported.version).toBe(3)
+    expect(exported.storyStates[0].memories[0].source).toEqual({ messageId: 'm-0', blockId: 'b1' })
+    expect(exported.storyEvents[0].effects).toEqual(narrativeFixture.effects)
+    expect(exported.channels[0].apiKey).toBe(channelFixture.apiKey)
+    expect(exported.channels[0].capability).toBeUndefined()
+    expect(exported.messages[0].requestContext).toBe(m.requestContext)
+    await importSave(JSON.parse(JSON.stringify(exported)))
+    const second = await exportSave()
+    expect(second.messages).toEqual(exported.messages)
+    expect(second.storyStates).toEqual(exported.storyStates)
+    expect(second.storyEvents).toEqual(exported.storyEvents)
+    expect(second.settings).toEqual(exported.settings)
+    expect(second.archives[0].draft).toBe('未发出的输入')
+  })
+  it('编辑前文使后续派生剧情失效，保留展示并重建状态', async () => {
+    await importSave(
+      save([
+        messageFixture('m-0', 'user', '原消息', 0),
+        {
+          ...messageFixture('m-1', 'assistant', '', 1),
+          reply: { kind: 'narrative', value: narrativeFixture },
+        },
+      ]),
+    )
     await commitSummary(archive.id, 0, {
       value: compressionFixture,
       coveredThroughId: 'm-1',
@@ -119,11 +102,45 @@ describe('IndexedDB 与存档迁移', () => {
     await editMessage('m-2', '修改未覆盖消息')
     expect((await db.archives.get(archive.id))?.summary).toBeDefined()
     await editMessage('m-0', '修改已覆盖消息')
+    const history = await archiveMessages(archive.id)
+    expect(history).toHaveLength(3)
+    expect(history[1].stale).toBe(true)
+    expect(history[1].reply).toBeDefined()
     expect((await db.archives.get(archive.id))?.summary).toBeUndefined()
-    expect(await archiveMessages(archive.id)).toHaveLength(3)
+    expect((await db.storyStates.get(archive.id))?.memories).toHaveLength(0)
+    expect(await db.storyEvents.count()).toBe(0)
+    expect(modelMessages(history)).toHaveLength(1)
   })
-  it('压缩并发版本冲突拒绝提交，原摘要保持', async () => {
-    await db.archives.put({ ...archive, revision: 1 })
+  it('完整回复与状态在单次事务中提交，错误引用回滚全部写入', async () => {
+    await importSave(save())
+    const invalid = structuredClone(narrativeFixture)
+    invalid.effects.states[0].entityRef = 'missing'
+    await expect(
+      appendMessage(
+        {
+          ...messageFixture('m-1', 'assistant', '', 1),
+          reply: { kind: 'narrative', value: invalid },
+        },
+        0,
+      ),
+    ).rejects.toThrow(/不存在/)
+    expect(await db.messages.count()).toBe(1)
+    expect((await db.archives.get(archive.id))?.revision).toBe(0)
+    expect((await db.storyStates.get(archive.id))?.states).toHaveLength(0)
+  })
+  it('重复提交幂等，多窗口版本与序号冲突拒绝覆盖', async () => {
+    await db.archives.put(archive)
+    const message = messageFixture('m-0', 'user', '阅读', 0)
+    await appendMessage(message)
+    await appendMessage(message)
+    expect((await db.archives.get(archive.id))?.revision).toBe(1)
+    expect(await db.messages.count()).toBe(1)
+    await expect(appendMessage(messageFixture('another', 'user', '冲突', 0))).rejects.toThrow(
+      /序号/,
+    )
+    await expect(appendMessage(messageFixture('m-1', 'user', '新消息', 1), 0)).rejects.toThrow(
+      /窗口/,
+    )
     await expect(
       commitSummary(archive.id, 0, {
         value: compressionFixture,
@@ -133,26 +150,5 @@ describe('IndexedDB 与存档迁移', () => {
         createdAt: 1,
       }),
     ).rejects.toThrow(/变更/)
-    expect((await db.archives.get(archive.id))?.summary).toBeUndefined()
-  })
-  it('v2 保留严格对象、恢复数据、草稿与边界', async () => {
-    const m = {
-      ...messageFixture('m-0', 'assistant', '', 0),
-      reply: { kind: 'narrative' as const, value: narrativeFixture },
-      correction: '上次校验失败，请输出完整回复。',
-    }
-    await importSave({
-      version: 2,
-      archives: [{ ...archive, draft: '未发出的输入' }],
-      messages: [m],
-      channels: [channelFixture],
-      masks: [],
-      settings: defaults,
-    })
-    const data = await exportSave()
-    expect(data.messages[0].reply).toEqual(m.reply)
-    expect(data.messages[0].correction).toBe(m.correction)
-    expect(data.archives[0].draft).toBe('未发出的输入')
-    expect(data.channels[0].capability).toBeUndefined()
   })
 })

@@ -1,6 +1,5 @@
 import Dexie, { type Table } from 'dexie'
 import opening from '@/content/opening.txt?raw'
-import { convertLegacy } from './legacy'
 import {
   defaults,
   newPersona,
@@ -15,6 +14,10 @@ import {
 import { validateNarrative, validateForum, compressionSchema } from './schemas'
 import { z } from 'zod'
 import { OpfsPersistence } from './opfs'
+import { rebuildStory, type StoryState, type StoryEvent } from './story'
+import type { TaskRun } from './types'
+import { taskSchemas, validateTask, type TaskKind } from './tasks'
+import { effectsSchema } from './domain-schema'
 
 export class YanJuDatabase extends Dexie {
   archives!: Table<Archive, string>
@@ -22,8 +25,11 @@ export class YanJuDatabase extends Dexie {
   channels!: Table<Channel, string>
   personas!: Table<Persona, string>
   settings!: Table<Settings, string>
+  storyStates!: Table<StoryState, string>
+  storyEvents!: Table<StoryEvent, string>
+  tasks!: Table<TaskRun, string>
   readonly persistence: OpfsPersistence
-  constructor(name = 'yanju-v2') {
+  constructor(name = 'yanju-v3') {
     super(name)
     this.persistence = new OpfsPersistence(name, () => exportSave(this))
     this.version(1).stores({
@@ -32,6 +38,9 @@ export class YanJuDatabase extends Dexie {
       channels: 'id,createdAt',
       personas: 'id,createdAt',
       settings: 'id',
+      storyStates: 'archiveId',
+      storyEvents: 'id,archiveId,[archiveId+sequence]',
+      tasks: 'id,archiveId,createdAt',
     })
     this.use({
       stack: 'dbcore',
@@ -63,8 +72,7 @@ export function createArchiveData(name = '新的篇章'): { archive: Archive; op
     archiveId: id,
     role: 'assistant',
     content: opening,
-    legacy: { body: opening, panels: [] },
-    kind: 'legacy',
+    kind: 'opening',
     status: 'complete',
     createdAt: now,
     sequence: 0,
@@ -73,14 +81,22 @@ export function createArchiveData(name = '新的篇章'): { archive: Archive; op
 }
 export async function createArchive(name?: string, database = db) {
   const data = createArchiveData(name)
+  const settings = await database.settings.get('app')
+  const persona = settings?.activePersonaId
+    ? await database.personas.get(settings.activePersonaId)
+    : undefined
+  data.archive.userName = persona?.name ?? '沈辞玉'
   await database.transaction(
     'rw',
     database.archives,
     database.messages,
     database.settings,
+    database.storyStates,
+    database.storyEvents,
     async () => {
       await database.archives.add(data.archive)
       await database.messages.add(data.opening)
+      await refreshStory(database, data.archive)
       await database.settings.update('app', { activeArchiveId: data.archive.id })
     },
   )
@@ -100,18 +116,32 @@ export function revise(archive: Archive, invalidate = false): Archive {
   }
 }
 export async function appendMessage(message: StoredMessage, expectedRevision?: number) {
-  await db.transaction('rw', db.archives, db.messages, async () => {
+  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
     const archive = await db.archives.get(message.archiveId)
     if (!archive || (expectedRevision !== undefined && archive.revision !== expectedRevision))
       throw new Error('存档已在其他窗口修改，请重新载入后重试。')
+    const existing = await db.messages.get(message.id)
+    if (existing?.status === 'complete') {
+      if (JSON.stringify(existing) === JSON.stringify(message)) return
+      throw new Error('消息 ID 已提交，不能重复覆盖。')
+    }
+    if (
+      await db.messages
+        .where('[archiveId+sequence]')
+        .equals([message.archiveId, message.sequence])
+        .filter((m) => m.id !== message.id)
+        .count()
+    )
+      throw new Error('消息序号已被其他窗口占用，请重新载入后重试。')
     await db.messages.put(message)
     const updated = revise(archive)
     if (message.usage) updated.lastUsage = message.usage
     await db.archives.put(updated)
+    await refreshStory(db, updated)
   })
 }
 export async function editMessage(id: string, content: string) {
-  await db.transaction('rw', db.archives, db.messages, async () => {
+  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
     const message = await db.messages.get(id)
     if (!message) throw new Error('消息不存在')
     const archive = await db.archives.get(message.archiveId)
@@ -120,6 +150,8 @@ export async function editMessage(id: string, content: string) {
       ...message,
       content,
       rawContent: undefined,
+      requestContext: undefined,
+      stale: false,
       correction: undefined,
       partial: undefined,
       error: undefined,
@@ -134,14 +166,18 @@ export async function editMessage(id: string, content: string) {
             ? { kind: 'narrative', value: validateNarrative(parsed) }
             : { kind: 'forum', value: validateForum(parsed) },
       }
-    } else if (message.role === 'assistant')
-      next = { ...next, kind: 'legacy', legacy: convertLegacy(content) }
+    } else if (message.role === 'assistant') next = { ...next, kind: message.kind }
     await db.messages.put(next)
     const all = await archiveMessages(archive.id)
     const coveredIndex = all.findIndex((m) => m.id === archive.summary?.coveredThroughId)
-    await db.archives.put(
-      revise(archive, !!archive.summary && all.findIndex((m) => m.id === id) <= coveredIndex),
+    const updated = revise(
+      archive,
+      !!archive.summary && all.findIndex((m) => m.id === id) <= coveredIndex,
     )
+    const tail = all.filter((m) => m.sequence > message.sequence)
+    await db.messages.bulkPut(tail.map((m) => ({ ...m, stale: true })))
+    await db.archives.put(updated)
+    await refreshStory(db, updated)
   })
 }
 
@@ -154,150 +190,174 @@ export async function commitSummary(archiveId: string, revision: number, summary
   })
 }
 
-const numeric = (v: unknown, fallback: number) =>
-  typeof v === 'number' && Number.isFinite(v) ? v : fallback
 const str = (v: unknown, fallback = '') => (typeof v === 'string' ? v : fallback)
 const record = (v: unknown): Record<string, unknown> => z.record(z.string(), z.unknown()).parse(v)
 const list = (v: unknown) => z.array(z.unknown()).parse(v ?? [])
 
 export function normalizeImport(input: unknown, restore = false): SaveFile {
   const raw = record(input)
-  if (raw.version !== 1 && raw.version !== 2)
-    throw new Error('仅支持版本 1 和版本 2 的盐焗 JSON 存档。')
+  if (raw.version !== 3) throw new Error('新版仅支持版本 3 的盐焗 JSON 存档。')
+  for (const key of [
+    'channels',
+    'masks',
+    'archives',
+    'messages',
+    'storyStates',
+    'storyEvents',
+    'tasks',
+  ])
+    z.array(z.unknown()).parse(raw[key])
   const channels: Channel[] = list(raw.channels).map((value) => {
     const c = record(value)
     return {
-      id: str(c.id) || crypto.randomUUID(),
-      name: str(c.name, '导入渠道'),
-      baseUrl: str(c.baseUrl),
-      apiKey: str(c.apiKey),
-      model: str(c.model),
-      temperature: numeric(c.temperature, 0.9),
-      maxOutputTokens: numeric(c.maxOutputTokens ?? c.maxTokens, 4096),
-      contextWindow: numeric(c.contextWindow, 32768),
-      createdAt: numeric(c.createdAt, Date.now()),
-      calibration: raw.version === 2 ? (c.calibration as Channel['calibration']) : undefined,
+      id: z.string().min(1).parse(c.id),
+      name: z.string().parse(c.name),
+      baseUrl: z.string().parse(c.baseUrl),
+      apiKey: z.string().parse(c.apiKey),
+      model: z.string().parse(c.model),
+      temperature: z.number().min(0).max(2).parse(c.temperature),
+      maxOutputTokens: z.number().int().min(128).parse(c.maxOutputTokens),
+      contextWindow: z.number().int().min(1024).parse(c.contextWindow),
+      createdAt: z.number().parse(c.createdAt),
+      calibration: c.calibration as Channel['calibration'],
       capability: restore ? (c.capability as Channel['capability']) : undefined,
     }
   })
   const masks: Persona[] = list(raw.masks).map((value) => {
     const p = record(value)
     return {
-      id: str(p.id) || crypto.randomUUID(),
-      name: str(p.name, '沈辞玉'),
-      gender: str(p.gender),
-      identity: str(p.identity),
-      prefer: str(p.prefer),
-      force: str(p.force),
-      createdAt: numeric(p.createdAt, Date.now()),
+      id: z.string().min(1).parse(p.id),
+      name: z.string().min(1).parse(p.name),
+      gender: z.string().parse(p.gender),
+      identity: z.string().parse(p.identity),
+      prefer: z.string().parse(p.prefer),
+      force: z.string().parse(p.force),
+      createdAt: z.number().parse(p.createdAt),
     }
   })
-  const messages: StoredMessage[] = []
   const archives: Archive[] = list(raw.archives).map((value) => {
     const a = record(value)
-    const id = str(a.id) || crypto.randomUUID()
-    if (raw.version === 1) {
-      list(a.messages).forEach((value, sequence) => {
-        const m = record(value)
-        const content = str(m.content)
-        const original = str(m.rawContent, content)
-        messages.push({
-          id: str(m.id) || crypto.randomUUID(),
-          archiveId: id,
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content,
-          rawContent: original,
-          kind:
-            m.role === 'user'
-              ? /^(\$发送帖子|新帖[：:]|回复.+[：:])/.test(content)
-                ? 'forum'
-                : 'narrative'
-              : 'legacy',
-          legacy: m.role === 'user' ? undefined : convertLegacy(original),
-          createdAt: numeric(
-            m.createdAt ?? m.timestamp,
-            numeric(a.createdAt, Date.now()) + sequence,
-          ),
-          sequence,
-          status: 'complete',
-        })
-      })
-    }
     let summary: Summary | undefined
-    if (raw.version === 2 && a.summary) {
-      const s = record(a.summary)
+    if (a.summary) {
+      const v = record(a.summary)
       summary = {
-        value: compressionSchema.parse(s.value),
-        coveredThroughId: str(s.coveredThroughId),
-        coveredCount: numeric(s.coveredCount, 0),
-        revision: numeric(s.revision, 0),
-        createdAt: numeric(s.createdAt, Date.now()),
+        value: compressionSchema.parse(v.value),
+        coveredThroughId: z.string().parse(v.coveredThroughId),
+        coveredCount: z.number().int().nonnegative().parse(v.coveredCount),
+        revision: z.number().int().nonnegative().parse(v.revision),
+        createdAt: z.number().parse(v.createdAt),
       }
     }
     return {
-      id,
-      name: str(a.name, '导入存档'),
-      createdAt: numeric(a.createdAt, Date.now()),
-      updatedAt: numeric(a.updatedAt, Date.now()),
-      revision: numeric(a.revision, 0),
+      id: z.string().min(1).parse(a.id),
+      name: z.string().min(1).parse(a.name),
+      createdAt: z.number().parse(a.createdAt),
+      updatedAt: z.number().parse(a.updatedAt),
+      revision: z.number().int().nonnegative().parse(a.revision),
       draft: str(a.draft),
+      userName: str(a.userName, '沈辞玉'),
+      description: str(a.description) || undefined,
+      keywords: a.keywords === undefined ? undefined : z.array(z.string()).parse(a.keywords),
       summary,
       lastUsage: a.lastUsage as Archive['lastUsage'],
       compactionError: str(a.compactionError) || undefined,
     }
   })
-  if (raw.version === 2) {
-    list(raw.messages).forEach((value) => {
-      const m = record(value)
-      if (!archives.some((a) => a.id === m.archiveId))
-        throw new Error('存档中存在没有所属篇章的消息。')
-      if (m.reply) {
-        const r = record(m.reply)
-        if (r.kind === 'narrative') validateNarrative(r.value)
-        else if (r.kind === 'forum') validateForum(r.value)
-        else throw new Error('未知回复类型')
-      }
-      if (!['user', 'assistant'].includes(str(m.role)) || !str(m.id))
-        throw new Error('消息字段不完整')
-      messages.push({
-        ...m,
-        content: str(m.content),
-        correction:
-          m.role === 'assistant' && typeof m.correction === 'string' ? m.correction : undefined,
-        createdAt: numeric(m.createdAt, Date.now()),
-        sequence: numeric(m.sequence, messages.length),
-        status: ['complete', 'partial', 'failed', 'cancelled'].includes(str(m.status))
-          ? m.status
-          : 'complete',
-      } as unknown as StoredMessage)
-    })
-  }
-  for (const [name, values] of Object.entries({ archives, messages, channels, masks })) {
+  const messages: StoredMessage[] = list(raw.messages).map((value) => {
+    const m = record(value)
+    if (!archives.some((a) => a.id === m.archiveId)) throw new Error('消息没有所属篇章。')
+    if (
+      !['user', 'assistant'].includes(str(m.role)) ||
+      !['narrative', 'forum', 'notice', 'opening', 'material', 'interaction'].includes(str(m.kind))
+    )
+      throw new Error('消息类型不完整或不受支持。')
+    if (m.reply) {
+      const r = record(m.reply)
+      if (r.kind === 'narrative') validateNarrative(r.value)
+      else if (r.kind === 'forum') validateForum(r.value)
+      else throw new Error('未知回复类型')
+    }
+    if (m.effects) effectsSchema.parse(m.effects)
+    if (m.interaction) {
+      const interaction = record(m.interaction)
+      const fields =
+        interaction.kind === 'phone'
+          ? ['contactRef', 'speaker', 'time', 'text', 'userText']
+          : interaction.kind === 'forum'
+            ? ['postId', 'replyTo', 'author', 'time', 'content', 'userText']
+            : []
+      if (!fields.length || m.kind !== 'interaction') throw new Error('独立交互类型无效')
+      fields.forEach((key) => z.string().min(1).parse(interaction[key]))
+    } else if (m.kind === 'interaction') throw new Error('独立交互数据缺失')
+    return {
+      ...m,
+      id: z.string().min(1).parse(m.id),
+      content: z.string().parse(m.content),
+      createdAt: z.number().parse(m.createdAt),
+      sequence: z.number().int().nonnegative().parse(m.sequence),
+      status: z.enum(['complete', 'partial', 'failed', 'cancelled']).parse(m.status),
+      stale: m.stale === undefined ? undefined : z.boolean().parse(m.stale),
+      requestContext:
+        m.requestContext === undefined ? undefined : z.string().parse(m.requestContext),
+    } as unknown as StoredMessage
+  })
+  const tasks: TaskRun[] = list(raw.tasks).map((value) => {
+    const t = record(value)
+    if (
+      !archives.some((a) => a.id === t.archiveId) ||
+      !Object.hasOwn(taskSchemas, str(t.kind)) ||
+      ['narrative', 'forum', 'compression', 'capability'].includes(str(t.kind))
+    )
+      throw new Error('任务类型或篇章无效')
+    if (t.status === 'complete') validateTask(t.kind as TaskKind, t.output)
+    const taskInput = record(t.input)
+    z.string().parse(taskInput.text)
+    z.string().nullable().parse(taskInput.targetId)
+    record(taskInput.context)
+    z.string().min(1).parse(t.channelId)
+    if (t.applied !== undefined) z.boolean().parse(t.applied)
+    return {
+      ...t,
+      id: z.string().min(1).parse(t.id),
+      createdAt: z.number().parse(t.createdAt),
+      revision: z.number().int().parse(t.revision),
+      status: z.enum(['complete', 'partial', 'failed', 'cancelled']).parse(t.status),
+    } as unknown as TaskRun
+  })
+  for (const [name, values] of Object.entries({ archives, messages, channels, masks, tasks }))
     if (new Set(values.map((v) => v.id)).size !== values.length)
       throw new Error(`${name} 存在重复 ID，导入未执行。`)
-  }
-  archives.forEach((a) => {
+  const storyStates: StoryState[] = []
+  const storyEvents: StoryEvent[] = []
+  for (const a of archives) {
+    const history = messages.filter((m) => m.archiveId === a.id)
+    if (new Set(history.map((m) => m.sequence)).size !== history.length)
+      throw new Error('篇章消息序号重复')
     if (
       a.summary &&
-      (!messages.some((m) => m.archiveId === a.id && m.id === a.summary?.coveredThroughId) ||
+      (!history.some((m) => m.id === a.summary?.coveredThroughId && !m.stale) ||
         a.summary.revision !== a.revision)
     )
       a.summary = undefined
-  })
-  const s = raw.settings ? record(raw.settings) : {}
-  const settings: Settings = {
-    ...defaults,
-    id: 'app',
-    fontChat: numeric(s.fontChat, defaults.fontChat),
-    fontUi: numeric(s.fontUi, defaults.fontUi),
-    fontFamily: str(s.fontFamily, defaults.fontFamily),
-    bgImage: str(s.bgImage),
-    bgOpacity: numeric(s.bgOpacity, defaults.bgOpacity),
-    activeChannelId: str(s.activeChannelId, channels[0]?.id ?? ''),
-    activePersonaId: str(s.activePersonaId, masks[0]?.id ?? ''),
-    activeArchiveId: str(s.activeArchiveId, archives[0]?.id ?? ''),
-    migrated: true,
+    const projection = rebuildStory(a, history)
+    storyStates.push(projection.story)
+    storyEvents.push(...projection.events)
   }
+  const settings = z
+    .object({
+      id: z.literal('app'),
+      activeChannelId: z.string(),
+      activePersonaId: z.string(),
+      activeArchiveId: z.string(),
+      migrated: z.boolean(),
+      autoMusic: z.boolean(),
+      fontChat: z.number().min(10).max(40),
+      fontUi: z.number().min(10).max(24),
+      fontFamily: z.string(),
+      bgImage: z.string(),
+      bgOpacity: z.number().min(0).max(100),
+    })
+    .parse({ ...record(raw.settings), id: 'app', migrated: true })
   if (!channels.some((c) => c.id === settings.activeChannelId))
     settings.activeChannelId = channels[0]?.id ?? ''
   if (!masks.some((p) => p.id === settings.activePersonaId))
@@ -305,34 +365,55 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
   if (!archives.some((a) => a.id === settings.activeArchiveId))
     settings.activeArchiveId = archives[0]?.id ?? ''
   return {
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
     channels,
     masks,
     archives,
     messages,
     settings,
+    storyStates,
+    storyEvents,
+    tasks,
   }
+}
+
+export async function refreshStory(database: YanJuDatabase, archive: Archive) {
+  const projection = rebuildStory(archive, await archiveMessages(archive.id, database))
+  await database.storyStates.put(projection.story)
+  await database.storyEvents.where('archiveId').equals(archive.id).delete()
+  await database.storyEvents.bulkPut(projection.events)
 }
 
 export async function importSave(input: unknown, database = db, restore = false) {
   const data = normalizeImport(input, restore)
   await database.transaction(
     'rw',
-    database.archives,
-    database.messages,
-    database.channels,
-    database.personas,
-    database.settings,
+    [
+      database.archives,
+      database.messages,
+      database.channels,
+      database.personas,
+      database.settings,
+      database.storyStates,
+      database.storyEvents,
+      database.tasks,
+    ],
     async () => {
       await Promise.all([
         database.archives.clear(),
         database.messages.clear(),
         database.channels.clear(),
         database.personas.clear(),
+        database.storyStates.clear(),
+        database.storyEvents.clear(),
+        database.tasks.clear(),
       ])
       await database.archives.bulkPut(data.archives)
       await database.messages.bulkPut(data.messages)
+      await database.storyStates.bulkPut(data.storyStates)
+      await database.storyEvents.bulkPut(data.storyEvents)
+      await database.tasks.bulkPut(data.tasks)
       await database.channels.bulkPut(data.channels)
       await database.personas.bulkPut(data.masks)
       await database.settings.put(data.settings)
@@ -343,19 +424,27 @@ export async function importSave(input: unknown, database = db, restore = false)
 export async function exportSave(database = db): Promise<SaveFile> {
   return database.transaction(
     'r',
-    database.archives,
-    database.messages,
-    database.channels,
-    database.personas,
-    database.settings,
+    [
+      database.archives,
+      database.messages,
+      database.channels,
+      database.personas,
+      database.settings,
+      database.storyStates,
+      database.storyEvents,
+      database.tasks,
+    ],
     async () => ({
-      version: 2,
+      version: 3,
       exportedAt: new Date().toISOString(),
       archives: await database.archives.toArray(),
       messages: await database.messages.toArray(),
       channels: await database.channels.toArray(),
       masks: await database.personas.toArray(),
       settings: (await database.settings.get('app')) ?? defaults,
+      storyStates: await database.storyStates.toArray(),
+      storyEvents: await database.storyEvents.toArray(),
+      tasks: await database.tasks.toArray(),
     }),
   )
 }
@@ -374,30 +463,8 @@ export function initializeStorage(database = db) {
         database.persistence.preserveUnreadableSave(error)
       }
     }
-    if (!(await database.settings.get('app'))) {
-      const get = (key: string, fallback: unknown) => {
-        const value = localStorage.getItem(`yanju_${key}`)
-        if (!value) return fallback
-        try {
-          return JSON.parse(value) as unknown
-        } catch {
-          return value
-        }
-      }
-      if (['archives', 'channels', 'masks'].some((k) => localStorage.getItem(`yanju_${k}`))) {
-        const data = normalizeImport({
-          version: 1,
-          archives: get('archives', []),
-          channels: get('channels', []),
-          masks: get('masks', []),
-          settings: get('settings', {}),
-        })
-        data.settings.activeArchiveId = str(get('archive_cur', data.settings.activeArchiveId))
-        data.settings.activeChannelId = str(get('channel_cur', data.settings.activeChannelId))
-        data.settings.activePersonaId = str(get('mask_cur', data.settings.activePersonaId))
-        await importSave(data, database)
-      } else await database.settings.put({ ...defaults, migrated: true })
-    }
+    if (!(await database.settings.get('app')))
+      await database.settings.put({ ...defaults, migrated: true })
     if (!(await database.personas.count())) {
       const persona = newPersona()
       await database.personas.add(persona)
@@ -407,6 +474,9 @@ export function initializeStorage(database = db) {
     await database.messages
       .filter((m) => m.status === 'partial')
       .modify({ status: 'cancelled', error: '上次生成已中断，已保留收到的内容，可重试。' })
+    await database.tasks
+      .filter((t) => t.status === 'partial')
+      .modify({ status: 'cancelled', error: '上次任务已中断，可重试。' })
     await database.persistence.start()
   })().catch((error) => {
     initializing.delete(database)

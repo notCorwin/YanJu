@@ -99,12 +99,14 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
   const before = contextBudget(channel, persona, kind, messages, valid)
   if (!options.force && !before.mustCompress) return valid
   checkAbort(signal)
-  const userStarts = messages.map((m, i) => (m.role === 'user' ? i : -1)).filter((i) => i >= 0)
+  const userStarts = messages
+    .map((m, i) => (m.role === 'user' && !m.stale ? i : -1))
+    .filter((i) => i >= 0)
   if (!userStarts.length) return valid
   const completeStarts = userStarts.filter((start, index) =>
     messages
       .slice(start + 1, userStarts[index + 1] ?? messages.length)
-      .some((m) => m.role === 'assistant' && m.status === 'complete'),
+      .some((m) => m.role === 'assistant' && m.status === 'complete' && !m.stale),
   )
   let covered = valid ? messages.findIndex((m) => m.id === valid.coveredThroughId) : -1
   let value = valid?.value
@@ -129,7 +131,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     if (end <= covered) continue
     const pending = messages
       .slice(covered + 1, end + 1)
-      .filter((m) => m.role === 'user' || m.status === 'complete')
+      .filter((m) => !m.stale && (m.role === 'user' || m.status === 'complete'))
     let batch: CompressionInput['messages'] = []
     let batchNumber = 0
     const flush = async () => {

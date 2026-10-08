@@ -5,7 +5,8 @@ import {
   type UIMessageStreamWriter,
 } from 'ai'
 import { isRoleIntercepted, interceptImage } from '@/content/intercept'
-import { archiveMessages, db, appendMessage, commitSummary, revise } from './db'
+import { archiveMessages, db, appendMessage, commitSummary, revise, refreshStory } from './db'
+import { applyMessage, rebuildStory, storyContext, displayCountdown } from './story'
 import { compactContext, contextBudget, calibrate } from './context'
 import { buildInstructions, modelMessages } from './prompts'
 import { channelIsReady, friendlyError, generateReply, summarize } from './provider'
@@ -51,7 +52,7 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
 }
 
 export async function persistCancelledMessage(archiveId: string, message: ChatMessage | undefined) {
-  await db.transaction('rw', db.archives, db.messages, async () => {
+  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
     const archive = await db.archives.get(archiveId)
     if (!archive) return
     const all = await archiveMessages(archiveId)
@@ -79,13 +80,15 @@ export async function persistCancelledMessage(archiveId: string, message: ChatMe
       partial,
       error: '已停止生成，已保留收到的内容，可重试。',
     })
-    await db.archives.put(revise(archive))
+    const updated = revise(archive)
+    await db.archives.put(updated)
+    await refreshStory(db, updated)
   })
 }
 
 async function saveGenerated(message: StoredMessage, revision: number, regenerateFromId?: string) {
   if (!regenerateFromId) return appendMessage(message, revision)
-  await db.transaction('rw', db.archives, db.messages, async () => {
+  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
     const archive = await db.archives.get(message.archiveId)
     if (!archive || archive.revision !== revision)
       throw new Error('存档已变更，重说结果未覆盖原记录。')
@@ -98,11 +101,12 @@ async function saveGenerated(message: StoredMessage, revision: number, regenerat
     const next = revise(archive)
     next.lastUsage = message.usage
     await db.archives.put(next)
+    await refreshStory(db, next)
   })
 }
 
 async function saveRecovery(message: StoredMessage) {
-  await db.transaction('rw', db.archives, db.messages, async () => {
+  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
     const archive = await db.archives.get(message.archiveId)
     if (!archive) throw new Error('存档不存在，收到的内容仍保留在当前回复中。')
     const all = await archiveMessages(archive.id)
@@ -112,7 +116,9 @@ async function saveRecovery(message: StoredMessage) {
       ...message,
       sequence: previous?.sequence ?? (all.at(-1)?.sequence ?? -1) + 1,
     })
-    await db.archives.put(revise(archive))
+    const updated = revise(archive)
+    await db.archives.put(updated)
+    await refreshStory(db, updated)
   })
 }
 
@@ -214,8 +220,17 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     }
     const snapshot = archive
     const messages = regenIndex >= 0 ? all.slice(0, regenIndex) : all
-    const lastUser = messages.findLast((m) => m.role === 'user')
+    const lastUser = messages.findLast((m) => m.role === 'user' && !m.stale)
     if (!lastUser) throw new Error('没有可回复的用户消息。')
+    const beforeStory = rebuildStory(snapshot, messages).story
+    if (!lastUser.requestContext) {
+      lastUser.requestContext = JSON.stringify(storyContext(beforeStory))
+      await db.transaction('rw', db.archives, db.messages, async () => {
+        if ((await db.archives.get(snapshot.id))?.revision !== snapshot.revision)
+          throw new Error('冻结请求时存档已变更，请重试。')
+        await db.messages.update(lastUser.id, { requestContext: lastUser.requestContext })
+      })
+    }
     const kind: RequestKind =
       body?.kind === 'forum' || lastUser.kind === 'forum' ? 'forum' : 'narrative'
     const signal = options.abortSignal ?? new AbortController().signal
@@ -283,6 +298,8 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               messages: modelMessages(messages, summary),
               signal,
               estimatedInput: estimate.estimated,
+              validate: (reply) =>
+                applyMessage(structuredClone(beforeStory), { ...base, status: 'complete', reply }),
               onPartial: (value, raw) => {
                 rawContent = raw ?? JSON.stringify(value)
                 if (kind === 'narrative') {
@@ -319,6 +336,19 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               },
             })
             if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+            if (result.reply.kind === 'narrative') {
+              const projected = structuredClone(beforeStory)
+              applyMessage(projected, { ...base, status: 'complete', reply: result.reply })
+              result.reply.value.diary.countdownDays = displayCountdown(projected)
+            } else {
+              const lines = lastUser.content.split('\n')
+              const title = lines.find((l) => /^标题[：:]/.test(l))
+              result.reply.value.post.author = persona?.name ?? snapshot.userName ?? '沈辞玉'
+              if (title) result.reply.value.post.title = title.replace(/^标题[：:]\s*/, '')
+              result.reply.value.post.content = lines
+                .filter((l) => l !== '$发送帖子' && !/^标题[：:]/.test(l))
+                .join('\n')
+            }
             await pendingCheckpoint
             const complete: StoredMessage = {
               ...base,

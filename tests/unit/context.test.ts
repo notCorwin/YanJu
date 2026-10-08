@@ -53,7 +53,7 @@ describe('上下文预算与压缩事务', () => {
   it('分批压缩大量历史，最后一次性提交，并至少保留最新一轮', async () => {
     const commit = vi.fn()
     const summarize = vi.fn().mockResolvedValue(compressionFixture)
-    const channel = { ...channelFixture, contextWindow: 65536 }
+    const channel = { ...channelFixture, contextWindow: 72000 }
     const summary = await compactContext({
       archive,
       channel,
