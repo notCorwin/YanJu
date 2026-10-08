@@ -5,13 +5,23 @@ import {
   type UIMessageStreamWriter,
 } from 'ai'
 import { isRoleIntercepted, interceptImage } from '@/content/intercept'
-import { archiveMessages, db, appendMessage, commitSummary, revise } from './db'
+import { archiveMessages, db, appendMessage, commitSummary, copyArchiveData, revise } from './db'
 import { compactContext, contextBudget, calibrate } from './context'
 import { buildInstructions, modelMessages } from './prompts'
 import { channelIsReady, friendlyError, generateReply, summarize } from './provider'
-import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from './types'
+import type {
+  Archive,
+  Channel,
+  ChatMessage,
+  Persona,
+  StoredMessage,
+  Summary,
+  RequestDiagnostics,
+} from './types'
 import type { ForumReply, NarrativeReply, RequestKind } from './schemas'
 import { sanitizePartial } from './schemas'
+import { acquireArchiveOperation } from './operations'
+import { errorDiagnostics } from './request-trace'
 
 const supersededCompaction = Symbol('supersededCompaction')
 
@@ -46,6 +56,7 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
       kind: message.kind,
       status: message.status,
       error: message.error,
+      diagnostics: message.diagnostics,
     },
   }
 }
@@ -93,6 +104,10 @@ async function saveGenerated(message: StoredMessage, revision: number, regenerat
     const start = all.findIndex((m) => m.id === regenerateFromId)
     if (start < 0) throw new Error('找不到重说的消息')
     message.sequence = all[start].sequence
+    const original = all.filter((original) => original.id !== message.id)
+    const copy = copyArchiveData(archive, original, `${archive.name} · 重说前`)
+    await db.archives.add(copy.archive)
+    await db.messages.bulkAdd(copy.messages)
     await db.messages.bulkDelete(all.slice(start).map((m) => m.id))
     await db.messages.put(message)
     const next = revise(archive)
@@ -152,6 +167,8 @@ export async function compressArchive(
 
 export class BrowserChatTransport implements ChatTransport<ChatMessage> {
   private compaction?: AbortController
+  private settled: Promise<void> = Promise.resolve()
+  waitForIdle = () => this.settled
 
   private async compactAfterReply(
     archiveId: string,
@@ -182,20 +199,39 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
   }
 
   async sendMessages(options: Parameters<ChatTransport<ChatMessage>['sendMessages']>[0]) {
+    const body = options.body as Record<string, unknown> | undefined
+    if (typeof body?.operationOwner === 'string') {
+      if ((await db.operations.get(options.chatId))?.owner !== body.operationOwner)
+        throw new Error('会话操作已失效，请重新发送。')
+      return this.sendWithOperation(options)
+    }
+    const operation = await acquireArchiveOperation(options.chatId)
+    try {
+      return await this.sendWithOperation(options, operation.release)
+    } catch (error) {
+      await operation.release()
+      throw error
+    }
+  }
+
+  private async sendWithOperation(
+    options: Parameters<ChatTransport<ChatMessage>['sendMessages']>[0],
+    release?: () => Promise<void>,
+  ) {
     this.compaction?.abort(supersededCompaction)
+    const body = options.body as Record<string, unknown> | undefined
     const settings = await db.settings.get('app')
     let archive = await db.archives.get(options.chatId)
-    const channel = settings?.activeChannelId
-      ? await db.channels.get(settings.activeChannelId)
-      : undefined
-    const persona = settings?.activePersonaId
-      ? await db.personas.get(settings.activePersonaId)
-      : undefined
+    const channelId =
+      typeof body?.channelId === 'string' ? body.channelId : settings?.activeChannelId
+    const personaId =
+      typeof body?.personaId === 'string' ? body.personaId : settings?.activePersonaId
+    const channel = channelId ? await db.channels.get(channelId) : undefined
+    const persona = personaId ? await db.personas.get(personaId) : undefined
     if (!archive) throw new Error('存档不存在，请创建或选择存档。')
     if (!channel || !channelIsReady(channel))
       throw new Error('请先配置渠道并通过严格结构化与浏览器连接测试。')
     const all = await archiveMessages(archive.id)
-    const body = options.body as Record<string, unknown> | undefined
     const regen = typeof body?.regenerateFromId === 'string' ? body.regenerateFromId : undefined
     const regenIndex = regen ? all.findIndex((m) => m.id === regen) : -1
     if (
@@ -218,7 +254,10 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     if (!lastUser) throw new Error('没有可回复的用户消息。')
     const kind: RequestKind =
       body?.kind === 'forum' || lastUser.kind === 'forum' ? 'forum' : 'narrative'
-    const signal = options.abortSignal ?? new AbortController().signal
+    const signal = AbortSignal.any([
+      ...(options.abortSignal ? [options.abortSignal] : []),
+      ...(body?.operationSignal instanceof AbortSignal ? [body.operationSignal] : []),
+    ])
     const messageId = crypto.randomUUID()
     const createdAt = Date.now()
     const base: StoredMessage = {
@@ -238,173 +277,195 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     let checkpointAt = 0
     let pendingCheckpoint = Promise.resolve()
     let completedChannel: Channel | undefined
+    let completeDiagnostics: RequestDiagnostics | undefined
     const status = (
       writer: UIMessageStreamWriter<ChatMessage>,
       phase: 'compressing' | 'generating' | 'correcting' | 'complete' | 'failed' | 'cancelled',
       detail: string,
     ) => writer.write({ type: 'data-status', id: 'status', data: { phase, detail } })
+    let settle!: () => void
+    this.settled = new Promise<void>((resolve) => {
+      settle = resolve
+    })
     return createUIMessageStream<ChatMessage>({
       execute: async ({ writer }) => {
-        writer.write({
-          type: 'start',
-          messageId,
-          messageMetadata: { createdAt, kind, status: 'partial' },
-        })
         try {
-          if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-          if (isRoleIntercepted(lastUser.content)) {
-            const notice: StoredMessage = {
-              ...base,
-              kind: 'notice',
-              status: 'complete',
-              content: interceptImage,
+          writer.write({
+            type: 'start',
+            messageId,
+            messageMetadata: { createdAt, kind, status: 'partial' },
+          })
+          try {
+            if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+            if (isRoleIntercepted(lastUser.content)) {
+              const notice: StoredMessage = {
+                ...base,
+                kind: 'notice',
+                status: 'complete',
+                content: interceptImage,
+              }
+              await saveGenerated(notice, snapshot.revision, regen)
+              committed = true
+              writer.write({ type: 'data-notice', data: notice.content })
+            } else {
+              const summary = await compressArchive(
+                snapshot,
+                channel,
+                persona,
+                messages,
+                signal,
+                kind,
+                (d) => status(writer, 'compressing', d),
+              )
+              const estimate = contextBudget(channel, persona, kind, messages, summary)
+              if (estimate.mustCompress)
+                throw new Error('压缩后仍没有足够上下文，请调整渠道容量或输出上限。')
+              status(writer, 'generating', '正在生成严格结构化回复…')
+              const result = await generateReply({
+                channel,
+                kind,
+                instructions: buildInstructions(persona, kind),
+                messages: modelMessages(messages, summary),
+                signal,
+                estimatedInput: estimate.estimated,
+                onPartial: (value, raw) => {
+                  rawContent = raw ?? JSON.stringify(value)
+                  if (kind === 'narrative') {
+                    partial = { kind, value: value as DeepPartial<NarrativeReply> }
+                    writer.write({ type: 'data-narrative', id: 'reply', data: partial.value })
+                  } else {
+                    partial = { kind, value: value as DeepPartial<ForumReply> }
+                    writer.write({ type: 'data-forum', id: 'reply', data: partial.value })
+                  }
+                  if (Date.now() - checkpointAt > 500) {
+                    checkpointAt = Date.now()
+                    pendingCheckpoint = pendingCheckpoint
+                      .then(() =>
+                        db.transaction('rw', db.archives, db.messages, async () => {
+                          const current = await db.archives.get(snapshot.id)
+                          if (current?.revision === snapshot.revision)
+                            await db.messages.put({
+                              ...base,
+                              partial,
+                              correction,
+                              content: partial ? JSON.stringify(partial.value) : '',
+                              rawContent,
+                            })
+                        }),
+                      )
+                      .catch(() => {
+                        /* Final commit reports persistent storage failures. */
+                      })
+                  }
+                },
+                onCorrection: (detail, text) => {
+                  correction = text
+                  status(writer, 'correcting', detail)
+                },
+              })
+              if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+              await pendingCheckpoint
+              const complete: StoredMessage = {
+                ...base,
+                status: 'complete',
+                reply: result.reply,
+                content: JSON.stringify(result.reply.value),
+                usage: result.usage,
+                diagnostics: result.diagnostics,
+                correction: result.correction ?? correction,
+              }
+              partial = result.reply
+              completeDiagnostics = result.diagnostics
+              await saveGenerated(complete, snapshot.revision, regen)
+              committed = true
+              if (result.reply.kind === 'narrative')
+                writer.write({ type: 'data-narrative', id: 'reply', data: result.reply.value })
+              else writer.write({ type: 'data-forum', id: 'reply', data: result.reply.value })
+              const calibration = calibrate(channel, result.usage?.input, estimate.estimated)
+              completedChannel = { ...channel, calibration: calibration ?? channel.calibration }
+              if (calibration)
+                try {
+                  await db.channels.update(channel.id, { calibration })
+                } catch (error) {
+                  status(writer, 'complete', `回复已保存；用量校正未保存：${friendlyError(error)}`)
+                }
+              if (
+                !contextBudget(completedChannel, persona, kind, [...messages, complete], summary)
+                  .mustCompress
+              )
+                completedChannel = undefined
             }
-            await saveGenerated(notice, snapshot.revision, regen)
-            committed = true
-            writer.write({ type: 'data-notice', data: notice.content })
-          } else {
-            const summary = await compressArchive(
-              snapshot,
-              channel,
-              persona,
-              messages,
-              signal,
-              kind,
-              (d) => status(writer, 'compressing', d),
+            const storage = await db.persistence.flush()
+            status(
+              writer,
+              'complete',
+              storage.phase === 'error'
+                ? `回复已保存到浏览器数据库；OPFS 同步失败：${storage.error}`
+                : '回复已保存',
             )
-            const estimate = contextBudget(channel, persona, kind, messages, summary)
-            if (estimate.mustCompress)
-              throw new Error('压缩后仍没有足够上下文，请调整渠道容量或输出上限。')
-            status(writer, 'generating', '正在生成严格结构化回复…')
-            const result = await generateReply({
-              channel,
-              kind,
-              instructions: buildInstructions(persona, kind),
-              messages: modelMessages(messages, summary),
-              signal,
-              estimatedInput: estimate.estimated,
-              onPartial: (value, raw) => {
-                rawContent = raw ?? JSON.stringify(value)
-                if (kind === 'narrative') {
-                  partial = { kind, value: value as DeepPartial<NarrativeReply> }
-                  writer.write({ type: 'data-narrative', id: 'reply', data: partial.value })
-                } else {
-                  partial = { kind, value: value as DeepPartial<ForumReply> }
-                  writer.write({ type: 'data-forum', id: 'reply', data: partial.value })
-                }
-                if (Date.now() - checkpointAt > 500) {
-                  checkpointAt = Date.now()
-                  pendingCheckpoint = pendingCheckpoint
-                    .then(() =>
-                      db.transaction('rw', db.archives, db.messages, async () => {
-                        const current = await db.archives.get(snapshot.id)
-                        if (current?.revision === snapshot.revision)
-                          await db.messages.put({
-                            ...base,
-                            partial,
-                            correction,
-                            content: partial ? JSON.stringify(partial.value) : '',
-                            rawContent,
-                          })
-                      }),
-                    )
-                    .catch(() => {
-                      /* Final commit reports persistent storage failures. */
-                    })
-                }
-              },
-              onCorrection: (detail, text) => {
-                correction = text
-                status(writer, 'correcting', detail)
+            writer.write({
+              type: 'finish',
+              finishReason: 'stop',
+              messageMetadata: {
+                createdAt,
+                kind,
+                status: 'complete',
+                diagnostics: completeDiagnostics,
               },
             })
-            if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+            // End the UI stream before optional post-reply LLM compaction, which may be slow.
+            if (completedChannel)
+              void this.compactAfterReply(
+                snapshot.id,
+                snapshot.revision + 1,
+                completedChannel,
+                persona,
+                kind,
+              ).catch((error) => db.persistence.reportError(error))
+          } catch (error) {
             await pendingCheckpoint
-            const complete: StoredMessage = {
-              ...base,
-              status: 'complete',
-              reply: result.reply,
-              content: JSON.stringify(result.reply.value),
-              usage: result.usage,
-              correction: result.correction ?? correction,
-            }
-            partial = result.reply
-            await saveGenerated(complete, snapshot.revision, regen)
-            committed = true
-            if (result.reply.kind === 'narrative')
-              writer.write({ type: 'data-narrative', id: 'reply', data: result.reply.value })
-            else writer.write({ type: 'data-forum', id: 'reply', data: result.reply.value })
-            const calibration = calibrate(channel, result.usage?.input, estimate.estimated)
-            completedChannel = { ...channel, calibration: calibration ?? channel.calibration }
-            if (calibration)
-              try {
-                await db.channels.update(channel.id, { calibration })
-              } catch (error) {
-                status(writer, 'complete', `回复已保存；用量校正未保存：${friendlyError(error)}`)
+            let detail = friendlyError(error)
+            const cancelled = signal.aborted
+            if (!committed) {
+              const recovery: StoredMessage = {
+                ...base,
+                status: cancelled ? 'cancelled' : 'failed',
+                partial,
+                correction,
+                error: detail,
+                content: partial ? JSON.stringify(partial.value) : '',
+                rawContent,
+                diagnostics: errorDiagnostics(error),
               }
-            if (
-              !contextBudget(completedChannel, persona, kind, [...messages, complete], summary)
-                .mustCompress
-            )
-              completedChannel = undefined
-          }
-          const storage = await db.persistence.flush()
-          status(
-            writer,
-            'complete',
-            storage.phase === 'error'
-              ? `回复已保存到浏览器数据库；OPFS 同步失败：${storage.error}`
-              : '回复已保存',
-          )
-          writer.write({
-            type: 'finish',
-            finishReason: 'stop',
-            messageMetadata: { createdAt, kind, status: 'complete' },
-          })
-          // End the UI stream before optional post-reply LLM compaction, which may be slow.
-          if (completedChannel)
-            void this.compactAfterReply(
-              snapshot.id,
-              snapshot.revision + 1,
-              completedChannel,
-              persona,
-              kind,
-            ).catch((error) => db.persistence.reportError(error))
-        } catch (error) {
-          await pendingCheckpoint
-          let detail = friendlyError(error)
-          const cancelled = signal.aborted
-          if (!committed) {
-            const recovery: StoredMessage = {
-              ...base,
-              status: cancelled ? 'cancelled' : 'failed',
-              partial,
-              correction,
-              error: detail,
-              content: partial ? JSON.stringify(partial.value) : '',
-              rawContent,
+              // Regeneration failures append recovery data; the old branch is still intact.
+              try {
+                await saveRecovery(recovery)
+              } catch (storageError) {
+                detail += `；恢复记录保存失败：${friendlyError(storageError)}`
+              }
             }
-            // Regeneration failures append recovery data; the old branch is still intact.
-            try {
-              await saveRecovery(recovery)
-            } catch (storageError) {
-              detail += `；恢复记录保存失败：${friendlyError(storageError)}`
-            }
+            await db.persistence.flush()
+            const outcome = committed ? 'complete' : cancelled ? 'cancelled' : 'failed'
+            status(writer, outcome, committed ? `回复已保存；${detail}` : detail)
+            writer.write({
+              type: 'finish',
+              finishReason: committed ? 'stop' : 'error',
+              messageMetadata: {
+                createdAt,
+                kind,
+                status: outcome,
+                error: committed ? undefined : detail,
+                diagnostics: errorDiagnostics(error),
+              },
+            })
+            if (!cancelled && !committed) writer.write({ type: 'error', errorText: detail })
           }
-          await db.persistence.flush()
-          const outcome = committed ? 'complete' : cancelled ? 'cancelled' : 'failed'
-          status(writer, outcome, committed ? `回复已保存；${detail}` : detail)
-          writer.write({
-            type: 'finish',
-            finishReason: committed ? 'stop' : 'error',
-            messageMetadata: {
-              createdAt,
-              kind,
-              status: outcome,
-              error: committed ? undefined : detail,
-            },
-          })
-          if (!cancelled && !committed) writer.write({ type: 'error', errorText: detail })
+        } finally {
+          try {
+            await release?.()
+          } finally {
+            settle()
+          }
         }
       },
       onError: friendlyError,

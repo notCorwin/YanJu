@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
+import { test } from './fixtures'
 import { readFile } from 'node:fs/promises'
 import {
   capabilityFixture,
@@ -19,7 +20,27 @@ async function readOpfs(page: Page): Promise<SaveFile | undefined> {
       const root = await navigator.storage.getDirectory()
       const directory = await root.getDirectoryHandle('yanju-v2')
       const handle = await directory.getFileHandle('save.json')
-      return JSON.parse(await (await handle.getFile()).text())
+      const raw = JSON.parse(await (await handle.getFile()).text())
+      if (raw.format !== 'yanju-opfs-3') return raw
+      const messages = await Promise.all(
+        raw.messages.map(async (ref: { id: string; archiveId: string; file: string }) => {
+          const message = JSON.parse(
+            await (await (await directory.getFileHandle(ref.file)).getFile()).text(),
+          )
+          return {
+            ...message,
+            id: ref.id,
+            archiveId: ref.archiveId,
+            content:
+              message.content ??
+              JSON.stringify(message.reply?.value ?? message.partial?.value ?? ''),
+          }
+        }),
+      )
+      const bgImage = raw.backgroundFile
+        ? await (await (await directory.getFileHandle(raw.backgroundFile)).getFile()).text()
+        : ''
+      return { ...raw.data, messages, settings: { ...raw.data.settings, bgImage } }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'NotFoundError') return undefined
       throw error
@@ -38,7 +59,7 @@ async function expectArchiveAvailable(page: Page) {
   await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
   await page.getByRole('button', { name: '存档管理' }).click()
   await expect(page.getByRole('button', { name: '当前存档', exact: true })).toBeEnabled()
-  await expect(page.getByRole('button', { name: '载入', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '载入', exact: true }).first()).toBeEnabled()
   await expect(page.getByRole('button', { name: '导出全部', exact: true })).toBeEnabled()
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
 }
@@ -166,6 +187,8 @@ async function prepare(
       status: response.status ?? 200,
       headers: {
         'access-control-allow-origin': '*',
+        'access-control-expose-headers': 'x-request-id',
+        'x-request-id': 'mock-request',
         'content-type': body.stream ? 'text/event-stream' : 'application/json',
       },
       body:
@@ -228,6 +251,8 @@ async function prepareResponses(
     await route.fulfill({
       headers: {
         'access-control-allow-origin': '*',
+        'access-control-expose-headers': 'x-request-id',
+        'x-request-id': 'mock-request',
         'content-type': body.stream ? 'text/event-stream' : 'application/json',
       },
       body: body.stream
@@ -369,7 +394,7 @@ test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page })
   expect(businessRequests(requests)[0]?.model).toBe('second-model')
   await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
   await page.getByRole('button', { name: '存档管理' }).click()
-  await page.getByRole('button', { name: '载入', exact: true }).click()
+  await page.getByRole('button', { name: '载入', exact: true }).first().click()
   await expect(page).toHaveURL(/#\/chat\/archive-2$/)
   await expect(page.getByText('第二篇章的开场。')).toBeVisible()
   await page.reload()
@@ -598,7 +623,7 @@ test('OPFS 写入失败后存档仍可载入和导出，并可重试同步', asy
   await page.getByRole('button', { name: '重试存档同步' }).click()
   await expect(page.getByText(/已同步 OPFS 存档/)).toBeVisible()
   expect(lastSavedMessage(await readOpfs(page))?.reply?.value).toEqual(narrativeFixture)
-  await page.getByRole('button', { name: '载入', exact: true }).click()
+  await page.getByRole('button', { name: '载入', exact: true }).first().click()
   await expect(page.getByText('第二篇章的开场。')).toBeVisible()
 })
 
@@ -618,6 +643,7 @@ test('没有部分内容的模型错误结束后仍可管理和导出存档', as
 })
 
 test('自动优先 Responses，叙事、论坛、摘要续聊及 v2 存档往返', async ({ page }) => {
+  test.setTimeout(60000)
   const { requests, chatRequests } = await prepareResponses(page)
   await enableChannel(page, '测试渠道', { mode: 'auto', defaultTemperature: true })
   expect(requests).toHaveLength(2)
@@ -877,4 +903,350 @@ test('Responses 停止保存部分内容，刷新后继续使用选定协议', a
   await expect(page.getByRole('button', { name: '重试回复', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
   expect(requests.filter((r) => r.text.format.name === 'NarrativeReply')).toHaveLength(1)
+})
+
+test('完整协议能力测试覆盖真实流式结构，不写入聊天存档', async ({ page }) => {
+  const requests = await prepare(page)
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await page.getByRole('button', { name: '完整协议测试', exact: true }).click()
+  await expect(page.getByText(/测试通过 · 完整协议/)).toBeVisible()
+  expect(requests.map((body) => body.response_format.json_schema.name)).toEqual([
+    'ChannelCapability',
+    'ChannelCapability',
+    'NarrativeReply',
+    'ForumReply',
+    'CompressionResult',
+  ])
+  expect(requests.filter((body) => body.stream)).toHaveLength(3)
+  await page.getByRole('button', { name: '使用此渠道' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await enter(page)
+  await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(1)
+})
+
+test('自动选定 Responses 后完整协议测试仍覆盖叙事论坛摘要并保留诊断', async ({ page }) => {
+  const { requests, chatRequests } = await prepareResponses(page)
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await page.getByRole('combobox', { name: 'API 协议' }).click()
+  await page.getByRole('option', { name: '自动探测（Responses 优先）', exact: true }).click()
+  await page.getByRole('button', { name: '完整协议测试', exact: true }).click()
+  await expect(page.getByText(/测试通过 · 完整协议/)).toBeVisible()
+  await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
+  expect(requests.map((body) => body.text.format.name)).toEqual([
+    'ChannelCapability',
+    'ChannelCapability',
+    'NarrativeReply',
+    'ForumReply',
+    'CompressionResult',
+  ])
+  expect(chatRequests).toHaveLength(2)
+  expect(requests.every((body) => body.text.format.strict && body.store === false)).toBe(true)
+  await page.getByRole('button', { name: '使用此渠道' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await enter(page)
+  await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(1)
+})
+
+test('内容分区编辑校验完整协议，失败保留编辑内容并显示生成诊断', async ({ page }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('请读书。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.getByRole('button', { name: '生成详情', exact: true }).click()
+  await expect(page.getByText('mock-request', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '编辑消息', exact: true }).last().click()
+  const dialog = page.getByRole('dialog', { name: '编辑消息', exact: true })
+  await dialog.getByRole('button', { name: '正文与对白 · 第 1 条', exact: true }).click()
+  const input = dialog.getByRole('textbox', { name: '正文与对白 · 第 1 条 · 内容', exact: true })
+  const tabs = (await dialog.getByRole('tablist').first().boundingBox())!
+  expect((await input.boundingBox())!.y).toBeGreaterThanOrEqual(tabs.y + tabs.height)
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
+    true,
+  )
+  await input.fill('不够长')
+  await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toBeVisible()
+  await expect(input).toHaveValue('不够长')
+  const text = `修改后的书页。${narrativeFixture.blocks[0].text}`
+  await input.fill(text)
+  await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByText(text, { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByText(text, { exact: true })).toBeVisible()
+  const saved = lastSavedMessage(await readOpfs(page))
+  expect(saved?.reply?.kind).toBe('narrative')
+  if (saved?.reply?.kind === 'narrative')
+    expect(saved.reply.value.diary).toEqual(narrativeFixture.diary)
+})
+
+test('损坏存档在覆盖前被拒绝，原篇章仍可载入', async ({ page }) => {
+  await prepare(page)
+  await enter(page)
+  await page.getByRole('button', { name: '存档管理' }).click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出全部', exact: true }).click()
+  const download = await downloadPromise
+  const original = JSON.parse(await readFile((await download.path())!, 'utf8')) as SaveFile
+  for (const damaged of [
+    { ...original, messages: [{ ...original.messages[0], legacy: { body: '正文' } }] },
+    { ...original, archives: [{ ...original.archives[0], lastUsage: { output: 1 } }] },
+  ]) {
+    await page.getByLabel('导入存档文件').setInputFiles({
+      name: 'broken.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(damaged)),
+    })
+    await expect(page.getByText(/存档字段不完整或无效/).first()).toBeVisible()
+    await expect(page.getByRole('dialog', { name: '导入并替换当前资料？' })).toHaveCount(0)
+  }
+  await page.getByRole('button', { name: '载入', exact: true }).click()
+  await expect(page.getByText('第二篇章的开场。', { exact: true })).toBeVisible()
+})
+
+test('从指定消息分叉、单篇章导出和冲突存档合并都保留原记录', async ({ page }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  for (const text of ['第一轮。', '第二轮。']) {
+    await page.getByRole('textbox', { name: '聊天输入' }).fill(text)
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+    await expect(page.getByText(text, { exact: true })).toBeVisible()
+  }
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+  await page.getByRole('button', { name: '从此分叉', exact: true }).nth(2).click()
+  await expect(page).not.toHaveURL(/#\/chat\/archive-1$/)
+  await expect(page.getByText('第一轮。', { exact: true })).toBeVisible()
+  await expect(page.getByText('第二轮。', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '存档管理' }).click()
+  await page.getByRole('textbox', { name: '搜索存档', exact: true }).fill('第二篇章')
+  await expect(page.getByRole('button', { name: '导出 阅读篇章', exact: true })).toHaveCount(0)
+  await page.getByRole('textbox', { name: '搜索存档', exact: true }).fill('')
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出 阅读篇章', exact: true }).click()
+  const download = await downloadPromise
+  const path = (await download.path())!
+  const saved = JSON.parse(await readFile(path, 'utf8')) as SaveFile
+  expect(saved.archives).toHaveLength(1)
+  expect(saved.messages).toHaveLength(5)
+  await page.getByRole('button', { name: '合并导入', exact: true }).click()
+  await page.getByLabel('导入存档文件').setInputFiles(path)
+  await page
+    .getByRole('dialog', { name: '合并导入存档？', exact: true })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
+  await expect(page.getByText('第二轮。', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '存档管理' }).click()
+  await expect(page.getByRole('button', { name: '导出 阅读篇章', exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: '导出 阅读篇章 · 分支', exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: '导出 阅读篇章 · 导入', exact: true }),
+  ).toBeVisible()
+})
+
+test('千条历史按需加载，导出保留全部消息', async ({ page }) => {
+  await prepare(page, undefined, { historyTurns: 500, contextWindow: 1000000 })
+  await enter(page)
+  await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(60)
+  await page.getByRole('button', { name: /加载较早消息/ }).click()
+  await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(120)
+  await page.getByRole('button', { name: '存档管理' }).click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出 阅读篇章', exact: true }).click()
+  const download = await downloadPromise
+  const data = JSON.parse(await readFile((await download.path())!, 'utf8')) as SaveFile
+  expect(data.messages).toHaveLength(1001)
+  expect(data.messages[0].id).toBe('opening')
+})
+
+test('两个窗口争用同一篇章时拒绝重复发送，停止后锁可立即重用', async ({ page, context }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  await page.evaluate(() => {
+    window.fetch = async (_url, init) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            const partial = JSON.stringify({
+              scene: { time: '2019年', location: '书房' },
+              blocks: [{ kind: 'narration', text: '跨窗口生成中的正文', translation: '' }],
+            }).slice(0, -1)
+            controller.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify({ id: 'slow', created: 1, model: 'test-model', choices: [{ index: 0, delta: { content: partial }, finish_reason: null }] })}\n\n`,
+              ),
+            )
+            init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), {
+              once: true,
+            })
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+  })
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('第一个窗口的请求')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByText('跨窗口生成中的正文', { exact: true })).toBeVisible()
+  const second = await context.newPage()
+  let secondRequests = 0
+  await second.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+    secondRequests++
+    await route.fulfill({ contentType: 'text/event-stream', body: sse(narrativeFixture).join('') })
+  })
+  await second.goto(page.url())
+  await expect(second.getByRole('button', { name: '重试回复', exact: true })).toHaveCount(0)
+  await second.getByRole('textbox', { name: '聊天输入' }).fill('第二个窗口的请求')
+  await second.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(second.getByText(/正在另一个窗口操作/).first()).toBeVisible()
+  expect(secondRequests).toBe(0)
+  await expect(second.getByRole('textbox', { name: '聊天输入' })).toHaveValue('第二个窗口的请求')
+  await page.getByRole('button', { name: '停止生成', exact: true }).click()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await second.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(second.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+  await expect(second.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  expect(secondRequests).toBe(1)
+  const saved = (await readOpfs(second))!.messages.filter(
+    (message) => message.archiveId === 'archive-1',
+  )
+  expect(new Set(saved.map((message) => message.sequence)).size).toBe(saved.length)
+  expect(saved.filter((message) => message.content === '第二个窗口的请求')).toHaveLength(1)
+  await second.close()
+})
+
+test('导入持有全局锁时另一窗口不能排队发送到恢复后的同名篇章', async ({ page, context }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  const second = await context.newPage()
+  let secondRequests = 0
+  await second.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+    secondRequests++
+    const body = route.request().postDataJSON() as Body
+    const value =
+      body.response_format.json_schema.name === 'ChannelCapability'
+        ? { ready: true, echo: 'YanJu strict output' }
+        : narrativeFixture
+    await route.fulfill({
+      contentType: body.stream ? 'text/event-stream' : 'application/json',
+      body: body.stream ? sse(value).join('') : JSON.stringify(completion(value)),
+    })
+  })
+  await second.goto(page.url())
+  const input = second.getByRole('textbox', { name: '聊天输入' })
+  await input.fill('导入期间旧窗口的发送')
+  await page.getByRole('button', { name: '存档管理' }).click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出全部', exact: true }).click()
+  const backup = await downloadPromise
+  await page.getByLabel('导入存档文件').setInputFiles((await backup.path())!)
+
+  // Hold the lease store so the real import stays in progress until both tabs exercise its gate.
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yanju-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const transaction = database.transaction('operations', 'readwrite')
+    const store = transaction.objectStore('operations')
+    let active = true
+    const completed = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => {
+        database.close()
+        resolve()
+      }
+      transaction.onabort = () => {
+        database.close()
+        reject(transaction.error)
+      }
+    })
+    const keepAlive = () => {
+      const request = store.get('fixture-import-block')
+      request.onsuccess = () => {
+        if (active) keepAlive()
+      }
+    }
+    keepAlive()
+    ;(window as Window & { releaseImportFixture: () => Promise<void> }).releaseImportFixture =
+      () => {
+        active = false
+        return completed
+      }
+  })
+  const release = () =>
+    page.evaluate(() =>
+      (window as Window & { releaseImportFixture: () => Promise<void> }).releaseImportFixture(),
+    )
+  try {
+    await page
+      .getByRole('dialog', { name: '导入并替换当前资料？' })
+      .getByRole('button', { name: '确认', exact: true })
+      .click()
+    await expect
+      .poll(() =>
+        page.evaluate(async () =>
+          (await navigator.locks.query()).held?.some(
+            (lock) => lock.name === 'yanju-import:yanju-v2' && lock.mode === 'exclusive',
+          ),
+        ),
+      )
+      .toBe(true)
+    await second.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(second.getByText(/正在导入存档/).first()).toBeVisible()
+    await expect(input).toHaveValue('导入期间旧窗口的发送')
+    expect(secondRequests).toBe(0)
+    await release()
+    await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
+    await expect
+      .poll(async () => (await readOpfs(page))?.messages.some((message) => message.role === 'user'))
+      .toBe(false)
+    await enableChannel(second)
+    await second.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(second.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+    await expect(second.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+    const saved = (await readOpfs(second))!.messages
+    expect(saved.filter((message) => message.content === '导入期间旧窗口的发送')).toHaveLength(1)
+  } finally {
+    await release()
+    await second.close()
+  }
+})
+
+test('单条损坏的旧记录由局部恢复界面接住，编辑与导出仍可用', async ({ page }) => {
+  await prepare(page)
+  await enter(page)
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yanju-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction('messages', 'readwrite')
+      const store = transaction.objectStore('messages')
+      const request = store.get('opening')
+      request.onsuccess = () => store.put({ ...request.result, legacy: { body: '待修复正文' } })
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(transaction.error)
+    })
+    database.close()
+  })
+  await page.reload()
+  await expect(page.getByRole('button', { name: '导出当前资料', exact: true })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
+  await page.getByRole('button', { name: '编辑消息', exact: true }).click()
+  await page.getByRole('textbox', { name: '消息内容', exact: true }).fill('已经修复的开场')
+  await page.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '编辑消息', exact: true })).toHaveCount(0)
+  await expect(page.getByText('已经修复的开场', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '导出当前资料', exact: true })).toHaveCount(0)
 })

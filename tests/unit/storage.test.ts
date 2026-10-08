@@ -7,6 +7,8 @@ import {
   db,
   editMessage,
   exportSave,
+  exportArchive,
+  forkArchive,
   importSave,
   normalizeImport,
 } from '../../src/lib/db'
@@ -83,6 +85,87 @@ describe('渠道测试结果的并发提交', () => {
   })
 })
 describe('IndexedDB 与存档迁移', () => {
+  it.each([
+    { legacy: { body: '内容' } },
+    { usage: {} },
+    { createdAt: 9_000_000_000_000_000 },
+    { sequence: -1 },
+    { kind: 'unknown' },
+    { createdAt: 'yesterday' },
+    { status: 'unknown' },
+  ])('损坏消息在替换数据库前拒绝：%j', async (invalid) => {
+    await db.archives.put(archive)
+    await expect(
+      importSave({
+        version: 2,
+        archives: [archive],
+        messages: [{ ...messageFixture('invalid', 'assistant', '原文', 0), ...invalid }],
+      }),
+    ).rejects.toThrow(/存档字段/)
+    expect(await db.archives.get(archive.id)).toEqual(archive)
+    expect(await db.messages.count()).toBe(0)
+  })
+  it('损坏的用量及渠道校正拒绝导入', () => {
+    expect(() =>
+      normalizeImport({ version: 2, archives: [{ ...archive, lastUsage: {} }] }),
+    ).toThrow(/存档字段/)
+    expect(() =>
+      normalizeImport({
+        version: 2,
+        channels: [{ ...channelFixture, calibration: { ratio: '1', samples: 1 } }],
+      }),
+    ).toThrow(/存档字段/)
+  })
+  it('并发追加在同一事务中分配不同的消息序号', async () => {
+    await db.archives.put(archive)
+    await Promise.all([
+      appendMessage(messageFixture('a', 'user', '窗口一', 0)),
+      appendMessage(messageFixture('b', 'user', '窗口二', 0)),
+    ])
+    expect((await archiveMessages(archive.id)).map((message) => message.sequence)).toEqual([0, 1])
+  })
+  it('合并导入保留已有资料并重映射重复编号和摘要边界', async () => {
+    await importSave({
+      version: 2,
+      archives: [archive],
+      messages: [messageFixture('m', 'user', '原内容', 0)],
+      settings: { ...defaults, bgImage: '原背景' },
+    })
+    const data = await exportArchive(archive.id)
+    data.archives[0].summary = {
+      value: compressionFixture,
+      coveredThroughId: 'm',
+      coveredCount: 1,
+      revision: 0,
+      createdAt: 1,
+    }
+    const merged = await importSave(data, db, false, 'merge')
+    expect(await db.archives.count()).toBe(2)
+    expect((await db.messages.get('m'))?.content).toBe('原内容')
+    expect(merged.archives[0].id).not.toBe(archive.id)
+    expect(merged.messages[0].id).not.toBe('m')
+    expect(merged.archives[0].summary?.coveredThroughId).toBe(merged.messages[0].id)
+    expect((await db.settings.get('app'))?.bgImage).toBe('原背景')
+  })
+  it('从指定消息分叉保留原篇章，只复制选择的前缀', async () => {
+    await db.archives.put(archive)
+    await db.messages.bulkPut([
+      messageFixture('first', 'user', '第一句', 0),
+      messageFixture('second', 'assistant', '第二句', 1),
+      messageFixture('third', 'user', '第三句', 2),
+    ])
+    const fork = await forkArchive(archive.id, 'second')
+    expect((await archiveMessages(archive.id)).map((message) => message.id)).toEqual([
+      'first',
+      'second',
+      'third',
+    ])
+    expect((await archiveMessages(fork.id)).map((message) => message.content)).toEqual([
+      '第一句',
+      '第二句',
+    ])
+    expect((await exportArchive(fork.id)).archives).toHaveLength(1)
+  })
   it('v2 渠道协议和模型默认温度往返保留，导入清除能力缓存', async () => {
     await importSave({
       version: 2,

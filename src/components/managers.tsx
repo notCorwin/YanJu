@@ -3,12 +3,21 @@ import {
   db,
   createArchive,
   exportSave,
+  exportArchive,
   importSave,
   initializeStorage,
   normalizeImport,
   commitChannelCapability,
 } from '@/lib/db'
-import { channelIsReady, friendlyError, testChannel, validateChannel } from '@/lib/provider'
+import { downloadJson, saveFileName } from '@/lib/download'
+import { withArchiveOperation } from '@/lib/operations'
+import {
+  channelIsReady,
+  friendlyError,
+  testChannel,
+  testChannelProtocols,
+  validateChannel,
+} from '@/lib/provider'
 import { channelFingerprint, protocolLabels } from '@/lib/channels'
 import {
   newChannel,
@@ -86,13 +95,16 @@ function ChannelEditor({
       notify(friendlyError(e), true)
     }
   }
-  const test = async () => {
+  const test = async (full = false) => {
     controller.current = new AbortController()
     setBusy(true)
+    setProgress(full ? '正在检查完整协议…' : '正在检查连接与流式传输…')
     try {
       validateChannel(draft)
       await db.channels.put(draft)
-      const capability = await testChannel(draft, controller.current.signal, undefined, setProgress)
+      const capability = full
+        ? await testChannelProtocols(draft, controller.current.signal, setProgress)
+        : await testChannel(draft, controller.current.signal, undefined, setProgress)
       const next = await commitChannelCapability(draft, capability)
       if (!next) {
         const current = await db.channels.get(draft.id)
@@ -103,7 +115,9 @@ function ChannelEditor({
       setDraft(next)
       notify(
         capability.ok
-          ? `渠道测试通过，使用 ${protocolLabels[capability.protocol!]}。`
+          ? full
+            ? '完整叙事、论坛和压缩协议测试通过。'
+            : `渠道测试通过，使用 ${protocolLabels[capability.protocol!]}。`
           : (capability.error ?? '渠道测试未通过。'),
         !capability.ok,
       )
@@ -116,7 +130,14 @@ function ChannelEditor({
         )
         return
       }
-      notify(friendlyError(e), true)
+      const error = friendlyError(e)
+      const capability: ChannelCapability =
+        full && channelIsReady(draft)
+          ? { ...draft.capability!, protocols: false, error }
+          : { fingerprint: channelFingerprint(draft), testedAt: Date.now(), ok: false, error }
+      const next = await commitChannelCapability(draft, capability)
+      if (next) setDraft(next)
+      notify(error, true)
     } finally {
       setBusy(false)
       setProgress('')
@@ -239,12 +260,23 @@ function ChannelEditor({
               step={1024}
               help="默认 32,768；按模型实际容量填写。输入占用达到 85% 或输出空间不足时自动压缩。"
             />
+            <FormField
+              label="请求等待上限（秒）"
+              type="number"
+              min={0}
+              value={(draft.requestTimeoutMs ?? 300000) / 1000}
+              onChange={(v) => update('requestTimeoutMs', Number(v) * 1000)}
+              help="限制首个内容和后续内容的等待时间；持续返回内容的长回复可继续生成。0 表示不限。"
+            />
           </FieldGroup>
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => void save()}>保存渠道</Button>
             <Button variant="outline" onClick={() => void test()}>
               {busy ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}
               测试渠道
+            </Button>
+            <Button variant="outline" onClick={() => void test(true)}>
+              完整协议测试
             </Button>
             <Button variant="secondary" disabled={!channelIsReady(draft)} onClick={onUse}>
               <Check />
@@ -264,11 +296,12 @@ function ChannelEditor({
             </Button>
           </div>
         )}
-        {draft.capability?.ok && (
+        {channelIsReady(draft) && (
           <p className="mt-3 text-sm text-success">
-            测试通过 · {formatDate(draft.capability.testedAt)}
+            测试通过 · {draft.capability?.protocols ? '完整协议' : '连接、结构化与流式'} ·{' '}
+            {formatDate(draft.capability!.testedAt)}
             {' · 当前协议：'}
-            {draft.capability.protocol && protocolLabels[draft.capability.protocol]}
+            {draft.capability?.protocol && protocolLabels[draft.capability.protocol]}
           </p>
         )}
         {draft.capability?.checks && (
@@ -732,19 +765,14 @@ export function ArchivesSheet({
   const [renameId, setRenameId] = useState('')
   const [name, setName] = useState('')
   const [pendingImport, setPendingImport] = useState<unknown>(null)
+  const [importMode, setImportMode] = useState<'replace' | 'merge'>('replace')
+  const [search, setSearch] = useState('')
   const storage = useSyncExternalStore(db.persistence.subscribe, db.persistence.getStatus)
   const importRef = useRef<HTMLInputElement>(null)
   const download = async () => {
     try {
       const data = await exportSave()
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
-      )
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = `宴雎-v2-${new Date().toISOString().slice(0, 10)}.json`
-      anchor.click()
-      URL.revokeObjectURL(url)
+      downloadJson(data, saveFileName())
       notify('全部存档、人设、渠道和外观已导出。')
     } catch (e) {
       notify(friendlyError(e), true)
@@ -792,10 +820,36 @@ export function ArchivesSheet({
             <Download />
             导出全部
           </Button>
-          <Button variant="outline" disabled={disabled} onClick={() => importRef.current?.click()}>
+          <Button
+            variant="outline"
+            disabled={disabled}
+            onClick={() => {
+              setImportMode('replace')
+              importRef.current?.click()
+            }}
+          >
             <Upload />
             导入
           </Button>
+          <Button
+            variant="outline"
+            disabled={disabled}
+            onClick={() => {
+              setImportMode('merge')
+              importRef.current?.click()
+            }}
+          >
+            合并导入
+          </Button>
+          <Field>
+            <FieldLabel htmlFor="archive-search">搜索存档</FieldLabel>
+            <Input
+              id="archive-search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="输入篇章名称…"
+            />
+          </Field>
           <input
             ref={importRef}
             type="file"
@@ -817,49 +871,63 @@ export function ArchivesSheet({
           />
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
-          {archives.map((a) => (
-            <Card key={a.id} size="sm">
-              <CardHeader>
-                <CardTitle>{a.name}</CardTitle>
-                <CardDescription>
-                  {formatDate(a.updatedAt)}
-                  {a.summary && ' · 已压缩上下文'}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-wrap items-center gap-1">
-                  <Button
-                    disabled={disabled}
-                    variant={a.id === activeId ? 'secondary' : 'outline'}
-                    onClick={() => {
-                      onSelect(a.id)
-                      onClose()
-                    }}
-                  >
-                    {a.id === activeId ? '当前存档' : '载入'}
-                  </Button>
-                  <IconButton
-                    label={`重命名 ${a.name}`}
-                    disabled={disabled}
-                    onClick={() => {
-                      setRenameId(a.id)
-                      setName(a.name)
-                    }}
-                  >
-                    <PenLine />
-                  </IconButton>
-                  <IconButton
-                    label={`删除 ${a.name}`}
-                    disabled={disabled}
-                    variant="destructive"
-                    onClick={() => setRemoveId(a.id)}
-                  >
-                    <Trash2 />
-                  </IconButton>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+          {archives
+            .filter((archive) =>
+              archive.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+            )
+            .map((a) => (
+              <Card key={a.id} size="sm">
+                <CardHeader>
+                  <CardTitle>{a.name}</CardTitle>
+                  <CardDescription>
+                    {formatDate(a.updatedAt)}
+                    {a.summary && ' · 已压缩上下文'}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <Button
+                      disabled={disabled}
+                      variant={a.id === activeId ? 'secondary' : 'outline'}
+                      onClick={() => {
+                        onSelect(a.id)
+                        onClose()
+                      }}
+                    >
+                      {a.id === activeId ? '当前存档' : '载入'}
+                    </Button>
+                    <IconButton
+                      label={`导出 ${a.name}`}
+                      onClick={() => {
+                        void exportArchive(a.id)
+                          .then((data) => downloadJson(data, saveFileName(a.name)))
+                          .catch((error) => notify(friendlyError(error), true))
+                      }}
+                    >
+                      <Download />
+                    </IconButton>
+                    <IconButton
+                      label={`重命名 ${a.name}`}
+                      disabled={disabled}
+                      onClick={() => {
+                        setRenameId(a.id)
+                        setName(a.name)
+                      }}
+                    >
+                      <PenLine />
+                    </IconButton>
+                    <IconButton
+                      label={`删除 ${a.name}`}
+                      disabled={disabled}
+                      variant="destructive"
+                      onClick={() => setRemoveId(a.id)}
+                    >
+                      <Trash2 />
+                    </IconButton>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
         </div>
         <ConfirmDialog
           open={!!removeId}
@@ -867,10 +935,12 @@ export function ArchivesSheet({
           title="删除存档？"
           detail="将删除这个篇章的全部消息和摘要。建议先导出。"
           onConfirm={async () => {
-            await db.transaction('rw', db.messages, db.archives, async () => {
-              await db.messages.where('archiveId').equals(removeId).delete()
-              await db.archives.delete(removeId)
-            })
+            await withArchiveOperation(removeId, () =>
+              db.transaction('rw', db.messages, db.archives, async () => {
+                await db.messages.where('archiveId').equals(removeId).delete()
+                await db.archives.delete(removeId)
+              }),
+            )
             const next = await db.archives.toCollection().first()
             if (removeId === activeId) onSelect(next?.id || (await createArchive()).id)
           }}
@@ -885,8 +955,11 @@ export function ArchivesSheet({
             <Button
               disabled={!name.trim()}
               onClick={() => {
-                void db.archives.update(renameId, { name: name.trim() })
-                setRenameId('')
+                void withArchiveOperation(renameId, async () => {
+                  await db.archives.update(renameId, { name: name.trim() })
+                })
+                  .then(() => setRenameId(''))
+                  .catch((error) => notify(friendlyError(error), true))
               }}
             >
               保存名称
@@ -896,19 +969,19 @@ export function ArchivesSheet({
         <ConfirmDialog
           open={pendingImport !== null}
           onClose={() => setPendingImport(null)}
-          title="导入并替换当前资料？"
-          detail="已经校验文件。导入会替换当前浏览器的全部存档、人设、渠道和设置；可先取消并导出。"
+          title={importMode === 'merge' ? '合并导入存档？' : '导入并替换当前资料？'}
+          detail={
+            importMode === 'merge'
+              ? '已经校验文件。保留现有资料和外观设置；编号冲突的篇章会作为独立副本导入。'
+              : '已经校验文件。导入会替换当前浏览器的全部存档、人设、渠道和设置；可先取消并导出。'
+          }
           onConfirm={async () => {
-            try {
-              const data = await importSave(pendingImport)
-              await initializeStorage()
-              await db.persistence.flush()
-              onSelect(data.settings.activeArchiveId || (await createArchive()).id)
-              notify('存档导入完成。渠道须重新测试。')
-              onClose()
-            } catch (e) {
-              notify(friendlyError(e), true)
-            }
+            const data = await importSave(pendingImport, db, false, importMode)
+            await initializeStorage()
+            await db.persistence.flush()
+            onSelect(data.settings.activeArchiveId || (await createArchive()).id)
+            notify('存档导入完成。渠道须重新测试。')
+            onClose()
           }}
         />
       </SheetContent>
