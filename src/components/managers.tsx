@@ -16,7 +16,7 @@ import {
   friendlyError,
   testChannel,
   testChannelProtocols,
-  validateChannel,
+  channelValidationErrors,
 } from '@/lib/provider'
 import { channelFingerprint, protocolLabels } from '@/lib/channels'
 import {
@@ -31,7 +31,7 @@ import {
   type Settings,
 } from '@/lib/types'
 import { Button } from './ui/button'
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from './ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from './ui/sheet'
 import { FieldGroup, Field, FieldLabel, FieldDescription } from './ui/field'
@@ -45,6 +45,8 @@ import {
   SelectItem,
 } from './ui/select'
 import { Badge } from './ui/badge'
+import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
+import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from './ui/empty'
 import { ConfirmDialog, FormField, IconButton } from './shared'
 import {
   Check,
@@ -55,6 +57,10 @@ import {
   Upload,
   PenLine,
   LoaderCircle,
+  Eye,
+  EyeOff,
+  SlidersHorizontal,
+  VenetianMask,
 } from 'lucide-react'
 
 export type Notify = (message: string, error?: boolean) => void
@@ -66,46 +72,104 @@ function ChannelEditor({
   notify,
   onUse,
   disabled,
+  onDirtyChange,
 }: {
   channel: Channel
   active: boolean
   notify: Notify
-  onUse: () => void
+  onUse: (channel: Channel) => Promise<void>
   disabled: boolean
+  onDirtyChange: (dirty: boolean) => void
 }) {
-  const [draft, setDraft] = useState(channel)
+  const [draft, setDraft] = useState<
+    Omit<Channel, 'temperature' | 'maxOutputTokens' | 'contextWindow'> & {
+      temperature: number | string | null
+      maxOutputTokens: number | string
+      contextWindow: number | string
+    }
+  >(channel)
+  const [errors, setErrors] = useState<Partial<Record<keyof Channel, string>>>({})
+  const [saving, setSaving] = useState(false)
+  const [showKey, setShowKey] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
+  const value: Channel = {
+    ...draft,
+    temperature: draft.temperature === null ? null : Number(draft.temperature),
+    maxOutputTokens: Number(draft.maxOutputTokens),
+    contextWindow: Number(draft.contextWindow),
+  }
+  const dirty =
+    JSON.stringify({ ...draft, capability: undefined, calibration: undefined }) !==
+    JSON.stringify({ ...channel, capability: undefined, calibration: undefined })
+  useEffect(() => {
+    onDirtyChange(dirty)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState('')
   const [remove, setRemove] = useState(false)
   const controller = useRef<AbortController | null>(null)
   useEffect(() => () => controller.current?.abort(), [])
-  const update = (key: keyof Channel, value: string | number | null) =>
+  const update = (key: keyof Channel, value: string | number | null) => {
+    setErrors((previous) => ({ ...previous, [key]: undefined }))
     setDraft((d) => ({
       ...d,
       [key]: value,
       capability: key === 'name' ? d.capability : undefined,
       calibration: key === 'name' ? d.calibration : undefined,
     }))
-  const save = async () => {
+  }
+  const validated = () => {
+    const next = {
+      ...value,
+      name: value.name.trim(),
+      baseUrl: value.baseUrl.trim(),
+      apiKey: value.apiKey.trim(),
+      model: value.model.trim(),
+    }
+    const issues = channelValidationErrors(next)
+    setErrors(issues)
+    if (Object.keys(issues).length) {
+      requestAnimationFrame(() =>
+        formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
+      )
+      return undefined
+    }
+    return next
+  }
+  const save = async (showFeedback = true) => {
+    const next = validated()
+    if (!next) return
+    setSaving(true)
     try {
-      validateChannel(draft)
-      await db.channels.put(draft)
-      notify('渠道已保存；通过测试后可用于聊天。')
+      await db.channels.put(next)
+      setDraft(next)
+      if (showFeedback)
+        notify(
+          channelIsReady(next)
+            ? '渠道已保存，可以继续聊天。'
+            : '渠道已保存；通过测试后可用于聊天。',
+        )
+      return next
     } catch (e) {
       notify(friendlyError(e), true)
+    } finally {
+      setSaving(false)
     }
   }
   const test = async (full = false) => {
+    const candidate = validated()
+    if (!candidate) return
     controller.current = new AbortController()
     setBusy(true)
     setProgress(full ? '正在检查完整协议…' : '正在检查连接与流式传输…')
     try {
-      validateChannel(draft)
-      await db.channels.put(draft)
+      await db.channels.put(candidate)
+      setDraft(candidate)
       const capability = full
-        ? await testChannelProtocols(draft, controller.current.signal, setProgress)
-        : await testChannel(draft, controller.current.signal, undefined, setProgress)
-      const next = await commitChannelCapability(draft, capability)
+        ? await testChannelProtocols(candidate, controller.current.signal, setProgress)
+        : await testChannel(candidate, controller.current.signal, undefined, setProgress)
+      const next = await commitChannelCapability(candidate, capability)
       if (!next) {
         const current = await db.channels.get(draft.id)
         if (current) setDraft(current)
@@ -124,7 +188,7 @@ function ChannelEditor({
     } catch (e) {
       if (controller.current.signal.aborted) {
         notify(
-          channelIsReady(draft)
+          channelIsReady(value)
             ? '渠道测试已取消，原测试结果已保留。'
             : '渠道测试已取消，须完成测试后使用此配置。',
         )
@@ -132,10 +196,10 @@ function ChannelEditor({
       }
       const error = friendlyError(e)
       const capability: ChannelCapability =
-        full && channelIsReady(draft)
-          ? { ...draft.capability!, protocols: false, error }
-          : { fingerprint: channelFingerprint(draft), testedAt: Date.now(), ok: false, error }
-      const next = await commitChannelCapability(draft, capability)
+        full && channelIsReady(candidate)
+          ? { ...candidate.capability!, protocols: false, error }
+          : { fingerprint: channelFingerprint(candidate), testedAt: Date.now(), ok: false, error }
+      const next = await commitChannelCapability(candidate, capability)
       if (next) setDraft(next)
       notify(error, true)
     } finally {
@@ -144,205 +208,276 @@ function ChannelEditor({
     }
   }
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle>{draft.name}</CardTitle>
-          {active && <Badge>当前渠道</Badge>}
-        </div>
-        <CardDescription>
-          请求直接从你的浏览器发送到渠道。服务端须支持严格 JSON Schema 和跨域访问。
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <fieldset disabled={busy || disabled} className="flex min-w-0 flex-col gap-5">
-          <FieldGroup>
-            <FormField
-              label="渠道名称"
-              value={draft.name}
-              onChange={(v) => update('name', v)}
-              autoComplete="off"
-            />
-            <FormField
-              label="Base URL"
-              value={draft.baseUrl}
-              onChange={(v) => update('baseUrl', v)}
-              placeholder="https://example.com/v1"
-              type="url"
-              help="填写 API 根地址（通常以 /v1 结尾），不含 /responses 或 /chat/completions。"
-              autoComplete="url"
-            />
-            <FormField
-              label="API Key"
-              value={draft.apiKey}
-              onChange={(v) => update('apiKey', v)}
-              type="password"
-              autoComplete="off"
-            />
-            <FormField
-              label="模型"
-              value={draft.model}
-              onChange={(v) => update('model', v)}
-              placeholder="填写渠道提供的模型 ID"
-              autoComplete="off"
-            />
-            <Field>
-              <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 协议</FieldLabel>
-              <Select
-                value={draft.apiMode}
-                disabled={busy || disabled}
-                onValueChange={(value) => update('apiMode', value as ApiMode)}
-              >
-                <SelectTrigger id={`api-mode-${draft.id}`} className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="auto">自动探测（Responses 优先）</SelectItem>
-                    <SelectItem value="responses">Responses</SelectItem>
-                    <SelectItem value="chat-completions">Chat Completions</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                自动测试两种协议的非流式和流式严格输出，最多发送 4
-                个短请求。正式生成使用测试选定的协议。
-              </FieldDescription>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor={`temperature-mode-${draft.id}`}>温度设置</FieldLabel>
-              <Select
-                value={draft.temperature === null ? 'default' : 'custom'}
-                disabled={busy || disabled}
-                onValueChange={(value) => update('temperature', value === 'default' ? null : 0.9)}
-              >
-                <SelectTrigger id={`temperature-mode-${draft.id}`} className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="default">模型默认</SelectItem>
-                    <SelectItem value="custom">自定义温度</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                模型默认会省略温度参数，适用于不接受自定义温度的模型。
-              </FieldDescription>
-            </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {draft.temperature !== null && (
-                <FormField
-                  label="温度"
-                  type="number"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={draft.temperature}
-                  onChange={(v) => update('temperature', Number(v))}
-                />
-              )}
-              <FormField
-                label="输出上限（tokens）"
-                type="number"
-                min={128}
-                step={128}
-                value={draft.maxOutputTokens}
-                onChange={(v) => update('maxOutputTokens', Number(v))}
-              />
-            </div>
-            <FormField
-              label="上下文容量（tokens）"
-              value={draft.contextWindow}
-              onChange={(v) => update('contextWindow', Number(v))}
-              type="number"
-              min={1024}
-              step={1024}
-              help="默认 32,768；按模型实际容量填写。输入占用达到 85% 或输出空间不足时自动压缩。"
-            />
-            <FormField
-              label="请求等待上限（秒）"
-              type="number"
-              min={0}
-              value={(draft.requestTimeoutMs ?? 300000) / 1000}
-              onChange={(v) => update('requestTimeoutMs', Number(v) * 1000)}
-              help="限制首个内容和后续内容的等待时间；持续返回内容的长回复可继续生成。0 表示不限。"
-            />
-          </FieldGroup>
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void save()}>保存渠道</Button>
-            <Button variant="outline" onClick={() => void test()}>
-              {busy ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}
-              测试渠道
-            </Button>
-            <Button variant="outline" onClick={() => void test(true)}>
-              完整协议测试
-            </Button>
-            <Button variant="secondary" disabled={!channelIsReady(draft)} onClick={onUse}>
-              <Check />
-              使用此渠道
-            </Button>
-            <IconButton label="删除渠道" variant="destructive" onClick={() => setRemove(true)}>
-              <Trash2 />
-            </IconButton>
+    <form
+      ref={formRef}
+      noValidate
+      className="flex min-h-0 min-w-0 flex-col"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (!busy && !saving && !disabled) void save()
+      }}
+    >
+      <Card className="min-h-0 flex-1">
+        <CardHeader className="compact-height:hidden">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>{draft.name.trim() || '未命名渠道'}</CardTitle>
+            {active && <Badge>当前渠道</Badge>}
           </div>
-        </fieldset>
-        {busy && (
-          <div className="mt-3 flex items-center gap-2" role="status">
-            <LoaderCircle className="animate-spin" />
-            {progress || '正在测试…'}
-            <Button variant="ghost" onClick={() => controller.current?.abort()}>
+          <CardDescription>填写服务商提供的连接信息，测试通过后即可开始聊天。</CardDescription>
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4">
+          <fieldset disabled={busy || saving || disabled} className="flex min-w-0 flex-col gap-5">
+            <FieldGroup>
+              <FormField
+                label="渠道名称"
+                name="name"
+                error={errors.name}
+                value={draft.name}
+                onChange={(v) => update('name', v)}
+                autoComplete="off"
+              />
+              <FormField
+                label="Base URL"
+                name="baseUrl"
+                error={errors.baseUrl}
+                value={draft.baseUrl}
+                onChange={(v) => update('baseUrl', v)}
+                placeholder="https://example.com/v1"
+                type="url"
+                help="填写 API 根地址（通常以 /v1 结尾），不含 /responses 或 /chat/completions。"
+                autoComplete="url"
+              />
+              <FormField
+                label="API Key"
+                name="apiKey"
+                error={errors.apiKey}
+                value={draft.apiKey}
+                onChange={(v) => update('apiKey', v)}
+                type={showKey ? 'text' : 'password'}
+                endAddon={
+                  <IconButton
+                    type="button"
+                    label={showKey ? '隐藏 Key' : '显示 Key'}
+                    aria-pressed={showKey}
+                    onClick={() => setShowKey((visible) => !visible)}
+                  >
+                    {showKey ? <EyeOff /> : <Eye />}
+                  </IconButton>
+                }
+                autoComplete="off"
+              />
+              <FormField
+                label="模型"
+                name="model"
+                error={errors.model}
+                value={draft.model}
+                onChange={(v) => update('model', v)}
+                placeholder="填写渠道提供的模型 ID"
+                autoComplete="off"
+              />
+              <Field>
+                <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 协议</FieldLabel>
+                <Select
+                  value={draft.apiMode}
+                  disabled={busy || saving || disabled}
+                  onValueChange={(value) => update('apiMode', value as ApiMode)}
+                >
+                  <SelectTrigger id={`api-mode-${draft.id}`} className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="auto">自动探测（Responses 优先）</SelectItem>
+                      <SelectItem value="responses">Responses</SelectItem>
+                      <SelectItem value="chat-completions">Chat Completions</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  自动测试两种协议的非流式和流式严格输出，最多发送 4
+                  个短请求。正式生成使用测试选定的协议。
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`temperature-mode-${draft.id}`}>温度设置</FieldLabel>
+                <Select
+                  value={draft.temperature === null ? 'default' : 'custom'}
+                  disabled={busy || saving || disabled}
+                  onValueChange={(value) => update('temperature', value === 'default' ? null : 0.9)}
+                >
+                  <SelectTrigger id={`temperature-mode-${draft.id}`} className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="default">模型默认</SelectItem>
+                      <SelectItem value="custom">自定义温度</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  模型默认会省略温度参数，适用于不接受自定义温度的模型。
+                </FieldDescription>
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {draft.temperature !== null && (
+                  <FormField
+                    label="温度"
+                    name="temperature"
+                    error={errors.temperature}
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={draft.temperature}
+                    onChange={(v) => update('temperature', v)}
+                  />
+                )}
+                <FormField
+                  label="输出上限（tokens）"
+                  name="maxOutputTokens"
+                  error={errors.maxOutputTokens}
+                  type="number"
+                  min={128}
+                  step={128}
+                  value={draft.maxOutputTokens}
+                  onChange={(v) => update('maxOutputTokens', v)}
+                />
+              </div>
+              <FormField
+                label="上下文容量（tokens）"
+                name="contextWindow"
+                error={errors.contextWindow}
+                value={draft.contextWindow}
+                onChange={(v) => update('contextWindow', v)}
+                type="number"
+                min={1024}
+                step={1024}
+                help="默认 32,768；按模型实际容量填写。输入占用达到 85% 或输出空间不足时自动压缩。"
+              />
+              <FormField
+                label="请求等待上限（秒）"
+                name="requestTimeoutMs"
+                error={errors.requestTimeoutMs}
+                type="number"
+                min={0}
+                value={(draft.requestTimeoutMs ?? 300000) / 1000}
+                onChange={(v) => update('requestTimeoutMs', Number(v) * 1000)}
+                help="限制首个内容和后续内容的等待时间；持续返回内容的长回复可继续生成。0 表示不限。"
+              />
+            </FieldGroup>
+          </fieldset>
+          {busy && (
+            <div className="mt-3 flex flex-col gap-2" role="status">
+              <span>{progress || '正在测试…'}</span>
+            </div>
+          )}
+
+          {draft.capability?.ok && (
+            <p className="mt-3 text-sm text-success">
+              测试通过 · {draft.capability.protocols ? '完整协议' : '连接、结构化与流式'} ·{' '}
+              {formatDate(draft.capability.testedAt)}
+              {' · 当前协议：'}
+              {draft.capability.protocol && protocolLabels[draft.capability.protocol]}
+            </p>
+          )}
+          {draft.capability?.checks && (
+            <div className="mt-3 flex flex-col gap-2" aria-label="协议测试结果">
+              {(['responses', 'chat-completions'] as ApiProtocol[]).map((protocol) => {
+                const check = draft.capability?.checks?.[protocol]
+                if (!check) return null
+                const labels = { passed: '通过', failed: '失败', untested: '未测试' }
+                return (
+                  <div key={protocol} className="text-sm">
+                    <p>
+                      {protocolLabels[protocol]} · 非流式：{labels[check.nonStreaming]} · 流式：
+                      {labels[check.streaming]}
+                    </p>
+                    {check.error && (
+                      <p className="wrap-break-word text-muted-foreground">{check.error}</p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {draft.capability?.error && (
+            <p className="mt-3 wrap-break-word text-sm text-destructive" role="alert">
+              {draft.capability.error}
+            </p>
+          )}
+          <ConfirmDialog
+            open={remove}
+            onClose={() => setRemove(false)}
+            title="删除渠道？"
+            detail="只删除此渠道配置，现有聊天和存档保留。"
+            onConfirm={async () => {
+              await db.channels.delete(channel.id)
+              const s = await db.settings.get('app')
+              if (s?.activeChannelId === channel.id)
+                await db.settings.update('app', { activeChannelId: '' })
+            }}
+          />
+        </CardContent>
+        <CardFooter className="shrink-0 flex-wrap gap-2">
+          <Button type="submit" disabled={busy || saving || disabled}>
+            {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+            保存渠道
+          </Button>
+          {busy ? (
+            <Button type="button" variant="outline" onClick={() => controller.current?.abort()}>
+              <LoaderCircle data-icon="inline-start" className="animate-spin" />
               取消测试
             </Button>
-          </div>
-        )}
-        {channelIsReady(draft) && (
-          <p className="mt-3 text-sm text-success">
-            测试通过 · {draft.capability?.protocols ? '完整协议' : '连接、结构化与流式'} ·{' '}
-            {formatDate(draft.capability!.testedAt)}
-            {' · 当前协议：'}
-            {draft.capability?.protocol && protocolLabels[draft.capability.protocol]}
-          </p>
-        )}
-        {draft.capability?.checks && (
-          <div className="mt-3 flex flex-col gap-2" aria-label="协议测试结果">
-            {(['responses', 'chat-completions'] as ApiProtocol[]).map((protocol) => {
-              const check = draft.capability?.checks?.[protocol]
-              if (!check) return null
-              const labels = { passed: '通过', failed: '失败', untested: '未测试' }
-              return (
-                <div key={protocol} className="text-sm">
-                  <p>
-                    {protocolLabels[protocol]} · 非流式：{labels[check.nonStreaming]} · 流式：
-                    {labels[check.streaming]}
-                  </p>
-                  {check.error && (
-                    <p className="wrap-break-word text-muted-foreground">{check.error}</p>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-        {draft.capability?.error && (
-          <p className="mt-3 wrap-break-word text-sm text-destructive" role="alert">
-            {draft.capability.error}
-          </p>
-        )}
-        <ConfirmDialog
-          open={remove}
-          onClose={() => setRemove(false)}
-          title="删除渠道？"
-          detail="只删除此渠道配置，现有聊天和存档保留。"
-          onConfirm={async () => {
-            await db.channels.delete(channel.id)
-            const s = await db.settings.get('app')
-            if (s?.activeChannelId === channel.id)
-              await db.settings.update('app', { activeChannelId: '' })
-          }}
-        />
-      </CardContent>
-    </Card>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving || disabled}
+              onClick={() => void test()}
+            >
+              <FlaskConical data-icon="inline-start" />
+              测试渠道
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy || saving || disabled}
+            onClick={() => void test(true)}
+          >
+            完整协议测试
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy || saving || disabled || !channelIsReady(value)}
+            onClick={async () => {
+              const saved = await save(false)
+              if (saved) {
+                try {
+                  await onUse(saved)
+                } catch (error) {
+                  notify(friendlyError(error), true)
+                }
+              }
+            }}
+          >
+            <Check data-icon="inline-start" />
+            使用此渠道
+          </Button>
+          <IconButton
+            type="button"
+            label="删除渠道"
+            disabled={busy || saving || disabled}
+            variant="ghost"
+            onClick={() => setRemove(true)}
+          >
+            <Trash2 />
+          </IconButton>
+        </CardFooter>
+      </Card>
+    </form>
   )
 }
 export function ChannelsDialog({
@@ -361,6 +496,8 @@ export function ChannelsDialog({
   disabled: boolean
 }) {
   const [selectedId, setSelectedId] = useState('')
+  const [dirty, setDirty] = useState(false)
+  const { guard, confirmation } = useUnsavedChanges(dirty)
   const [testingAll, setTestingAll] = useState(false)
   const [progress, setProgress] = useState('')
   const controller = useRef<AbortController | null>(null)
@@ -411,24 +548,32 @@ export function ChannelsDialog({
       open={open}
       onOpenChange={(v) => {
         if (!v) {
-          controller.current?.abort()
-          onClose()
+          guard(() => {
+            controller.current?.abort()
+            onClose()
+          })
         }
       }}
     >
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:page-width">
+      <DialogContent size="wide" className="editor-height overflow-hidden compact-height:gap-2">
         <DialogHeader>
           <DialogTitle>渠道管理</DialogTitle>
-          <DialogDescription>保存多个服务商配置，通过测试后可以随时切换。</DialogDescription>
+          <DialogDescription className="compact-height:hidden">
+            保存多个服务商配置，通过测试后可以随时切换。
+          </DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap gap-2">
           <Button
             disabled={disabled || testingAll}
-            onClick={() => {
-              const c = newChannel()
-              void db.channels.add(c)
-              setSelectedId(c.id)
-            }}
+            onClick={() =>
+              guard(() => {
+                const c = newChannel()
+                void db.channels
+                  .add(c)
+                  .then(() => setSelectedId(c.id))
+                  .catch((e) => notify(friendlyError(e), true))
+              })
+            }
           >
             <Plus />
             新建渠道
@@ -441,22 +586,26 @@ export function ChannelsDialog({
             <Button
               disabled={disabled || !channels.length}
               variant="outline"
-              onClick={() => void testAll()}
+              onClick={() => guard(() => void testAll())}
             >
               测试全部
             </Button>
           )}
         </div>
         {testingAll && <p role="status">{progress || '正在测试渠道…'}</p>}
-        <div className="grid gap-4 md:grid-cols-[1fr_2fr]">
-          <nav aria-label="渠道列表" className="flex flex-col gap-2">
+        <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4 md:grid-cols-[1fr_2fr] md:grid-rows-1">
+          <nav
+            aria-label="渠道列表"
+            className="flex min-w-0 gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-y-auto"
+          >
             {channels.map((c) => (
               <Button
                 key={c.id}
                 variant={selected?.id === c.id ? 'secondary' : 'ghost'}
-                className="justify-start overflow-hidden"
+                className="min-w-0 justify-start overflow-hidden md:shrink-0"
+                aria-current={selected?.id === c.id ? 'true' : undefined}
                 disabled={testingAll}
-                onClick={() => setSelectedId(c.id)}
+                onClick={() => selected?.id !== c.id && guard(() => setSelectedId(c.id))}
               >
                 {channelIsReady(c) && <Check />}
                 <span className="truncate">{c.name}</span>
@@ -464,21 +613,42 @@ export function ChannelsDialog({
             ))}
             {!channels.length && <p className="text-muted-foreground">从「新建渠道」开始。</p>}
           </nav>
+          {!selected && (
+            <Empty className="md:col-span-2">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <SlidersHorizontal />
+                </EmptyMedia>
+                <EmptyTitle>连接你的第一个渠道</EmptyTitle>
+                <EmptyDescription>
+                  点击「新建渠道」，填写服务商提供的地址、Key 和模型。通过测试后即可开始聊天。
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
           {selected && (
             <ChannelEditor
               key={selected.id + String(testingAll)}
               channel={selected}
+              onDirtyChange={setDirty}
               active={settings.activeChannelId === selected.id}
               notify={notify}
               disabled={disabled || testingAll}
-              onUse={() => {
-                void db.settings.update('app', { activeChannelId: selected.id })
-                notify(`已切换到 ${selected.name}`)
+              onUse={async (channel) => {
+                await db.settings.update('app', { activeChannelId: channel.id })
+                notify(`已切换到 ${channel.name}`)
               }}
             />
           )}
         </div>
       </DialogContent>
+      <ConfirmDialog
+        {...confirmation}
+        title="放弃未保存的修改？"
+        detail="修改还没有保存。可以取消返回编辑，或放弃修改后继续。"
+        confirmLabel="放弃修改"
+        destructive={false}
+      />
     </Dialog>
   )
 }
@@ -488,90 +658,138 @@ function PersonaEditor({
   active,
   notify,
   disabled,
+  onDirtyChange,
 }: {
   persona: Persona
   active: boolean
   notify: Notify
   disabled: boolean
+  onDirtyChange: (dirty: boolean) => void
 }) {
   const [draft, setDraft] = useState(persona)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
+  const dirty = JSON.stringify(draft) !== JSON.stringify(persona)
+  useEffect(() => {
+    onDirtyChange(dirty)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
+  const save = async (usePersona = false) => {
+    if (!draft.name.trim()) {
+      setError('请输入人设姓名。')
+      formRef.current?.querySelector<HTMLInputElement>('input')?.focus()
+      return
+    }
+    setSaving(true)
+    try {
+      const value = {
+        ...draft,
+        name: draft.name.trim(),
+        gender: draft.gender.trim(),
+        identity: draft.identity.trim(),
+        prefer: draft.prefer.trim(),
+        force: draft.force.trim(),
+      }
+      await db.personas.put(value)
+      if (usePersona) await db.settings.update('app', { activePersonaId: persona.id })
+      setDraft(value)
+      notify(usePersona ? '当前人设已更新。' : '人设已保存。')
+    } catch (e) {
+      notify(friendlyError(e), true)
+    } finally {
+      setSaving(false)
+    }
+  }
   const [remove, setRemove] = useState(false)
-  const update = (key: keyof Persona, value: string) => setDraft((d) => ({ ...d, [key]: value }))
+  const update = (key: keyof Persona, value: string) => {
+    setError('')
+    setDraft((d) => ({ ...d, [key]: value }))
+  }
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{draft.name}</CardTitle>
-        <CardDescription>
-          {active ? '当前人设 · 每轮都会发送给模型' : '保存后可设为当前人设'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <fieldset disabled={disabled} className="flex flex-col gap-5">
-          <FieldGroup>
-            <FormField label="姓名" value={draft.name} onChange={(v) => update('name', v)} />
-            <FormField label="性别" value={draft.gender} onChange={(v) => update('gender', v)} />
-            <FormField
-              label="身份"
-              value={draft.identity}
-              onChange={(v) => update('identity', v)}
-            />
-            <FormField
-              label="喜好"
-              value={draft.prefer}
-              onChange={(v) => update('prefer', v)}
-              multiline
-            />
-            <FormField
-              label="强制指令"
-              value={draft.force}
-              onChange={(v) => update('force', v)}
-              multiline
-              help="每一轮均注入到角色设定，控制你的人设与叙事规则。"
-            />
-          </FieldGroup>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              onClick={() => {
-                if (!draft.name.trim()) {
-                  notify('姓名不能为空。', true)
-                  return
-                }
-                void db.personas.put(draft).then(() => notify('人设已保存。'))
-              }}
-            >
-              保存人设
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                if (!draft.name.trim()) return
-                void db.personas
-                  .put(draft)
-                  .then(() => db.settings.update('app', { activePersonaId: persona.id }))
-                  .then(() => notify('当前人设已更新。'))
-              }}
-            >
-              使用此人设
-            </Button>
-            <IconButton label="删除人设" variant="destructive" onClick={() => setRemove(true)}>
-              <Trash2 />
-            </IconButton>
-          </div>
-        </fieldset>
-        <ConfirmDialog
-          open={remove}
-          onClose={() => setRemove(false)}
-          title="删除人设？"
-          detail="聊天记录会保留，可以重新创建人设。"
-          onConfirm={async () => {
-            await db.personas.delete(persona.id)
-            const s = await db.settings.get('app')
-            if (s?.activePersonaId === persona.id)
-              await db.settings.update('app', { activePersonaId: '' })
-          }}
-        />
-      </CardContent>
-    </Card>
+    <form
+      ref={formRef}
+      className="flex min-h-0 min-w-0 flex-col"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!saving && !disabled) void save()
+      }}
+    >
+      <Card className="min-h-0 flex-1">
+        <CardHeader className="compact-height:hidden">
+          <CardTitle>{draft.name.trim() || '未命名人设'}</CardTitle>
+          <CardDescription>
+            {active ? '当前人设 · 每轮都会发送给模型' : '保存后可设为当前人设'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4">
+          <fieldset disabled={disabled || saving} className="flex flex-col gap-5">
+            <FieldGroup>
+              <FormField
+                name="name"
+                error={error}
+                label="姓名"
+                value={draft.name}
+                onChange={(v) => update('name', v)}
+              />
+              <FormField label="性别" value={draft.gender} onChange={(v) => update('gender', v)} />
+              <FormField
+                label="身份"
+                value={draft.identity}
+                onChange={(v) => update('identity', v)}
+              />
+              <FormField
+                label="喜好"
+                value={draft.prefer}
+                onChange={(v) => update('prefer', v)}
+                multiline
+              />
+              <FormField
+                label="强制指令"
+                value={draft.force}
+                onChange={(v) => update('force', v)}
+                multiline
+                help="每一轮均注入到角色设定，控制你的人设与叙事规则。"
+              />
+            </FieldGroup>
+          </fieldset>
+          <ConfirmDialog
+            open={remove}
+            onClose={() => setRemove(false)}
+            title="删除人设？"
+            detail="聊天记录会保留，可以重新创建人设。"
+            onConfirm={async () => {
+              await db.personas.delete(persona.id)
+              const s = await db.settings.get('app')
+              if (s?.activePersonaId === persona.id)
+                await db.settings.update('app', { activePersonaId: '' })
+            }}
+          />
+        </CardContent>
+        <CardFooter className="shrink-0 flex-wrap gap-2">
+          <Button type="submit" disabled={disabled || saving}>
+            {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}保存人设
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={disabled || saving}
+            onClick={() => void save(true)}
+          >
+            使用此人设
+          </Button>
+          <IconButton
+            type="button"
+            label="删除人设"
+            variant="ghost"
+            disabled={disabled || saving}
+            onClick={() => setRemove(true)}
+          >
+            <Trash2 />
+          </IconButton>
+        </CardFooter>
+      </Card>
+    </form>
   )
 }
 export function PersonasDialog({
@@ -590,47 +808,73 @@ export function PersonasDialog({
   disabled: boolean
 }) {
   const [id, setId] = useState('')
+  const [dirty, setDirty] = useState(false)
+  const { guard, confirmation } = useUnsavedChanges(dirty)
   const selected =
     personas.find((p) => p.id === id) ??
     personas.find((p) => p.id === settings.activePersonaId) ??
     personas[0]
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:page-width">
+    <Dialog open={open} onOpenChange={(v) => !v && guard(onClose)}>
+      <DialogContent size="wide" className="editor-height overflow-hidden compact-height:gap-2">
         <DialogHeader>
           <DialogTitle>人设管理</DialogTitle>
-          <DialogDescription>你的姓名、身份、喜好与每轮强制指令。</DialogDescription>
+          <DialogDescription className="compact-height:hidden">
+            你的姓名、身份、喜好与每轮强制指令。
+          </DialogDescription>
         </DialogHeader>
         <Button
           className="w-fit"
           disabled={disabled}
-          onClick={() => {
-            const p = newPersona()
-            void db.personas.add(p)
-            setId(p.id)
-          }}
+          onClick={() =>
+            guard(() => {
+              const p = newPersona()
+              void db.personas
+                .add(p)
+                .then(() => setId(p.id))
+                .catch((e) => notify(friendlyError(e), true))
+            })
+          }
         >
           <Plus />
           新建人设
         </Button>
-        <div className="grid gap-4 md:grid-cols-[1fr_2fr]">
-          <nav className="flex flex-col gap-2" aria-label="人设列表">
+        <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4 md:grid-cols-[1fr_2fr] md:grid-rows-1">
+          <nav
+            className="flex min-w-0 gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-y-auto"
+            aria-label="人设列表"
+          >
             {personas.map((p) => (
               <Button
                 key={p.id}
                 variant={selected?.id === p.id ? 'secondary' : 'ghost'}
-                className="justify-start"
-                onClick={() => setId(p.id)}
+                className="min-w-0 justify-start overflow-hidden"
+                aria-current={selected?.id === p.id ? 'true' : undefined}
+                onClick={() => selected?.id !== p.id && guard(() => setId(p.id))}
               >
                 {p.id === settings.activePersonaId && <Check />}
-                {p.name}
+                <span className="truncate">{p.name}</span>
               </Button>
             ))}
           </nav>
+          {!selected && (
+            <Empty className="md:col-span-2">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <VenetianMask />
+                </EmptyMedia>
+                <EmptyTitle>你想成为谁？</EmptyTitle>
+                <EmptyDescription>
+                  点击「新建人设」，为故事中的自己填写姓名、身份和喜好。
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
           {selected && (
             <PersonaEditor
               key={selected.id}
               persona={selected}
+              onDirtyChange={setDirty}
               active={settings.activePersonaId === selected.id}
               notify={notify}
               disabled={disabled}
@@ -638,7 +882,52 @@ export function PersonasDialog({
           )}
         </div>
       </DialogContent>
+      <ConfirmDialog
+        {...confirmation}
+        title="放弃未保存的修改？"
+        detail="修改还没有保存。可以取消返回编辑，或放弃修改后继续。"
+        confirmLabel="放弃修改"
+        destructive={false}
+      />
     </Dialog>
+  )
+}
+
+function AppearanceNumberField({
+  label,
+  value,
+  max,
+  onChange,
+}: {
+  label: string
+  value: number
+  max: number
+  onChange: (value: number) => void
+}) {
+  const id = label === '聊天字号' ? 'font-chat' : 'font-ui'
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>{label} · 像素</FieldLabel>
+      <Input
+        id={id}
+        name={id}
+        type="number"
+        min={12}
+        max={max}
+        defaultValue={value}
+        onChange={(e) => {
+          const n = e.target.valueAsNumber
+          if (Number.isFinite(n) && n >= 12 && n <= max) onChange(n)
+        }}
+        onBlur={(e) => {
+          const n = e.target.valueAsNumber
+          const next = Number.isFinite(n) ? Math.min(max, Math.max(12, n)) : value
+          e.target.value = String(next)
+          onChange(next)
+        }}
+      />
+      <FieldDescription>可选 12–{max}，更改即时预览并自动保存。</FieldDescription>
+    </Field>
   )
 }
 
@@ -654,7 +943,7 @@ export function AppearanceDialog({
   notify: Notify
 }) {
   const update = (key: keyof Settings, value: string | number) =>
-    void db.settings.update('app', { [key]: value })
+    void db.settings.update('app', { [key]: value }).catch((e) => notify(friendlyError(e), true))
   const upload = async (file: File | undefined) => {
     if (!file) return
     if (!file.type.startsWith('image/')) {
@@ -673,26 +962,20 @@ export function AppearanceDialog({
       <DialogContent className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>外观设置</DialogTitle>
-          <DialogDescription>
-            字体、背景和透明度会应用到整个界面的共享设计 Token。
-          </DialogDescription>
+          <DialogDescription>调整阅读字号、界面字体与背景。更改会自动保存。</DialogDescription>
         </DialogHeader>
         <FieldGroup>
-          <FormField
+          <AppearanceNumberField
             label="聊天字号"
-            type="number"
-            min={12}
-            max={24}
             value={settings.fontChat}
-            onChange={(v) => update('fontChat', Math.min(24, Math.max(12, Number(v))))}
+            max={24}
+            onChange={(value) => update('fontChat', value)}
           />
-          <FormField
+          <AppearanceNumberField
             label="界面字号"
-            type="number"
-            min={12}
-            max={18}
             value={settings.fontUi}
-            onChange={(v) => update('fontUi', Math.min(18, Math.max(12, Number(v))))}
+            max={18}
+            onChange={(value) => update('fontUi', value)}
           />
           <Field>
             <FieldLabel htmlFor="font-family">字体</FieldLabel>
@@ -701,16 +984,18 @@ export function AppearanceDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {[
-                  ['Noto Serif SC', '思源宋体'],
-                  ['Noto Serif TC', '思源宋体繁体'],
-                  ['system-ui', '系统字体'],
-                  ['KaiTi', '楷体'],
-                ].map(([value, label]) => (
-                  <SelectItem key={value} value={value}>
-                    {label}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  {[
+                    ['Noto Serif SC', '思源宋体'],
+                    ['Noto Serif TC', '思源宋体繁体'],
+                    ['system-ui', '系统字体'],
+                    ['KaiTi', '楷体'],
+                  ].map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Field>
@@ -720,7 +1005,10 @@ export function AppearanceDialog({
               id="background-file"
               type="file"
               accept="image/*"
-              onChange={(e) => void upload(e.target.files?.[0])}
+              onChange={(e) => {
+                void upload(e.target.files?.[0])
+                e.target.value = ''
+              }}
             />
             <FieldDescription>保存到当前浏览器，导出存档时一并保存。</FieldDescription>
           </Field>
@@ -736,7 +1024,11 @@ export function AppearanceDialog({
             />
           </Field>
         </FieldGroup>
-        <Button variant="outline" onClick={() => update('bgImage', '')}>
+        <Button
+          variant="outline"
+          disabled={!settings.bgImage}
+          onClick={() => update('bgImage', '')}
+        >
           移除背景
         </Button>
       </DialogContent>
@@ -764,9 +1056,16 @@ export function ArchivesSheet({
   const [removeId, setRemoveId] = useState('')
   const [renameId, setRenameId] = useState('')
   const [name, setName] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [namePending, setNamePending] = useState(false)
+  const [nameError, setNameError] = useState('')
+  const [search, setSearch] = useState('')
+  const nameRef = useRef<HTMLInputElement>(null)
+  const visibleArchives = archives.filter((archive) =>
+    archive.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  )
   const [pendingImport, setPendingImport] = useState<unknown>(null)
   const [importMode, setImportMode] = useState<'replace' | 'merge'>('replace')
-  const [search, setSearch] = useState('')
   const storage = useSyncExternalStore(db.persistence.subscribe, db.persistence.getStatus)
   const importRef = useRef<HTMLInputElement>(null)
   const download = async () => {
@@ -780,7 +1079,7 @@ export function ArchivesSheet({
   }
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent className="w-full sm:panel-width">
+      <SheetContent className="w-full overflow-hidden sm:panel-width safe-bottom">
         <SheetHeader>
           <SheetTitle>存档</SheetTitle>
           <SheetDescription>
@@ -788,13 +1087,13 @@ export function ArchivesSheet({
             <span className="block" role={storage.phase === 'error' ? 'alert' : 'status'}>
               {storage.phase === 'saved'
                 ? storage.persistent
-                  ? '已同步 OPFS 存档 · 已获准持久保存'
-                  : '已同步 OPFS 存档 · 可导出备份'
+                  ? '全部更改已保存 · 已获准持久保存'
+                  : '全部更改已保存 · 可导出备份'
                 : storage.phase === 'error'
-                  ? `OPFS 同步失败：${storage.error}。资料保留在浏览器数据库中，可导出或重试。`
+                  ? `存档备份未完成：${storage.error}。资料保留在浏览器数据库中，可导出或重试。`
                   : storage.phase === 'unavailable'
-                    ? '当前浏览器不支持 OPFS，资料已使用浏览器数据库保存。'
-                    : '正在同步 OPFS 存档…'}
+                    ? '资料已保存在当前浏览器，建议定期导出备份。'
+                    : '正在保存更改…'}
             </span>
           </SheetDescription>
           {storage.phase === 'error' && (
@@ -806,12 +1105,11 @@ export function ArchivesSheet({
         <div className="flex flex-wrap gap-2 px-4">
           <Button
             disabled={disabled}
-            onClick={() =>
-              void createArchive().then((a) => {
-                onSelect(a.id)
-                onClose()
-              })
-            }
+            onClick={() => {
+              setName('新的篇章')
+              setNameError('')
+              setCreating(true)
+            }}
           >
             <Plus />
             新建
@@ -841,15 +1139,6 @@ export function ArchivesSheet({
           >
             合并导入
           </Button>
-          <Field>
-            <FieldLabel htmlFor="archive-search">搜索存档</FieldLabel>
-            <Input
-              id="archive-search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="输入篇章名称…"
-            />
-          </Field>
           <input
             ref={importRef}
             type="file"
@@ -870,64 +1159,95 @@ export function ArchivesSheet({
             }}
           />
         </div>
+        <div className="flex flex-col gap-2 px-4">
+          <label htmlFor="archive-search" className="sr-only">
+            搜索存档
+          </label>
+          <Input
+            id="archive-search"
+            type="search"
+            placeholder="搜索篇章名称…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground" role="status">
+            {search.trim()
+              ? `找到 ${visibleArchives.length} 个篇章`
+              : `共 ${archives.length} 个篇章`}
+          </p>
+        </div>
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
-          {archives
-            .filter((archive) =>
-              archive.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
-            )
-            .map((a) => (
-              <Card key={a.id} size="sm">
-                <CardHeader>
-                  <CardTitle>{a.name}</CardTitle>
-                  <CardDescription>
-                    {formatDate(a.updatedAt)}
-                    {a.summary && ' · 已压缩上下文'}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap items-center gap-1">
-                    <Button
-                      disabled={disabled}
-                      variant={a.id === activeId ? 'secondary' : 'outline'}
-                      onClick={() => {
-                        onSelect(a.id)
-                        onClose()
-                      }}
-                    >
-                      {a.id === activeId ? '当前存档' : '载入'}
-                    </Button>
-                    <IconButton
-                      label={`导出 ${a.name}`}
-                      onClick={() => {
-                        void exportArchive(a.id)
-                          .then((data) => downloadJson(data, saveFileName(a.name)))
-                          .catch((error) => notify(friendlyError(error), true))
-                      }}
-                    >
-                      <Download />
-                    </IconButton>
-                    <IconButton
-                      label={`重命名 ${a.name}`}
-                      disabled={disabled}
-                      onClick={() => {
-                        setRenameId(a.id)
-                        setName(a.name)
-                      }}
-                    >
-                      <PenLine />
-                    </IconButton>
-                    <IconButton
-                      label={`删除 ${a.name}`}
-                      disabled={disabled}
-                      variant="destructive"
-                      onClick={() => setRemoveId(a.id)}
-                    >
-                      <Trash2 />
-                    </IconButton>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+          {!visibleArchives.length && (
+            <Empty>
+              <EmptyHeader>
+                <EmptyTitle>{search.trim() ? '没有找到匹配的篇章' : '还没有保存的篇章'}</EmptyTitle>
+                <EmptyDescription>
+                  {search.trim()
+                    ? '换一个关键词，或查看全部存档。'
+                    : '新建篇章开始聊天，也可以导入存档继续。'}
+                </EmptyDescription>
+              </EmptyHeader>
+              {search.trim() && (
+                <Button variant="outline" onClick={() => setSearch('')}>
+                  查看全部存档
+                </Button>
+              )}
+            </Empty>
+          )}
+          {visibleArchives.map((a) => (
+            <Card key={a.id} size="sm" className="shrink-0">
+              <CardHeader>
+                <CardTitle>{a.name}</CardTitle>
+                <CardDescription>
+                  {formatDate(a.updatedAt)}
+                  {a.summary && ' · 已压缩上下文'}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button
+                    disabled={disabled}
+                    variant={a.id === activeId ? 'secondary' : 'outline'}
+                    onClick={() => {
+                      onSelect(a.id)
+                      onClose()
+                    }}
+                  >
+                    {a.id === activeId ? '当前存档' : '载入'}
+                  </Button>
+                  <IconButton
+                    label={`导出 ${a.name}`}
+                    onClick={() => {
+                      void exportArchive(a.id)
+                        .then((data) => downloadJson(data, saveFileName(a.name)))
+                        .catch((error) => notify(friendlyError(error), true))
+                    }}
+                  >
+                    <Download />
+                  </IconButton>
+                  <IconButton
+                    label={`重命名 ${a.name}`}
+                    disabled={disabled}
+                    onClick={() => {
+                      setRenameId(a.id)
+                      setName(a.name)
+                      setNameError('')
+                    }}
+                  >
+                    <PenLine />
+                  </IconButton>
+                  <IconButton
+                    label={`删除 ${a.name}`}
+                    disabled={disabled}
+                    variant="ghost"
+                    onClick={() => setRemoveId(a.id)}
+                  >
+                    <Trash2 />
+                  </IconButton>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
         <ConfirmDialog
           open={!!removeId}
@@ -953,25 +1273,74 @@ export function ArchivesSheet({
             if (removeId === activeId) onSelect(next?.id || (await createArchive()).id)
           }}
         />
-        <Dialog open={!!renameId} onOpenChange={(v) => !v && setRenameId('')}>
-          <DialogContent>
+        <Dialog
+          open={!!renameId || creating}
+          onOpenChange={(v) => {
+            if (!v && !namePending) {
+              setRenameId('')
+              setCreating(false)
+            }
+          }}
+        >
+          <DialogContent
+            onEscapeKeyDown={(event) => namePending && event.preventDefault()}
+            onInteractOutside={(event) => namePending && event.preventDefault()}
+          >
             <DialogHeader>
-              <DialogTitle>重命名存档</DialogTitle>
-              <DialogDescription>为这个篇章取一个名字。</DialogDescription>
+              <DialogTitle>{creating ? '新建篇章' : '重命名存档'}</DialogTitle>
+              <DialogDescription>为这个篇章取一个名字，方便下次找到它。</DialogDescription>
             </DialogHeader>
-            <FormField label="存档名称" value={name} onChange={setName} />
-            <Button
-              disabled={!name.trim()}
-              onClick={() => {
-                void withArchiveOperation(renameId, async () => {
-                  await db.archives.update(renameId, { name: name.trim() })
-                })
-                  .then(() => setRenameId(''))
-                  .catch((error) => notify(friendlyError(error), true))
+            <form
+              className="flex flex-col gap-4"
+              onSubmit={async (e) => {
+                e.preventDefault()
+                if (namePending) return
+                if (!name.trim()) {
+                  setNameError('请输入存档名称。')
+                  nameRef.current?.focus()
+                  return
+                }
+                setNamePending(true)
+                try {
+                  if (creating) {
+                    const archive = await createArchive(name.trim())
+                    onSelect(archive.id)
+                    setCreating(false)
+                    setSearch('')
+                    onClose()
+                  } else {
+                    await withArchiveOperation(renameId, () =>
+                      db.archives.update(renameId, { name: name.trim() }),
+                    )
+                    notify('存档名称已更新。')
+                  }
+                  setRenameId('')
+                } catch (error) {
+                  setNameError(friendlyError(error))
+                } finally {
+                  setNamePending(false)
+                }
               }}
             >
-              保存名称
-            </Button>
+              <FormField
+                label="存档名称"
+                ref={nameRef}
+                name="archive-name"
+                value={name}
+                error={nameError}
+                onChange={(value) => {
+                  setName(value)
+                  setNameError('')
+                }}
+                disabled={namePending}
+                autoFocus
+                onFocus={(event) => event.target.select()}
+              />
+              <Button type="submit" disabled={namePending}>
+                {namePending && <LoaderCircle className="animate-spin" />}
+                {creating ? '创建并进入聊天' : '保存名称'}
+              </Button>
+            </form>
           </DialogContent>
         </Dialog>
         <ConfirmDialog

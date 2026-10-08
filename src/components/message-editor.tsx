@@ -1,393 +1,602 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { z } from 'zod'
+import type { StoredMessage } from '@/lib/types'
 import { editMessage } from '@/lib/db'
 import { withArchiveOperation } from '@/lib/operations'
-import { forumSchema, narrativeSchema } from '@/lib/schemas'
 import { friendlyError } from '@/lib/provider'
-import type { StoredMessage } from '@/lib/types'
+import { ContentValidationError, narrativeSchema, forumSchema } from '@/lib/schemas'
+import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
+  DialogFooter,
 } from './ui/dialog'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion'
-import { Field, FieldLabel, FieldGroup, FieldSet, FieldLegend } from './ui/field'
-import { Input } from './ui/input'
-import { Textarea } from './ui/textarea'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs'
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './ui/accordion'
+import { Field, FieldGroup, FieldLabel, FieldSet, FieldLegend } from './ui/field'
 import {
   Select,
+  SelectTrigger,
+  SelectValue,
   SelectContent,
   SelectGroup,
   SelectItem,
-  SelectTrigger,
-  SelectValue,
 } from './ui/select'
+import { Alert, AlertTitle, AlertDescription } from './ui/alert'
 import { Button } from './ui/button'
-import { IconButton } from './shared'
-import { Plus, Trash2, LoaderCircle } from 'lucide-react'
+import { FormField, ConfirmDialog, IconButton } from './shared'
+import { LoaderCircle, Plus, Trash2 } from 'lucide-react'
 
 const labels: Record<string, string> = {
   scene: '场景',
   effects: '剧情变化',
   speakerRef: '说话人引用',
   entityRefs: '人物引用',
-  blocks: '正文与对白',
+  blocks: '正文',
   state: '状态',
   phone: '手机',
   diary: '日记',
+  post: '帖子',
+  answers: '回答',
   time: '时间',
   location: '地点',
   characters: '在场人物',
   quoteZh: '中文引语',
   quoteEn: '英文引语',
-  source: '出处',
-  kind: '类型',
+  source: '引语出处',
+  kind: '段落类型',
   text: '内容',
   translation: '普通话翻译',
   innerVoice: '心声',
   desire: '欲望',
-  wishes: '愿望',
+  wishes: '当前想做的事',
   spokenLine: '正文中的一句话',
-  subtext: '内心含义',
+  subtext: '潜台词',
   memos: '备忘录',
-  recommendations: '品牌推送',
+  recommendations: '今日推送',
   brand: '品牌',
-  item: '物品',
-  reaction: '反应',
+  item: '名称',
+  reaction: '感想',
   purchases: '购买记录',
   price: '价格',
-  reason: '原因',
-  conversations: '聊天',
+  reason: '购买原因',
+  conversations: '微信对话',
   contact: '联系人',
-  messages: '消息',
-  speaker: '说话人',
-  countdownDays: '距求婚天数',
-  explanation: '解释',
-  post: '帖子',
-  answers: '回答',
-  id: '编号',
-  title: '标题',
+  messages: '对话消息',
+  speaker: '说话的人',
+  countdownDays: '距求婚的天数',
+  explanation: '倒计时说明',
+  title: '帖子标题',
   author: '作者',
-  content: '正文',
+  content: '帖子内容',
   tags: '标签',
-  views: '浏览数',
-  followers: '关注数',
-  likes: '赞同数',
+  views: '浏览量',
+  followers: '关注人数',
+  likes: '赞同人数',
   replyTo: '回复对象',
 }
-const label = (path: string[]) =>
-  path
-    .map((part) => labels[part] ?? (/^\d+$/.test(part) ? `第 ${Number(part) + 1} 条` : part))
-    .join(' · ')
-function empty(schema: z.ZodType): unknown {
+const multiline = new Set([
+  'text',
+  'translation',
+  'content',
+  'innerVoice',
+  'desire',
+  'reason',
+  'reaction',
+  'quoteZh',
+  'quoteEn',
+  'explanation',
+  'subtext',
+  'spokenLine',
+  'memos',
+  'wishes',
+])
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value)
+
+function emptyValue(schema?: z.ZodType, name = ''): unknown {
   if (schema instanceof z.ZodNullable) return null
   if (schema instanceof z.ZodBoolean) return false
+  if (name === 'id') return crypto.randomUUID()
   if (schema instanceof z.ZodObject)
     return Object.fromEntries(
-      Object.entries(schema.shape).map(([key, child]) => [key, empty(child as z.ZodType)]),
+      Object.entries(schema.shape).map(([key, child]) => [
+        key,
+        emptyValue(child as z.ZodType, key),
+      ]),
     )
   if (schema instanceof z.ZodArray) return []
   if (schema instanceof z.ZodEnum) return schema.options[0]
   if (schema instanceof z.ZodNumber) return 0
   return ''
 }
-function SchemaField({
-  schema,
+
+function PrimitiveField({
+  name,
+  label,
   value,
-  path,
+  schema,
   onChange,
-  error,
 }: {
-  schema: z.ZodType
+  name: string
+  label: string
   value: unknown
-  path: string[]
+  schema?: z.ZodType
   onChange: (value: unknown) => void
-  error: string
 }) {
   const id = useId()
-  const title = label(path)
-  const invalid =
-    !!error &&
-    (error.includes(path.join('.')) || error.includes(labels[path.at(-1)!] ?? path.at(-1)!))
-  if (schema instanceof z.ZodNullable)
+  const numeric = schema instanceof z.ZodNumber || typeof value === 'number'
+  const [longText] = useState(
+    multiline.has(name) || (typeof value === 'string' && value.length > 80),
+  )
+  if (schema instanceof z.ZodBoolean)
     return (
-      <FieldGroup>
-        <Button
-          variant="outline"
-          onClick={() => onChange(value === null ? empty(schema.unwrap() as z.ZodType) : null)}
-        >
-          {value === null ? `${title}：未知，点击填写` : `${title}：改为未知`}
-        </Button>
-        {value !== null && (
-          <SchemaField
-            schema={schema.unwrap() as z.ZodType}
-            value={value}
-            path={path}
-            onChange={onChange}
-            error={error}
-          />
-        )}
-      </FieldGroup>
+      <Button type="button" variant="outline" onClick={() => onChange(!value)}>
+        {label}：{value ? '是' : '否'}
+      </Button>
     )
-  if (schema instanceof z.ZodObject) {
-    const object = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  if (schema instanceof z.ZodEnum)
     return (
-      <FieldGroup>
-        {Object.entries(schema.shape).map(([key, child]) => (
-          <SchemaField
-            key={key}
-            schema={child as z.ZodType}
-            value={object[key]}
-            path={[...path, key]}
-            error={error}
-            onChange={(next) => onChange({ ...object, [key]: next })}
-          />
-        ))}
-      </FieldGroup>
-    )
-  }
-  if (schema instanceof z.ZodArray) {
-    const values: unknown[] = Array.isArray(value) ? value : []
-    return (
-      <FieldSet>
-        <FieldLegend>
-          {title}（{values.length} 条）
-        </FieldLegend>
-        <Accordion type="multiple">
-          {values.map((item, index) => (
-            <AccordionItem key={index} value={String(index)}>
-              <div className="flex items-center gap-2">
-                <AccordionTrigger className="min-w-0 flex-1">
-                  {title} · 第 {index + 1} 条
-                </AccordionTrigger>
-                <IconButton
-                  label={`删除 ${title} 第 ${index + 1} 条`}
-                  onClick={() => onChange(values.filter((_, i) => i !== index))}
-                >
-                  <Trash2 />
-                </IconButton>
-              </div>
-              <AccordionContent>
-                <SchemaField
-                  schema={schema.element as z.ZodType}
-                  value={item}
-                  path={[...path, String(index)]}
-                  error={error}
-                  onChange={(next) =>
-                    onChange(values.map((original, i) => (i === index ? next : original)))
-                  }
-                />
-              </AccordionContent>
-            </AccordionItem>
-          ))}
-        </Accordion>
-        <Button
-          variant="outline"
-          className="w-fit"
-          onClick={() => onChange([...values, empty(schema.element as z.ZodType)])}
-        >
-          <Plus data-icon="inline-start" />
-          添加{labels[path.at(-1)!] ?? '一条'}
-        </Button>
-      </FieldSet>
-    )
-  }
-  return (
-    <Field data-invalid={invalid || undefined}>
-      <FieldLabel htmlFor={id}>{title}</FieldLabel>
-      {schema instanceof z.ZodEnum ? (
+      <Field>
+        <FieldLabel htmlFor={id}>{label}</FieldLabel>
         <Select value={typeof value === 'string' ? value : ''} onValueChange={onChange}>
-          <SelectTrigger id={id} aria-invalid={invalid || undefined}>
+          <SelectTrigger id={id} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
               {schema.options.map((option) => (
-                <SelectItem key={String(option)} value={String(option)}>
-                  {option === 'narration'
-                    ? '叙述'
-                    : option === 'dialogue'
-                      ? '对白'
-                      : String(option)}
+                <SelectItem key={option} value={String(option)}>
+                  {option === 'narration' ? '叙述' : option === 'dialogue' ? '对白' : option}
                 </SelectItem>
               ))}
             </SelectGroup>
           </SelectContent>
         </Select>
-      ) : schema instanceof z.ZodNumber ? (
-        <Input
-          id={id}
-          type="number"
-          value={typeof value === 'number' ? value : 0}
-          aria-invalid={invalid || undefined}
-          onChange={(e) => onChange(Number(e.target.value))}
-        />
+      </Field>
+    )
+  return (
+    <FormField
+      label={label}
+      value={numeric ? Number(value ?? 0) : String(value ?? '')}
+      type={numeric ? 'number' : 'text'}
+      multiline={longText}
+      className="max-h-64"
+      onChange={(next) => onChange(numeric ? Number(next) : next)}
+    />
+  )
+}
+
+function ArrayFields({
+  value,
+  name,
+  schema,
+  onChange,
+}: {
+  value: unknown[]
+  name: string
+  schema?: z.ZodType
+  onChange: (value: unknown) => void
+}) {
+  const [expanded, setExpanded] = useState(['0'])
+  const elementSchema = schema instanceof z.ZodArray ? (schema.element as z.ZodType) : undefined
+  const primitive =
+    !(elementSchema instanceof z.ZodObject) && value.every((item) => !isObject(item))
+  const title = labels[name] || '条目'
+  const remove = (index: number) => {
+    onChange(value.filter((_, i) => i !== index))
+    setExpanded((previous) =>
+      previous
+        .filter((item) => Number(item) !== index)
+        .map((item) => String(Number(item) > index ? Number(item) - 1 : Number(item))),
+    )
+  }
+  return (
+    <FieldGroup>
+      {primitive ? (
+        <div className="flex flex-col gap-4">
+          {value.map((item, index) => (
+            <div key={index} className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <PrimitiveField
+                  name={name}
+                  label={title + ' ' + (index + 1)}
+                  value={item}
+                  schema={elementSchema}
+                  onChange={(next) =>
+                    onChange(value.map((existing, i) => (i === index ? next : existing)))
+                  }
+                />
+              </div>
+              <IconButton
+                type="button"
+                label={`删除${title} ${index + 1}`}
+                onClick={() => remove(index)}
+              >
+                <Trash2 />
+              </IconButton>
+            </div>
+          ))}
+        </div>
       ) : (
-        <Textarea
-          id={id}
-          rows={3}
-          value={typeof value === 'string' ? value : ''}
-          aria-invalid={invalid || undefined}
-          onChange={(e) => onChange(e.target.value)}
-        />
+        <Accordion type="multiple" value={expanded} onValueChange={setExpanded}>
+          {value.map((item, index) => {
+            const title = isObject(item)
+              ? item.author ||
+                item.contact ||
+                item.brand ||
+                item.item ||
+                (item.kind === 'dialogue' ? '对白' : item.kind === 'narration' ? '叙述' : '')
+              : ''
+            return (
+              <AccordionItem key={index} value={String(index)}>
+                <div className="flex items-center gap-2">
+                  <AccordionTrigger className="min-w-0 flex-1">
+                    <span className="min-w-0 truncate">
+                      {index + 1}
+                      {title ? ' · ' + String(title) : ''}
+                    </span>
+                  </AccordionTrigger>
+                  <IconButton
+                    type="button"
+                    label={`删除${labels[name] || '条目'} ${index + 1}`}
+                    onClick={() => remove(index)}
+                  >
+                    <Trash2 />
+                  </IconButton>
+                </div>
+                <AccordionContent className="px-1 py-4">
+                  <ValueFields
+                    value={item}
+                    schema={elementSchema}
+                    onChange={(next) =>
+                      onChange(value.map((existing, i) => (i === index ? next : existing)))
+                    }
+                  />
+                </AccordionContent>
+              </AccordionItem>
+            )
+          })}
+        </Accordion>
       )}
-    </Field>
+      <Button
+        type="button"
+        variant="outline"
+        className="w-fit"
+        onClick={() => {
+          onChange([...value, emptyValue(elementSchema)])
+          setExpanded((previous) => [...previous, String(value.length)])
+        }}
+      >
+        <Plus data-icon="inline-start" />
+        添加{title}
+      </Button>
+    </FieldGroup>
+  )
+}
+
+function ValueFields({
+  value,
+  name = '',
+  schema,
+  onChange,
+}: {
+  value: unknown
+  name?: string
+  schema?: z.ZodType
+  onChange: (value: unknown) => void
+}) {
+  if (schema instanceof z.ZodNullable)
+    return (
+      <FieldGroup>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() =>
+            onChange(value === null ? emptyValue(schema.unwrap() as z.ZodType, name) : null)
+          }
+        >
+          {value === null
+            ? `${labels[name] || name}：未知，点击填写`
+            : `${labels[name] || name}：改为未知`}
+        </Button>
+        {value !== null && (
+          <ValueFields
+            value={value}
+            name={name}
+            schema={schema.unwrap() as z.ZodType}
+            onChange={onChange}
+          />
+        )}
+      </FieldGroup>
+    )
+  if (Array.isArray(value) || schema instanceof z.ZodArray)
+    return (
+      <ArrayFields
+        value={Array.isArray(value) ? value : []}
+        name={name}
+        schema={schema}
+        onChange={onChange}
+      />
+    )
+  if (isObject(value) || schema instanceof z.ZodObject) {
+    const object = isObject(value) ? value : {}
+    const fields = schema instanceof z.ZodObject ? { ...schema.shape, ...object } : object
+    return (
+      <FieldGroup>
+        {Object.keys(fields)
+          .filter((key) => key !== 'id')
+          .map((key) => {
+            const child = object[key]
+            const childSchema =
+              schema instanceof z.ZodObject ? (schema.shape[key] as z.ZodType) : undefined
+            return (typeof child === 'object' && child !== null) ||
+              childSchema instanceof z.ZodObject ||
+              childSchema instanceof z.ZodArray ||
+              childSchema instanceof z.ZodNullable ? (
+              <FieldSet key={key}>
+                <FieldLegend variant="label">{labels[key] || key}</FieldLegend>
+                <ValueFields
+                  value={child}
+                  name={key}
+                  schema={childSchema}
+                  onChange={(next) => onChange({ ...object, [key]: next })}
+                />
+              </FieldSet>
+            ) : (
+              <PrimitiveField
+                key={key}
+                name={key}
+                label={labels[key] || key}
+                value={child}
+                schema={childSchema}
+                onChange={(next) => onChange({ ...object, [key]: next })}
+              />
+            )
+          })}
+      </FieldGroup>
+    )
+  }
+  return (
+    <PrimitiveField
+      name={name}
+      label={labels[name] || '内容'}
+      value={value}
+      schema={schema}
+      onChange={onChange}
+    />
   )
 }
 
 export function MessageEditor({
   message,
+  disabled = false,
   onClose,
   onSaved,
-  disabled = false,
 }: {
   message: StoredMessage
   disabled?: boolean
   onClose: () => void
   onSaved: () => void
 }) {
-  const [text, setText] = useState(() =>
-    message.reply
-      ? JSON.stringify(message.reply.value, null, 2)
-      : message.interaction
-        ? JSON.stringify(message.interaction, null, 2)
-        : message.effects
-          ? JSON.stringify({ content: message.content, effects: message.effects }, null, 2)
-          : typeof (message.rawContent || message.content) === 'string'
-            ? message.rawContent || message.content
-            : JSON.stringify(message.rawContent || message.content, null, 2),
-  )
+  const original = message.reply
+    ? JSON.stringify(message.reply.value, null, 2)
+    : message.interaction
+      ? JSON.stringify(message.interaction, null, 2)
+      : message.effects
+        ? JSON.stringify({ content: message.content, effects: message.effects }, null, 2)
+        : typeof (message.rawContent || message.content) === 'string'
+          ? message.rawContent || message.content
+          : JSON.stringify(message.rawContent || message.content, null, 2)
+  const [text, setText] = useState(original)
+  const [tab, setTab] = useState(message.reply?.kind === 'forum' ? 'post' : 'blocks')
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  const root = useRef<HTMLDivElement>(null)
-  const errorRef = useRef<HTMLParagraphElement>(null)
+  const errorRef = useRef<HTMLDivElement>(null)
   const schema = message.reply?.kind === 'forum' ? forumSchema : narrativeSchema
-  let object: Record<string, unknown> | undefined
-  try {
-    object = z.record(z.string(), z.unknown()).parse(JSON.parse(text))
-  } catch {
-    /* JSON editing remains available. */
+  const { guard, confirmation } = useUnsavedChanges(text !== original)
+  let parsed: Record<string, unknown> | undefined
+  if (message.reply) {
+    try {
+      const value: unknown = JSON.parse(text)
+      if (isObject(value)) parsed = value
+    } catch {
+      /* Keep incomplete source editable. */
+    }
   }
-  useEffect(() => {
-    if (error)
-      (
-        root.current?.querySelector<HTMLElement>('[aria-invalid="true"]') ?? errorRef.current
-      )?.focus()
-  }, [error])
+  const sections =
+    message.reply?.kind === 'forum'
+      ? [
+          ['post', '帖子'],
+          ['answers', '回答'],
+        ]
+      : [
+          ['blocks', '正文'],
+          ['scene', '场景'],
+          ['state', '状态'],
+          ['phone', '手机'],
+          ['diary', '日记'],
+          ['effects', '剧情变化'],
+        ]
   const save = async () => {
-    if (disabled || busy) return
-    setBusy(true)
+    if (disabled || saving) return
+    setSaving(true)
     setError('')
     try {
       await withArchiveOperation(message.archiveId, () => editMessage(message.id, text))
       onSaved()
       onClose()
-    } catch (error) {
-      setError(friendlyError(error))
+    } catch (e) {
+      if (e instanceof SyntaxError) {
+        setTab('source')
+        setError('原始内容不是有效的 JSON，请检查引号、逗号和括号后重新保存。')
+      } else if (e instanceof ContentValidationError) {
+        setError(
+          e.issues
+            .map((issue) =>
+              issue.replace(
+                /\b(?:scene|blocks|state|phone|diary|effects|post|answers)(?:\.[\w]+)*/g,
+                (path) =>
+                  path
+                    .split('.')
+                    .map((part) =>
+                      /^\d+$/.test(part) ? String(Number(part) + 1) : labels[part] || part,
+                    )
+                    .join(' → '),
+              ),
+            )
+            .join('；'),
+        )
+      } else setError(friendlyError(e))
+      requestAnimationFrame(() => errorRef.current?.focus())
     } finally {
-      setBusy(false)
+      setSaving(false)
     }
   }
+  const change = (value: string) => {
+    setText(value)
+    setError('')
+  }
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open && !busy) onClose()
-      }}
-    >
-      <DialogContent ref={root} className="max-h-[90dvh] overflow-y-auto sm:page-width">
-        <DialogHeader>
-          <DialogTitle>编辑消息</DialogTitle>
-          <DialogDescription>
-            按内容分区编辑，或使用完整 JSON。保存时检查完整协议；相关摘要会自动失效。
-          </DialogDescription>
-        </DialogHeader>
-        {message.reply ? (
-          <Tabs defaultValue={object ? 'structured' : 'json'}>
-            <TabsList className="group-data-horizontal/tabs:h-auto">
-              <TabsTrigger className="min-h-11" value="structured" disabled={!object}>
-                内容编辑
-              </TabsTrigger>
-              <TabsTrigger className="min-h-11" value="json">
-                JSON 编辑
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="structured">
-              {object && (
-                <Tabs defaultValue={message.reply.kind === 'narrative' ? 'blocks' : 'post'}>
-                  <TabsList className="flex flex-wrap gap-1 group-data-horizontal/tabs:h-auto">
-                    {Object.keys(schema.shape).map((key) => (
-                      <TabsTrigger className="h-auto min-h-11 flex-none px-3" key={key} value={key}>
-                        {labels[key]}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
-                  {Object.entries(schema.shape).map(([key, child]) => (
-                    <TabsContent key={key} value={key}>
-                      <SchemaField
-                        schema={child}
-                        value={object[key]}
-                        path={[key]}
-                        error={error}
-                        onChange={(next) => {
-                          setText(JSON.stringify({ ...object, [key]: next }, null, 2))
-                          setError('')
-                        }}
-                      />
-                    </TabsContent>
-                  ))}
-                </Tabs>
-              )}
-            </TabsContent>
-            <TabsContent value="json">
-              <Field>
-                <FieldLabel htmlFor="edit-message">完整 JSON 内容</FieldLabel>
-                <Textarea
-                  id="edit-message"
-                  value={text}
-                  onChange={(e) => {
-                    setText(e.target.value)
-                    setError('')
-                  }}
-                  rows={12}
-                />
-              </Field>
-            </TabsContent>
-          </Tabs>
-        ) : (
-          <Field>
-            <FieldLabel htmlFor="edit-message">消息内容</FieldLabel>
-            <Textarea
-              id="edit-message"
-              value={text}
-              onChange={(e) => {
-                setText(e.target.value)
-                setError('')
-              }}
-              rows={12}
-            />
-          </Field>
-        )}
-        {error && (
-          <p
-            ref={errorRef}
-            role="alert"
-            tabIndex={-1}
-            className="wrap-break-word text-sm text-destructive"
+    <>
+      <Dialog
+        open
+        onOpenChange={(open) => {
+          if (!open && !saving) guard(onClose)
+        }}
+      >
+        <DialogContent
+          size="wide"
+          className="editor-height overflow-hidden compact-height:gap-2"
+          onEscapeKeyDown={(e) => saving && e.preventDefault()}
+          onInteractOutside={(e) => saving && e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>编辑消息</DialogTitle>
+            <DialogDescription>
+              {message.reply
+                ? '按分区修改回复，保存时会检查内容。相关摘要会在需要时重新整理。'
+                : '修改后保留消息的时间和所属存档，相关摘要会在需要时重新整理。'}
+            </DialogDescription>
+          </DialogHeader>
+          {error && (
+            <Alert
+              ref={errorRef}
+              tabIndex={-1}
+              variant="destructive"
+              className="max-h-40 shrink-0 overflow-y-auto"
+            >
+              <AlertTitle>修改尚未保存</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <form
+            className="flex min-h-0 flex-1 flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void save()
+            }}
+            onKeyDown={(e) => {
+              if (
+                e.key === 'Enter' &&
+                (e.metaKey || e.ctrlKey) &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
+                e.preventDefault()
+                void save()
+              }
+            }}
           >
-            {error}
-          </p>
-        )}
-        <DialogFooter>
-          <Button disabled={disabled || busy || !text.trim()} onClick={() => void save()}>
-            {busy && <LoaderCircle data-icon="inline-start" className="animate-spin" />}保存修改
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            {message.reply ? (
+              <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1">
+                <TabsList className="w-full shrink-0 justify-start overflow-x-auto">
+                  {sections.map(([key, title]) => (
+                    <TabsTrigger key={key} value={key} className="flex-none sm:flex-1">
+                      {title}
+                    </TabsTrigger>
+                  ))}
+                  <TabsTrigger value="source" className="flex-none sm:flex-1">
+                    原始内容
+                  </TabsTrigger>
+                </TabsList>
+                {sections.map(([key]) => (
+                  <TabsContent
+                    key={key}
+                    value={key}
+                    className="min-h-0 overflow-y-auto overscroll-contain p-1"
+                  >
+                    {parsed ? (
+                      <fieldset disabled={disabled || saving}>
+                        <ValueFields
+                          value={parsed[key]}
+                          name={key}
+                          schema={schema.shape[key as keyof typeof schema.shape]}
+                          onChange={(value) =>
+                            change(JSON.stringify({ ...parsed, [key]: value }, null, 2))
+                          }
+                        />
+                      </fieldset>
+                    ) : (
+                      <Alert>
+                        <AlertTitle>原始内容还不完整</AlertTitle>
+                        <AlertDescription>请在「原始内容」中补全格式后继续编辑。</AlertDescription>
+                      </Alert>
+                    )}
+                  </TabsContent>
+                ))}
+                <TabsContent value="source" className="min-h-0 overflow-y-auto p-1">
+                  <FormField
+                    label="原始 JSON 内容"
+                    value={text}
+                    onChange={change}
+                    multiline
+                    disabled={disabled || saving}
+                    help="适合直接修改数据结构；保存时仍会检查所有字段。"
+                    className="max-h-96 font-mono"
+                  />
+                </TabsContent>
+              </Tabs>
+            ) : (
+              <div className="min-h-0 flex-1 overflow-y-auto p-1">
+                <FormField
+                  label="消息内容"
+                  value={text}
+                  onChange={change}
+                  multiline
+                  disabled={disabled || saving}
+                  autoFocus
+                  className="max-h-96"
+                />
+              </div>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={disabled || saving}
+                onClick={() => guard(onClose)}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={disabled || saving}>
+                {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+                保存修改
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <ConfirmDialog
+        {...confirmation}
+        title="放弃未保存的修改？"
+        detail="消息修改还没有保存。可以取消返回编辑，或放弃修改后继续。"
+        confirmLabel="放弃修改"
+        destructive={false}
+      />
+    </>
   )
 }

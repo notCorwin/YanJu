@@ -26,7 +26,7 @@
 | O    | `tests/unit/opfs.test.ts`                              | OPFS 原子写入、仅 OPFS 恢复、失败重试、同步并发                                      |
 | C    | `tests/unit/context.test.ts`、`context-prefix.test.ts` | 完整预算、usage 校正、分批压缩回滚、实际请求前缀                                     |
 | T    | `tests/unit/transport.test.ts`                         | 流式持久化、冻结渠道与状态、取消、重说、冲突恢复                                     |
-| E    | `tests/e2e/app.spec.ts`                                | 真实 SDK 模拟响应下的桌面与移动端完整产品流程                                        |
+| E    | `tests/e2e/app.spec.ts`、`ui.spec.ts`                  | 真实 SDK 模拟响应下的桌面、移动 Chromium 和移动 Safari 完整产品及界面流程            |
 
 ## 逐项覆盖
 
@@ -95,5 +95,8 @@ GitHub Actions 仅负责合并到 `master` 后的现有 Pages 构建与发布。
 - 来源定位支持分页历史；分区/JSON 编辑、单条展示恢复、分叉导航、单篇章导出和引用重映射后合并导入。
 - 统一任务保留超时、首包、耗时、HTTP 状态和请求编号；完整渠道能力测试覆盖叙事、50 条回答及摘要。
 - 使用最新稳定依赖、Node.js 26 和 pnpm 12；生产预览覆盖桌面 Chrome、移动 Chromium 和移动 Safari。
+- 保留主分支的字段错误、未保存修改保护、回焦、移动输入、阅读位置和窄屏大字号界面；v3 分区编辑支持可空字段和剧情变化，独立论坛回复仍关联稳定回答 ID 并保存用户原文。
 
 2026-10-08 整合主分支 `14255ec` 后，完整 `pnpm verify` 通过：11 个文件中的 164 个单元测试、105 个桌面 Chrome／移动 Chromium／移动 Safari 生产预览流程、Token 检查、ESLint、TypeScript 与生产构建全部成功。
+
+2026-10-08 整合主分支 `518b728` 的界面更新后，完整 `pnpm verify` 再次通过：164 个单元测试、129 个桌面 Chrome／移动 Chromium／移动 Safari 生产预览流程、Token 检查、ESLint、TypeScript 与生产构建全部成功，包含 6 项审核回归及新增界面验收。

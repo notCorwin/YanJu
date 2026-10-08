@@ -86,6 +86,10 @@
   --motion-linear: linear;
   --motion-spin: 1.5s;
   --panel-width: 28rem;
+  --dialog-wide-width: 60rem;
+  --editor-height: min(52rem, calc(100dvh - 2rem));
+  --composer-max-height: clamp(4rem, 22dvh, 10rem);
+  --composer-desktop-max-height: 14rem;
   --reading-width: 48rem;
   --page-width: 72rem;
   --touch-size: 2.75rem;
@@ -93,6 +97,7 @@
   --background-image: none;
   --background-opacity: 0.15;
   --surface-opacity: 0.94;
+  --layer-toast: 80;
 }
 
 @theme inline {
@@ -211,6 +216,7 @@
   button,
   a {
     -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
   ::selection {
     background: var(--primary);
@@ -246,6 +252,36 @@
 }
 @utility panel-width {
   max-width: var(--panel-width);
+}
+@utility dialog-wide-width {
+  max-width: var(--dialog-wide-width);
+}
+@utility editor-height {
+  height: var(--editor-height);
+}
+@custom-variant compact-height (@media (max-height: 32rem));
+@utility composer-height {
+  max-height: var(--composer-max-height);
+  @media (min-width: 40rem) {
+    max-height: var(--composer-desktop-max-height);
+  }
+}
+@utility toast-layer {
+  z-index: var(--layer-toast);
+}
+@utility skip-link {
+  position: fixed;
+  inset-inline-start: calc(var(--space-unit) * 4);
+  top: calc(var(--space-unit) * 2);
+  z-index: var(--layer-toast);
+  padding: calc(var(--space-unit) * 3);
+  border-radius: var(--radius-md);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  transform: translateY(-200%);
+  &:focus {
+    transform: translateY(0);
+  }
 }
 @utility tracking-editorial {
   letter-spacing: var(--font-letter-spacing);

@@ -2,7 +2,15 @@ import { withArchiveOperation } from '@/lib/operations'
 import { MessageEditor } from './message-editor'
 import { RecoveryBoundary } from './recovery-boundary'
 import { RequestDetails } from './request-details'
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
@@ -23,7 +31,7 @@ import {
 import { executeAuxiliary } from '@/lib/workflows'
 import { contextBudget } from '@/lib/context'
 import { channelIsReady, friendlyError } from '@/lib/provider'
-import type { Archive, Channel, ChatMessage, Persona, StoredMessage } from '@/lib/types'
+import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from '@/lib/types'
 import type { RequestKind } from '@/lib/schemas'
 import {
   MessageScrollerProvider,
@@ -39,7 +47,16 @@ import { InputGroup, InputGroupTextarea, InputGroupAddon, InputGroupButton } fro
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Progress } from './ui/progress'
-import { Select, SelectContent, SelectTrigger, SelectValue, SelectItem } from './ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectTrigger,
+  SelectValue,
+  SelectItem,
+  SelectGroup,
+} from './ui/select'
+import { Alert, AlertTitle, AlertDescription } from './ui/alert'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
 import { NarrativeView, ForumView } from './replies'
 import { ConfirmDialog, IconButton, Prose } from './shared'
 import type { Notify } from './managers'
@@ -54,6 +71,7 @@ import {
   ArrowDownToLine,
   BookOpen,
   GitBranch,
+  FileJson,
 } from 'lucide-react'
 
 export interface ExternalChatRequest {
@@ -71,6 +89,7 @@ export function ChatSession(props: {
   notify: Notify
   onBusy: (value: boolean) => void
   onWorld: () => void
+  onChannels: () => void
   insert: string
   onInserted: () => void
   externalRequest: ExternalChatRequest | null
@@ -99,6 +118,7 @@ function ChatRunner({
   notify,
   onBusy,
   onWorld,
+  onChannels,
   stored,
   insert,
   onInserted,
@@ -118,6 +138,7 @@ function ChatRunner({
   notify: Notify
   onBusy: (value: boolean) => void
   onWorld: () => void
+  onChannels: () => void
   stored: StoredMessage[]
   insert: string
   onInserted: () => void
@@ -147,6 +168,7 @@ function ChatRunner({
     })
   const [input, setInput] = useState(archive.draft)
   const [mode, setMode] = useState<RequestKind>('narrative')
+  const [contextOpen, setContextOpen] = useState(false)
   const [editing, setEditing] = useState<StoredMessage | null>(null)
   const [regenId, setRegenId] = useState('')
   const [clear, setClear] = useState(false)
@@ -157,6 +179,14 @@ function ChatRunner({
   const story = useLiveQuery(() => db.storyStates.get(archive.id), [archive.id])
   const lock = useRef(false)
   const composing = useRef(false)
+  const touchInput = useSyncExternalStore(
+    (notify) => {
+      const query = window.matchMedia('(pointer: coarse)')
+      query.addEventListener('change', notify)
+      return () => query.removeEventListener('change', notify)
+    },
+    () => window.matchMedia('(pointer: coarse)').matches,
+  )
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const controller = useRef<AbortController | null>(null)
   const chatBusy =
@@ -177,13 +207,16 @@ function ChatRunner({
   useEffect(() => {
     if (!lock.current && !busy) setMessages(stored.slice(-visibleLimit).map(toChatMessage))
   }, [stored, busy, setMessages, visibleLimit])
+  const insertDraft = useEffectEvent((text: string) => {
+    const value = input ? `${input}\n${text}` : text
+    setInput(value)
+    void db.archives.update(archive.id, { draft: value })
+    onInserted()
+    inputRef.current?.focus()
+  })
   useEffect(() => {
-    if (insert) {
-      setInput((v) => (v ? `${v}\n${insert}` : insert))
-      onInserted()
-      inputRef.current?.focus()
-    }
-  }, [insert, onInserted])
+    if (insert) insertDraft(insert)
+  }, [insert])
   const draft = (text: string) => {
     setInput(text)
     void db.archives.update(archive.id, { draft: text })
@@ -411,59 +444,98 @@ function ChatRunner({
       onBusy(false)
     }
   }
-  const budget = channel
-    ? contextBudget(
-        channel,
-        persona,
-        mode,
-        stored,
-        archive.summary?.revision === archive.revision ? archive.summary : undefined,
-      )
-    : undefined
+  const summaryJson = JSON.stringify(
+    archive.summary?.revision === archive.revision ? archive.summary : undefined,
+  )
+  const budget = useMemo(
+    () =>
+      channel
+        ? contextBudget(
+            channel,
+            persona,
+            mode,
+            stored,
+            summaryJson ? (JSON.parse(summaryJson) as Summary) : undefined,
+          )
+        : undefined,
+    [channel, persona, mode, stored, summaryJson],
+  )
   const latestStatus = messages.at(-1)?.parts.find((p) => p.type === 'data-status')
-  const copy = (message: ChatMessage) => {
+  const copy = (message: ChatMessage, raw = false) => {
     const source = stored.find((m) => m.id === message.id)
+    const live = message.parts.find(
+      (part) => part.type === 'data-narrative' || part.type === 'data-forum',
+    )
+    const reply =
+      live?.type === 'data-narrative'
+        ? { kind: 'narrative' as const, value: live.data }
+        : live?.type === 'data-forum'
+          ? { kind: 'forum' as const, value: live.data }
+          : source?.reply || source?.partial
     const text =
-      source?.reply?.kind === 'narrative'
-        ? source.reply.value.blocks
-            .map((b) => b.text + (b.translation ? `\n「${b.translation}」` : ''))
-            .join('\n\n')
-        : source?.content || JSON.stringify(message.parts)
+      raw && reply
+        ? source?.rawContent || JSON.stringify(reply.value, null, 2)
+        : reply?.kind === 'narrative'
+          ? reply.value.blocks
+              ?.filter(Boolean)
+              .map(
+                (block) => block!.text + (block!.translation ? `\n「${block!.translation}」` : ''),
+              )
+              .join('\n\n') || ''
+          : reply?.kind === 'forum'
+            ? [
+                reply.value.post?.title,
+                reply.value.post?.content,
+                ...(reply.value.answers
+                  ?.filter(Boolean)
+                  .map((answer) => `${answer!.author}：${answer!.content}`) || []),
+              ]
+                .filter(Boolean)
+                .join('\n\n')
+            : source?.content ||
+              message.parts
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text)
+                .join('\n')
     void navigator.clipboard.writeText(text).then(
-      () => notify('消息已复制。'),
+      () => notify(raw ? '原始数据已复制。' : '消息已复制。'),
       () => notify('复制失败，请使用浏览器的文本选择功能。', true),
     )
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {archive.compactionError && (
-        <div
-          role="alert"
-          className="flex flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) p-3 text-sm text-destructive"
-        >
-          <span className="min-w-0 flex-1 wrap-break-word">
-            压缩未完成：{archive.compactionError}
-          </span>
-          <Button disabled={busy} variant="outline" onClick={() => void compress()}>
-            重试压缩
-          </Button>
-        </div>
-      )}
-      <MessageScrollerProvider defaultScrollPosition="end">
+    <MessageScrollerProvider autoScroll={chatBusy} defaultScrollPosition="end">
+      <div className="flex min-h-0 flex-1 flex-col">
+        {archive.compactionError && (
+          <div
+            role="alert"
+            className="flex flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) p-3 text-sm text-destructive"
+          >
+            <span className="min-w-0 flex-1 wrap-break-word">
+              压缩未完成：{archive.compactionError}
+            </span>
+            <Button disabled={busy} variant="outline" onClick={() => void compress()}>
+              重试压缩
+            </Button>
+          </div>
+        )}
         <MessageScroller>
-          <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto reading-width px-4 py-8 sm:px-6">
+          <MessageScrollerViewport aria-label="聊天记录">
+            <MessageScrollerContent className="mx-auto w-full reading-width px-4 py-8 sm:px-6">
               {stored.length > visibleLimit && (
                 <Button
                   variant="outline"
-                  className="mb-4"
+                  disabled={busy}
                   onClick={() => setVisibleLimit((count) => count + 60)}
                 >
                   加载较早消息（还有 {stored.length - visibleLimit} 条）
                 </Button>
               )}
               {messages.map((message, i) => (
-                <MessageScrollerItem key={message.id} scrollAnchor={message.role === 'user'}>
+                <MessageScrollerItem
+                  key={message.id}
+                  messageId={message.id}
+                  scrollAnchor={message.role === 'user'}
+                >
                   <article
                     id={`message-${message.id}`}
                     tabIndex={-1}
@@ -472,7 +544,7 @@ function ChatRunner({
                     <Message align={message.role === 'user' ? 'end' : 'start'}>
                       <MessageContent>
                         <MessageHeader>
-                          <span className="flex items-center gap-2">
+                          <span className="flex min-w-0 flex-wrap items-center gap-2">
                             {message.role === 'user'
                               ? (stored.find((m) => m.id === message.id)?.userName ??
                                 persona?.name ??
@@ -516,25 +588,29 @@ function ChatRunner({
                             <Bubble variant="ghost">
                               <BubbleContent className="w-full">
                                 {message.parts.map((p, j) => {
+                                  const key = 'id' in p ? `${p.type}:${p.id}` : `${p.type}:${j}`
                                   if (p.type === 'data-narrative')
                                     return (
-                                      <NarrativeView
-                                        key={j}
+                                      <MemoNarrativeView
+                                        key={key}
                                         reply={p.data}
                                         messageId={message.id}
                                       />
                                     )
                                   if (p.type === 'data-forum')
                                     return (
-                                      <ForumView
-                                        key={j}
+                                      <MemoForumView
+                                        key={key}
                                         reply={
                                           story?.forums.find(
                                             (f) => f.source.messageId === message.id,
                                           ) ?? p.data
                                         }
                                         disabled={
-                                          busy || stored.find((m) => m.id === message.id)?.stale
+                                          busy ||
+                                          stored.find((m) => m.id === message.id)?.stale ||
+                                          !channel ||
+                                          !channelIsReady(channel)
                                         }
                                         onReply={(id, text) => void replyToForum(id, text)}
                                         onSend={(text) => void send(text, 'forum')}
@@ -543,31 +619,46 @@ function ChatRunner({
                                   if (p.type === 'data-notice')
                                     return (
                                       <img
-                                        key={j}
+                                        key={key}
                                         src={p.data}
                                         alt="角色设定提示"
                                         className="max-w-full rounded-lg"
                                         loading="lazy"
                                       />
                                     )
-                                  if (p.type === 'text') return <Prose key={j} text={p.text} />
+                                  if (p.type === 'text') return <Prose key={key} text={p.text} />
                                   return null
                                 })}
                               </BubbleContent>
                             </Bubble>
                           )}
                         </RecoveryBoundary>
+                        <RequestDetails value={message.metadata?.diagnostics} />
                         {message.metadata?.error && (
                           <p role="alert" className="text-sm text-destructive">
                             {message.metadata.error}
                           </p>
                         )}
-                        <RequestDetails value={message.metadata?.diagnostics} />
                         <MessageFooter>
                           <div className="flex flex-wrap gap-1">
-                            <IconButton label="复制消息" onClick={() => copy(message)}>
+                            <IconButton
+                              label={
+                                message.parts.some((part) => part.type === 'data-narrative')
+                                  ? '复制正文'
+                                  : '复制消息'
+                              }
+                              onClick={() => copy(message)}
+                            >
                               <Copy />
                             </IconButton>
+                            {message.parts.some(
+                              (part) =>
+                                part.type === 'data-narrative' || part.type === 'data-forum',
+                            ) && (
+                              <IconButton label="复制原始数据" onClick={() => copy(message, true)}>
+                                <FileJson />
+                              </IconButton>
+                            )}
                             <IconButton
                               label="编辑消息"
                               disabled={busy}
@@ -583,16 +674,15 @@ function ChatRunner({
                             <IconButton
                               label="从此分叉"
                               disabled={busy}
-                              onClick={() =>
+                              onClick={() => {
                                 void withArchiveOperation(archive.id, () =>
                                   forkArchive(archive.id, message.id),
                                 )
-                                  .then((created) => {
-                                    window.location.hash = `#/chat/${created.id}`
-                                    notify('已创建剧情分支。')
+                                  .then((fork) => {
+                                    window.location.hash = `/chat/${encodeURIComponent(fork.id)}`
                                   })
                                   .catch((error) => notify(friendlyError(error), true))
-                              }
+                              }}
                             >
                               <GitBranch />
                             </IconButton>
@@ -622,6 +712,17 @@ function ChatRunner({
                   </article>
                 </MessageScrollerItem>
               ))}
+              {(!channel || !channelIsReady(channel)) && (
+                <Alert role="status">
+                  <AlertTitle>连接模型后，故事就能继续</AlertTitle>
+                  <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                    <span>可以先阅读开场、写下回应，草稿会自动保存。</span>
+                    <Button variant="outline" onClick={onChannels}>
+                      配置并测试渠道
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
               {forumRunning && forumPartial && <Prose text={forumPartial} />}
               {chatBusy && (
                 <div
@@ -641,169 +742,235 @@ function ChatRunner({
               )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
-          <MessageScrollerButton aria-label="回到最新消息" size="icon" />
         </MessageScroller>
-      </MessageScrollerProvider>
-      <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-3 sm:px-6">
-        <div className="mx-auto flex reading-width flex-col gap-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-1">
-              <Select value={mode} onValueChange={(v) => setMode(v as RequestKind)} disabled={busy}>
-                <SelectTrigger aria-label="聊天模式">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="narrative">叙事</SelectItem>
-                  <SelectItem value="forum">论坛</SelectItem>
-                </SelectContent>
-              </Select>
-              <IconButton label="打开剧情工作台" onClick={onStudio}>
-                <BookOpen />
-              </IconButton>
-              <IconButton label="世界、指令与音乐" onClick={onWorld}>
-                <BookOpen />
-              </IconButton>
-              <IconButton label="清空当前聊天" disabled={busy} onClick={() => setClear(true)}>
-                <Trash2 />
-              </IconButton>
-            </div>
-            {budget && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>
-                  上下文约 {Math.round(budget.percent * 100)}% · {budget.estimated.toLocaleString()}{' '}
-                  / {channel!.contextWindow.toLocaleString()}
-                </span>
-                <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
-                  <ArrowDownToLine />
+        <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-2 sm:px-6 sm:pt-3">
+          <div className="mx-auto flex reading-width flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1">
+                <Select
+                  value={mode}
+                  onValueChange={(v) => setMode(v as RequestKind)}
+                  disabled={busy}
+                >
+                  <SelectTrigger aria-label="聊天模式">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="narrative">叙事</SelectItem>
+                      <SelectItem value="forum">论坛</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <IconButton
+                  className="hidden sm:inline-flex"
+                  label="打开剧情工作台"
+                  onClick={onStudio}
+                >
+                  <BookOpen />
+                </IconButton>
+                <IconButton label="世界、指令与音乐" onClick={onWorld}>
+                  <BookOpen />
+                </IconButton>
+                <IconButton label="清空当前聊天" disabled={busy} onClick={() => setClear(true)}>
+                  <Trash2 />
                 </IconButton>
               </div>
+              {budget && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Button
+                    variant="ghost"
+                    onClick={() => setContextOpen(true)}
+                    aria-label="查看上下文详情"
+                  >
+                    <span className="hidden sm:inline">上下文约</span>{' '}
+                    {Math.round(budget.percent * 100)}%
+                  </Button>
+                  <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
+                    <ArrowDownToLine />
+                  </IconButton>
+                </div>
+              )}
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (!composing.current) void send()
+              }}
+            >
+              <InputGroup>
+                <InputGroupTextarea
+                  id="chat-input"
+                  ref={inputRef}
+                  aria-label="聊天输入"
+                  value={input}
+                  onChange={(e) => draft(e.target.value)}
+                  onCompositionStart={() => {
+                    composing.current = true
+                  }}
+                  onCompositionEnd={() => {
+                    composing.current = false
+                  }}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === 'Enter' &&
+                      !e.shiftKey &&
+                      (!touchInput || e.ctrlKey || e.metaKey) &&
+                      !e.nativeEvent.isComposing &&
+                      !composing.current &&
+                      e.keyCode !== 229
+                    ) {
+                      e.preventDefault()
+                      if (!busy) void send()
+                    }
+                  }}
+                  className="composer-height resize-none overflow-y-auto"
+                  rows={2}
+                  placeholder={mode === 'forum' ? '输入帖子或回复内容…' : '写下你的回应…'}
+                />
+                <InputGroupAddon align="block-end" className="justify-between">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <MessageScrollerButton
+                      aria-label="回到最新消息"
+                      title="回到最新消息"
+                      size="icon"
+                    />
+                    <span className="text-xs text-muted-foreground">
+                      {touchInput ? (
+                        '草稿自动保存 · 点击发送'
+                      ) : (
+                        <>
+                          <span>Enter 发送</span>
+                          <span className="hidden sm:inline"> · Shift + Enter 换行</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  {chatBusy ? (
+                    <InputGroupButton
+                      aria-label="停止生成"
+                      onClick={() => void stopGeneration()}
+                      variant="secondary"
+                      size="sm"
+                    >
+                      <Square />
+                      停止
+                    </InputGroupButton>
+                  ) : (
+                    <InputGroupButton
+                      type="submit"
+                      aria-label="发送消息"
+                      variant="default"
+                      size="sm"
+                      disabled={busy || !input.trim() || !channel || !channelIsReady(channel)}
+                    >
+                      <Send />
+                      发送
+                    </InputGroupButton>
+                  )}
+                </InputGroupAddon>
+              </InputGroup>
+            </form>
+            {error && (
+              <p role="alert" className="text-xs text-destructive">
+                {friendlyError(error)}
+              </p>
             )}
           </div>
-          {budget && (
-            <Progress aria-label="估算上下文占用" value={Math.min(100, budget.percent * 100)} />
-          )}
-          {archive.lastUsage && (
-            <p className="text-xs text-muted-foreground">
-              上次实际输入 {archive.lastUsage.input.toLocaleString()} · 输出{' '}
-              {archive.lastUsage.output.toLocaleString()} tokens
-              {archive.summary && ` · 摘要覆盖 ${archive.summary.coveredCount} 条消息`}
-            </p>
-          )}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (!composing.current) void send()
-            }}
-          >
-            <InputGroup>
-              <InputGroupTextarea
-                ref={inputRef}
-                aria-label="聊天输入"
-                value={input}
-                onChange={(e) => draft(e.target.value)}
-                onCompositionStart={() => {
-                  composing.current = true
-                }}
-                onCompositionEnd={() => {
-                  composing.current = false
-                }}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === 'Enter' &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing &&
-                    !composing.current &&
-                    e.keyCode !== 229
-                  ) {
-                    e.preventDefault()
-                    if (!busy) void send()
-                  }
-                }}
-                rows={2}
-                placeholder={mode === 'forum' ? '输入帖子或回复内容…' : '写下你的回应…'}
-              />
-              <InputGroupAddon align="block-end" className="justify-between">
-                <span className="text-xs text-muted-foreground">
-                  Enter 发送 · Shift + Enter 换行
-                </span>
-                {chatBusy ? (
-                  <InputGroupButton
-                    aria-label="停止生成"
-                    onClick={() => void stopGeneration()}
-                    variant="secondary"
-                    size="sm"
-                  >
-                    <Square />
-                    停止
-                  </InputGroupButton>
-                ) : (
-                  <InputGroupButton
-                    type="submit"
-                    aria-label="发送消息"
-                    variant="default"
-                    size="sm"
-                    disabled={busy || !input.trim()}
-                  >
-                    <Send />
-                    发送
-                  </InputGroupButton>
+        </footer>
+        <Dialog open={contextOpen} onOpenChange={setContextOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>上下文与摘要</DialogTitle>
+              <DialogDescription>
+                接近容量上限时会自动整理旧对话，完整聊天记录会保留。
+              </DialogDescription>
+            </DialogHeader>
+            {budget && (
+              <div className="flex flex-col gap-3">
+                <p className="text-ui tabular-nums">
+                  预计输入 {budget.estimated.toLocaleString('zh-CN')} /{' '}
+                  {channel!.contextWindow.toLocaleString('zh-CN')} tokens ·{' '}
+                  {Math.round(budget.percent * 100)}%
+                </p>
+                <Progress aria-label="估算上下文占用" value={Math.min(100, budget.percent * 100)} />
+                {archive.lastUsage && (
+                  <p className="text-sm tabular-nums">
+                    上次实际输入 {archive.lastUsage.input.toLocaleString('zh-CN')} · 输出{' '}
+                    {archive.lastUsage.output.toLocaleString('zh-CN')} tokens
+                  </p>
                 )}
-              </InputGroupAddon>
-            </InputGroup>
-          </form>
-          {error && (
-            <p role="alert" className="text-xs text-destructive">
-              {friendlyError(error)}
-            </p>
-          )}
-        </div>
-      </footer>
-      {editing && (
-        <MessageEditor
-          key={editing.id}
-          message={editing}
-          disabled={busy}
-          onClose={() => setEditing(null)}
-          onSaved={() => notify('消息已更新。')}
+                <p className="text-sm text-muted-foreground">
+                  {archive.summary
+                    ? `摘要已覆盖 ${archive.summary.coveredCount} 条消息。`
+                    : '当前还没有压缩摘要。'}
+                </p>
+                {archive.summary && <Prose text={archive.summary.value.summary} />}
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    setContextOpen(false)
+                    void compress()
+                  }}
+                >
+                  整理并压缩历史
+                </Button>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+        {editing && (
+          <MessageEditor
+            key={editing.id}
+            message={editing}
+            disabled={busy}
+            onClose={() => setEditing(null)}
+            onSaved={() => notify('消息已更新。')}
+          />
+        )}
+        <ConfirmDialog
+          open={!!regenId}
+          onClose={() => setRegenId('')}
+          title="从这里重新生成？"
+          detail="成功后将原分支保留为独立篇章，再替换这条回复及后续内容。生成失败或取消会保留原聊天，并保存收到的部分内容。"
+          destructive={false}
+          onConfirm={() => {
+            void retry(regenId)
+          }}
         />
-      )}
-      <ConfirmDialog
-        open={!!regenId}
-        onClose={() => setRegenId('')}
-        title="从这里重新生成？"
-        detail="成功后将原分支保留为独立篇章，再替换这条回复及其后续内容。生成失败或取消会保留原聊天，并保存收到的部分内容。"
-        destructive={false}
-        onConfirm={() => retry(regenId)}
-      />
-      <ConfirmDialog
-        open={clear}
-        onClose={() => setClear(false)}
-        title="清空当前聊天？"
-        detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
-        onConfirm={async () => {
-          if (busy || lock.current) return
-          const data = createArchiveData()
-          await withArchiveOperation(archive.id, () =>
-            db.transaction(
-              'rw',
-              [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
-              async () => {
-                await db.messages.where('archiveId').equals(archive.id).delete()
-                await db.messages.put({ ...data.opening, archiveId: archive.id })
-                await db.tasks.where('archiveId').equals(archive.id).delete()
-                await db.requests.where('archiveId').equals(archive.id).delete()
-                const current = await db.archives.get(archive.id)
-                if (!current) throw new Error('存档不存在。')
-                const updated = { ...revise(current, true), draft: '' }
-                await db.archives.put(updated)
-                await refreshStory(db, updated)
-              },
-            ),
-          )
-          draft('')
-          notify('当前聊天已清空。')
-        }}
-      />
-    </div>
+        <ConfirmDialog
+          open={clear}
+          onClose={() => setClear(false)}
+          title="清空当前聊天？"
+          detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
+          onConfirm={async () => {
+            if (busy || lock.current) return
+            const data = createArchiveData()
+            await withArchiveOperation(archive.id, () =>
+              db.transaction(
+                'rw',
+                [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
+                async () => {
+                  await db.messages.where('archiveId').equals(archive.id).delete()
+                  await db.messages.put({ ...data.opening, archiveId: archive.id })
+                  await db.tasks.where('archiveId').equals(archive.id).delete()
+                  await db.requests.where('archiveId').equals(archive.id).delete()
+                  const current = await db.archives.get(archive.id)
+                  if (!current) throw new Error('存档不存在。')
+                  const updated = { ...revise(current, true), draft: '' }
+                  await db.archives.put(updated)
+                  await refreshStory(db, updated)
+                },
+              ),
+            )
+            draft('')
+            notify('当前聊天已清空。')
+          }}
+        />
+      </div>
+    </MessageScrollerProvider>
   )
 }
+
+const MemoNarrativeView = memo(NarrativeView)
+const MemoForumView = memo(ForumView)
