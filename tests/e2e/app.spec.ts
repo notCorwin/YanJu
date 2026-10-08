@@ -949,16 +949,21 @@ test('论坛新帖50条、追加和局部改写失效重建均可在工作台完
   await studio.getByRole('textbox', { name: '新帖标题' }).fill('阅读推荐')
   await studio.getByRole('textbox', { name: '新帖内容' }).fill(' 标题：保留这行\n请推荐一本书。 ')
   await studio.getByRole('button', { name: '发布新帖', exact: true }).click()
-  await expect(page.getByText(/50\s*条?\s*回答/)).toBeVisible()
+  await expect(
+    page.getByRole('region', { name: '聊天记录', exact: true }).getByText(/50\s*条?\s*回答/),
+  ).toBeVisible()
   await expectArchiveAvailable(page)
   const post = (await readOpfs(page))!.storyStates.find((s) => s.archiveId === 'archive-1')!
     .forums[0]
+  expect(post.answers).toHaveLength(50)
   expect(post.post.title).toBe('阅读推荐')
   expect(post.post.content).toBe(' 标题：保留这行\n请推荐一本书。 ')
   await page.getByRole('button', { name: '回复', exact: true }).first().click()
   await page.getByRole('textbox', { name: '内容', exact: true }).fill('继续交流')
   await page.getByRole('dialog').getByRole('button', { name: '发送', exact: true }).click()
-  await expect(page.getByText(/52\s*条?\s*回答/)).toBeVisible()
+  await expect(
+    page.getByRole('region', { name: '聊天记录', exact: true }).getByText(/52\s*条?\s*回答/),
+  ).toBeVisible()
   await page.getByRole('button', { name: '打开剧情工作台', exact: true }).click()
   await creationTask(page, '局部改写', '把午后改为傍晚，并修正相关状态')
   await studio.getByRole('button', { name: '应用改写' }).click()
