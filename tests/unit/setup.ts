@@ -1,0 +1,14 @@
+import 'fake-indexeddb/auto'
+import { afterEach } from 'vitest'
+import { db } from '../../src/lib/db'
+
+afterEach(async () => {
+  await Promise.all([
+    db.archives.clear(),
+    db.messages.clear(),
+    db.channels.clear(),
+    db.personas.clear(),
+    db.settings.clear(),
+  ])
+  localStorage.clear()
+})
