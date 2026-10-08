@@ -58,7 +58,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     </section>
   )
 }
-export function NarrativeView({ reply }: { reply: DeepPartial<NarrativeReply> }) {
+export function NarrativeView({
+  reply,
+  messageId,
+}: {
+  reply: DeepPartial<NarrativeReply>
+  messageId?: string
+}) {
   return (
     <div className="flex flex-col gap-6">
       {reply.scene && <SceneCard scene={reply.scene} />}
@@ -67,7 +73,9 @@ export function NarrativeView({ reply }: { reply: DeepPartial<NarrativeReply> })
           (block, i) =>
             block && (
               <div
-                key={i}
+                key={block.id ?? i}
+                id={messageId && block.id ? `source-block-${messageId}-${block.id}` : undefined}
+                tabIndex={-1}
                 className={
                   block.kind === 'dialogue'
                     ? 'border-l-(length:--border-width) border-primary pl-4'
@@ -221,7 +229,9 @@ export function NarrativeView({ reply }: { reply: DeepPartial<NarrativeReply> })
               <div className="flex flex-col gap-4 py-3">
                 <Prose text={reply.diary.text} />
                 <p className="text-ui text-primary">
-                  距求婚还有 {reply.diary.countdownDays ?? '…'} 天
+                  {reply.diary.countdownDays == null
+                    ? '求婚日期未设定'
+                    : `距求婚还有 ${reply.diary.countdownDays} 天`}
                 </p>
                 <p className="text-ui text-muted-foreground">{reply.diary.explanation}</p>
               </div>
@@ -235,9 +245,11 @@ export function NarrativeView({ reply }: { reply: DeepPartial<NarrativeReply> })
 export function ForumView({
   reply,
   onSend,
+  onReply,
   disabled,
 }: {
   reply: DeepPartial<ForumReply>
+  onReply?: (id: string, text: string) => void
   onSend: (text: string) => void
   disabled?: boolean
 }) {
@@ -268,8 +280,8 @@ export function ForumView({
         </CardContent>
         <CardFooter className="flex flex-wrap justify-between gap-2">
           <span className="text-xs text-muted-foreground">
-            {reply.post?.views ?? 0} 浏览 · {reply.post?.followers ?? 0} 关注 · {answers.length}/50
-            回答
+            {reply.post?.views ?? 0} 浏览 · {reply.post?.followers ?? 0} 关注 · {answers.length}{' '}
+            条回答
           </span>
           <Button
             variant="outline"
@@ -295,7 +307,8 @@ export function ForumView({
                     <CardTitle>{answer.author}</CardTitle>
                     <CardDescription>
                       {answer.time}
-                      {answer.replyTo && ` · 回复 ${answer.replyTo}`}
+                      {answer.replyTo &&
+                        ` · 回复 ${answers.find((a) => a?.id === answer.replyTo)?.author ?? '帖子'}`}
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
@@ -305,9 +318,9 @@ export function ForumView({
                     <span className="text-xs text-muted-foreground">{answer.likes ?? 0} 赞同</span>
                     <Button
                       variant="ghost"
-                      disabled={disabled}
+                      disabled={disabled || !onReply}
                       onClick={() => {
-                        setTarget(answer.author || '匿名')
+                        setTarget(answer.id || '')
                         setText('')
                       }}
                     >
@@ -328,8 +341,16 @@ export function ForumView({
       <Dialog open={target !== null} onOpenChange={(v) => !v && setTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{target === '新帖' ? '发布帖子' : `回复 ${target}`}</DialogTitle>
-            <DialogDescription>发送后由当前渠道生成完整论坛内容和 50 条回答。</DialogDescription>
+            <DialogTitle>
+              {target === '新帖'
+                ? '发布帖子'
+                : `回复 ${answers.find((a) => a?.id === target)?.author ?? '回答'}`}
+            </DialogTitle>
+            <DialogDescription>
+              {target === '新帖'
+                ? '生成新帖子和完整50条回答。'
+                : '保存你的原文，并追加一条关联这条回答的 NPC 回复。'}
+            </DialogDescription>
           </DialogHeader>
           {target === '新帖' && (
             <Field>
@@ -355,11 +376,8 @@ export function ForumView({
             <Button
               disabled={!text.trim() || (target === '新帖' && !title.trim()) || disabled}
               onClick={() => {
-                onSend(
-                  target === '新帖'
-                    ? `$发送帖子\n标题：${title}\n${text}`
-                    : `回复${target}：${text}`,
-                )
+                if (target === '新帖') onSend(`$发送帖子\n标题：${title}\n${text}`)
+                else if (target) onReply?.(target, text)
                 setTarget(null)
               }}
             >

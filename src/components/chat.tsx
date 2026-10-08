@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
@@ -8,6 +8,7 @@ import {
   createArchiveData,
   editMessage,
   revise,
+  refreshStory,
 } from '@/lib/db'
 import {
   BrowserChatTransport,
@@ -15,6 +16,7 @@ import {
   persistCancelledMessage,
   toChatMessage,
 } from '@/lib/transport'
+import { executeAuxiliary } from '@/lib/workflows'
 import { contextBudget } from '@/lib/context'
 import { channelIsReady, friendlyError } from '@/lib/provider'
 import type { Archive, Channel, ChatMessage, Persona, StoredMessage } from '@/lib/types'
@@ -68,6 +70,13 @@ export function ChatSession(props: {
   onWorld: () => void
   insert: string
   onInserted: () => void
+  externalRequest: { id: string; text: string; kind: RequestKind } | null
+  onExternalHandled: () => void
+  externalMode: RequestKind | null
+  onModeHandled: () => void
+  sourceMessage?: string
+  sourceBlock?: string
+  onStudio: () => void
 }) {
   const stored = useLiveQuery(() => archiveMessages(props.archive.id), [props.archive.id])
   if (!stored)
@@ -88,6 +97,13 @@ function ChatRunner({
   stored,
   insert,
   onInserted,
+  externalRequest,
+  onExternalHandled,
+  externalMode,
+  onModeHandled,
+  sourceMessage,
+  sourceBlock,
+  onStudio,
 }: {
   archive: Archive
   channel?: Channel
@@ -98,6 +114,13 @@ function ChatRunner({
   stored: StoredMessage[]
   insert: string
   onInserted: () => void
+  externalRequest: { id: string; text: string; kind: RequestKind } | null
+  onExternalHandled: () => void
+  externalMode: RequestKind | null
+  onModeHandled: () => void
+  sourceMessage?: string
+  sourceBlock?: string
+  onStudio: () => void
 }) {
   const transport = useMemo(() => new BrowserChatTransport(), [])
   const { messages, sendMessage, regenerate, setMessages, stop, status, error, clearError } =
@@ -115,11 +138,14 @@ function ChatRunner({
   const [regenId, setRegenId] = useState('')
   const [clear, setClear] = useState(false)
   const [compressing, setCompressing] = useState(false)
+  const [forumRunning, setForumRunning] = useState(false)
+  const [forumPartial, setForumPartial] = useState('')
+  const story = useLiveQuery(() => db.storyStates.get(archive.id), [archive.id])
   const lock = useRef(false)
   const composing = useRef(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const controller = useRef<AbortController | null>(null)
-  const busy = status === 'streaming' || status === 'submitted' || compressing
+  const busy = status === 'streaming' || status === 'submitted' || compressing || forumRunning
 
   useEffect(() => {
     onBusy(busy)
@@ -163,7 +189,7 @@ function ChatRunner({
         id: crypto.randomUUID(),
         archiveId: archive.id,
         role: 'user',
-        content: text.trim(),
+        content: text,
         createdAt: Date.now(),
         sequence: (current.at(-1)?.sequence ?? -1) + 1,
         kind,
@@ -191,6 +217,49 @@ function ChatRunner({
         notify(friendlyError(e), true)
       }
       inputRef.current?.focus()
+    }
+  }
+  const external = useEffectEvent((request: { text: string; kind: RequestKind }) => {
+    onExternalHandled()
+    void send(request.text, request.kind)
+  })
+  useEffect(() => {
+    if (externalRequest && !busy && !lock.current) external(externalRequest)
+  }, [externalRequest, busy])
+  useEffect(() => {
+    if (externalMode) {
+      setMode(externalMode)
+      onModeHandled()
+    }
+  }, [externalMode, onModeHandled])
+  useEffect(() => {
+    if (!sourceMessage || busy) return
+    const frame = requestAnimationFrame(() => {
+      const element = document.getElementById(
+        sourceBlock ? `source-block-${sourceMessage}-${sourceBlock}` : `message-${sourceMessage}`,
+      )
+      element?.scrollIntoView({ block: 'center' })
+      element?.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [sourceMessage, sourceBlock, busy])
+  const replyToForum = async (id: string, text: string) => {
+    if (busy || lock.current) return
+    lock.current = true
+    setForumRunning(true)
+    setForumPartial('')
+    controller.current = new AbortController()
+    try {
+      const task = await executeAuxiliary(archive.id, 'forumReply', text, id, {
+        signal: controller.current.signal,
+      })
+      if (task.status !== 'complete') notify(task.error ?? '论坛回复未完成，可在工作台重试。', true)
+    } catch (error) {
+      notify(friendlyError(error), true)
+    } finally {
+      lock.current = false
+      setForumRunning(false)
+      controller.current = null
     }
   }
   const retry = async (id: string) => {
@@ -255,6 +324,10 @@ function ChatRunner({
     }
   }
   const stopGeneration = async () => {
+    if (forumRunning) {
+      controller.current?.abort()
+      return
+    }
     controller.current?.abort()
     try {
       await stop()
@@ -311,12 +384,19 @@ function ChatRunner({
             <MessageScrollerContent className="mx-auto reading-width px-4 py-8 sm:px-6">
               {messages.map((message, i) => (
                 <MessageScrollerItem key={message.id} scrollAnchor={message.role === 'user'}>
-                  <article aria-label={message.role === 'user' ? '你的消息' : '宴雎的回复'}>
+                  <article
+                    id={`message-${message.id}`}
+                    tabIndex={-1}
+                    aria-label={message.role === 'user' ? '你的消息' : '宴雎的回复'}
+                  >
                     <Message align={message.role === 'user' ? 'end' : 'start'}>
                       <MessageContent>
                         <MessageHeader>
                           <span className="flex items-center gap-2">
                             {message.role === 'user' ? persona?.name || '你' : '宴雎'}
+                            {stored.find((m) => m.id === message.id)?.stale && (
+                              <Badge variant="outline">已失效 · 历史记录</Badge>
+                            )}
                             {message.metadata?.createdAt && (
                               <time dateTime={new Date(message.metadata.createdAt).toISOString()}>
                                 {new Date(message.metadata.createdAt).toLocaleTimeString('zh-CN', {
@@ -349,13 +429,22 @@ function ChatRunner({
                             <BubbleContent className="w-full">
                               {message.parts.map((p, j) => {
                                 if (p.type === 'data-narrative')
-                                  return <NarrativeView key={j} reply={p.data} />
+                                  return (
+                                    <NarrativeView key={j} reply={p.data} messageId={message.id} />
+                                  )
                                 if (p.type === 'data-forum')
                                   return (
                                     <ForumView
                                       key={j}
-                                      reply={p.data}
-                                      disabled={busy}
+                                      reply={
+                                        story?.forums.find(
+                                          (f) => f.source.messageId === message.id,
+                                        ) ?? p.data
+                                      }
+                                      disabled={
+                                        busy || stored.find((m) => m.id === message.id)?.stale
+                                      }
+                                      onReply={(id, text) => void replyToForum(id, text)}
                                       onSend={(text) => void send(text, 'forum')}
                                     />
                                   )
@@ -411,23 +500,25 @@ function ChatRunner({
                             >
                               <Pencil />
                             </IconButton>
-                            {message.role === 'assistant' && i > 0 && (
-                              <IconButton
-                                label={
-                                  message.metadata?.status === 'failed' ||
-                                  message.metadata?.status === 'cancelled'
-                                    ? '重试回复'
-                                    : '重新生成'
-                                }
-                                disabled={busy}
-                                onClick={() => {
-                                  if (i < messages.length - 1) setRegenId(message.id)
-                                  else void retry(message.id)
-                                }}
-                              >
-                                <RotateCcw />
-                              </IconButton>
-                            )}
+                            {message.role === 'assistant' &&
+                              i > 0 &&
+                              ['narrative', 'forum'].includes(message.metadata?.kind ?? '') && (
+                                <IconButton
+                                  label={
+                                    message.metadata?.status === 'failed' ||
+                                    message.metadata?.status === 'cancelled'
+                                      ? '重试回复'
+                                      : '重新生成'
+                                  }
+                                  disabled={busy}
+                                  onClick={() => {
+                                    if (i < messages.length - 1) setRegenId(message.id)
+                                    else void retry(message.id)
+                                  }}
+                                >
+                                  <RotateCcw />
+                                </IconButton>
+                              )}
                           </div>
                         </MessageFooter>
                       </MessageContent>
@@ -435,6 +526,7 @@ function ChatRunner({
                   </article>
                 </MessageScrollerItem>
               ))}
+              {forumRunning && forumPartial && <Prose text={forumPartial} />}
               {busy && (
                 <div
                   role="status"
@@ -442,11 +534,13 @@ function ChatRunner({
                   className="flex items-center gap-2 text-ui text-primary"
                 >
                   <LoaderCircle className="size-4 animate-spin" />
-                  {compressing
-                    ? '正在压缩历史…'
-                    : latestStatus?.type === 'data-status'
-                      ? latestStatus.data.detail
-                      : '准备生成…'}
+                  {forumRunning
+                    ? '正在生成论坛回复…'
+                    : compressing
+                      ? '正在压缩历史…'
+                      : latestStatus?.type === 'data-status'
+                        ? latestStatus.data.detail
+                        : '准备生成…'}
                 </div>
               )}
             </MessageScrollerContent>
@@ -467,6 +561,9 @@ function ChatRunner({
                   <SelectItem value="forum">论坛</SelectItem>
                 </SelectContent>
               </Select>
+              <IconButton label="打开剧情工作台" onClick={onStudio}>
+                <BookOpen />
+              </IconButton>
               <IconButton label="世界、指令与音乐" onClick={onWorld}>
                 <BookOpen />
               </IconButton>
@@ -572,7 +669,7 @@ function ChatRunner({
             <DialogDescription>
               {editing?.reply
                 ? '回复保存为 JSON 内容。修改后会检查结构；已覆盖这条消息的摘要会失效并在需要时重建。'
-                : '修改后保留这条消息的时间和所属存档；相关摘要会自动失效。'}
+                : '修改后保留这条消息的时间和所属存档；后续剧情会标记失效并重建状态。'}
             </DialogDescription>
           </DialogHeader>
           <Field>
@@ -617,11 +714,22 @@ function ChatRunner({
         detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
         onConfirm={async () => {
           const data = createArchiveData()
-          await db.transaction('rw', db.messages, db.archives, async () => {
-            await db.messages.where('archiveId').equals(archive.id).delete()
-            await db.messages.put({ ...data.opening, archiveId: archive.id })
-            await db.archives.put({ ...revise(archive, true), draft: '' })
-          })
+          await db.transaction(
+            'rw',
+            db.messages,
+            db.archives,
+            db.storyStates,
+            db.storyEvents,
+            db.tasks,
+            async () => {
+              await db.messages.where('archiveId').equals(archive.id).delete()
+              await db.messages.put({ ...data.opening, archiveId: archive.id })
+              await db.tasks.where('archiveId').equals(archive.id).delete()
+              const updated = { ...revise(archive, true), draft: '' }
+              await db.archives.put(updated)
+              await refreshStory(db, updated)
+            },
+          )
           draft('')
           notify('当前聊天已清空。')
         }}

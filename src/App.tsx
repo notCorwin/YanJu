@@ -12,10 +12,16 @@ import {
   type Notify,
 } from '@/components/managers'
 import { WorldPlayer } from '@/components/world-player'
+import { Studio } from '@/components/studio'
+import { requestTrack } from '@/lib/media'
+import type { SourceRef } from '@/lib/domain-schema'
+import type { TaskOutput } from '@/lib/tasks'
+import type { RequestKind } from '@/lib/schemas'
 import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -31,6 +37,7 @@ import {
   Settings2,
   SlidersHorizontal,
   VenetianMask,
+  NotebookTabs,
   X,
 } from 'lucide-react'
 
@@ -74,9 +81,17 @@ function Workspace() {
   const personas = useLiveQuery(() => db.personas.toArray()) ?? []
   const route = useSyncExternalStore(subscribeRoute, currentRoute)
   const [dialog, setDialog] = useState<
-    'channels' | 'personas' | 'appearance' | 'archives' | 'world' | null
+    'channels' | 'personas' | 'appearance' | 'archives' | 'world' | 'studio' | null
   >(null)
-  const [busy, setBusy] = useState(false)
+  const [chatBusy, setBusy] = useState(false)
+  const [studioBusy, setStudioBusy] = useState(false)
+  const busy = chatBusy || studioBusy
+  const [externalRequest, setExternalRequest] = useState<{
+    id: string
+    text: string
+    kind: RequestKind
+  } | null>(null)
+  const [externalMode, setExternalMode] = useState<RequestKind | null>(null)
   const [insert, setInsert] = useState('')
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -87,14 +102,23 @@ function Workspace() {
   }, [])
   const onBusy = useCallback((value: boolean) => setBusy(value), [])
   const onInserted = useCallback(() => setInsert(''), [])
+  const onExternalHandled = useCallback(() => setExternalRequest(null), [])
+  const onModeHandled = useCallback(() => setExternalMode(null), [])
+  const onStudioBusy = useCallback((value: boolean) => setStudioBusy(value), [])
   useEffect(() => {
     if (settings) applyAppearance(settings)
   }, [settings])
-  const routeId = route.startsWith('#/chat/') ? decodeURIComponent(route.slice(7)) : ''
+  const routeId = route.startsWith('#/chat/')
+    ? decodeURIComponent(route.slice(7).split('?')[0])
+    : ''
   const archive = archives.find((a) => a.id === (routeId || settings?.activeArchiveId))
   const channel = channels.find((c) => c.id === settings?.activeChannelId)
   const persona = personas.find((p) => p.id === settings?.activePersonaId)
   const chatting = route.startsWith('#/chat')
+  const params = new URLSearchParams(route.split('?')[1] ?? '')
+  const studioTab = params.get('studio') ?? undefined
+  const sourceMessage = params.get('message') ?? undefined
+  const sourceBlock = params.get('block') ?? undefined
   useEffect(() => {
     if (routeId && archive && settings?.activeArchiveId !== routeId)
       void db.settings.update('app', { activeArchiveId: routeId })
@@ -106,6 +130,45 @@ function Workspace() {
   const enter = () => {
     if (archive) selectArchive(archive.id)
     else setDialog('archives')
+  }
+  const sendFromStudio = (text: string, kind: RequestKind) => {
+    if (archive) {
+      selectArchive(archive.id)
+      setExternalRequest({ id: crypto.randomUUID(), text, kind })
+      setDialog(null)
+    }
+  }
+  const sourceFromStudio = (source: SourceRef) => {
+    if (source.messageId === 'setting') {
+      setDialog('world')
+      return
+    }
+    setDialog(null)
+    if (archive)
+      window.location.hash = `/chat/${encodeURIComponent(archive.id)}?message=${encodeURIComponent(source.messageId)}${source.blockId ? `&block=${encodeURIComponent(source.blockId)}` : ''}`
+  }
+  const commandFromStudio = (value: TaskOutput<'command'>) => {
+    if (value.action === 'music') {
+      if (value.targetId) requestTrack(value.targetId)
+      setDialog('world')
+    } else if (value.action === 'archive') {
+      if (value.targetId) {
+        selectArchive(value.targetId)
+        setDialog(null)
+      } else setDialog('archives')
+    } else if (value.action === 'mode' && value.mode) {
+      enter()
+      setExternalMode(value.mode)
+      setDialog(null)
+    } else if (value.action === 'world') setDialog('world')
+    else if (archive && ['character', 'phone'].includes(value.action)) {
+      setDialog(null)
+      window.location.hash = `/chat/${encodeURIComponent(archive.id)}?studio=${value.action === 'phone' ? 'interactions' : 'archives'}&${value.action === 'phone' ? 'contact' : 'entity'}=${encodeURIComponent(value.targetId ?? '')}`
+    }
+  }
+  const closeStudio = () => {
+    setDialog(null)
+    if (studioTab && archive) window.location.hash = `/chat/${encodeURIComponent(archive.id)}`
   }
   if (!settings) return null
   return (
@@ -132,7 +195,10 @@ function Workspace() {
             </p>
           </div>
         </div>
-        <nav className="flex items-center gap-1" aria-label="应用操作">
+        <nav className="flex flex-wrap items-center gap-1" aria-label="应用操作">
+          <IconButton label="剧情工作台" onClick={() => setDialog('studio')} disabled={!archive}>
+            <NotebookTabs />
+          </IconButton>
           <IconButton label="渠道管理" onClick={() => setDialog('channels')}>
             <SlidersHorizontal />
           </IconButton>
@@ -167,17 +233,19 @@ function Workspace() {
                 <SelectValue placeholder="选择已测试渠道" />
               </SelectTrigger>
               <SelectContent>
-                {channels.map((c) => (
-                  <SelectItem key={c.id} value={c.id} disabled={!channelIsReady(c)}>
-                    {c.name}
-                    {channelIsReady(c) ? '' : ' · 需测试'}
-                  </SelectItem>
-                ))}
-                {!channels.length && (
-                  <SelectItem value="no-channel" disabled>
-                    请先添加渠道
-                  </SelectItem>
-                )}
+                <SelectGroup>
+                  {channels.map((c) => (
+                    <SelectItem key={c.id} value={c.id} disabled={!channelIsReady(c)}>
+                      {c.name}
+                      {channelIsReady(c) ? '' : ' · 需测试'}
+                    </SelectItem>
+                  ))}
+                  {!channels.length && (
+                    <SelectItem value="no-channel" disabled>
+                      请先添加渠道
+                    </SelectItem>
+                  )}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>
@@ -191,6 +259,13 @@ function Workspace() {
             onWorld={() => setDialog('world')}
             insert={insert}
             onInserted={onInserted}
+            externalRequest={externalRequest}
+            onExternalHandled={onExternalHandled}
+            externalMode={externalMode}
+            onModeHandled={onModeHandled}
+            sourceMessage={sourceMessage}
+            sourceBlock={sourceBlock}
+            onStudio={() => setDialog('studio')}
           />
         </main>
       ) : (
@@ -291,6 +366,23 @@ function Workspace() {
         notify={notify}
         disabled={busy}
       />
+      {archive && (
+        <Studio
+          key={`${archive.id}:${studioTab ?? ''}:${params.get('contact') ?? ''}:${params.get('entity') ?? ''}`}
+          open={dialog === 'studio' || (!dialog && !!studioTab)}
+          onClose={closeStudio}
+          archive={archive}
+          disabled={chatBusy}
+          onBusy={onStudioBusy}
+          onSend={sendFromStudio}
+          onSource={sourceFromStudio}
+          onCommand={commandFromStudio}
+          notify={notify}
+          initialTab={studioTab}
+          initialContact={params.get('contact') ?? undefined}
+          initialEntity={params.get('entity') ?? undefined}
+        />
+      )}
       <WorldPlayer
         open={dialog === 'world'}
         onClose={() => setDialog(null)}
