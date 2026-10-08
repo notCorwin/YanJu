@@ -1,17 +1,17 @@
+import { interceptImage, isRoleIntercepted } from '@/content/intercept'
 import {
   createUIMessageStream,
   type ChatTransport,
   type DeepPartial,
   type UIMessageStreamWriter,
 } from 'ai'
-import { isRoleIntercepted, interceptImage } from '@/content/intercept'
-import { archiveMessages, db, appendMessage, commitSummary, revise } from './db'
-import { compactContext, contextBudget, calibrate } from './context'
+import { calibrate, compactContext, contextBudget } from './context'
 import { buildInstructions, modelMessages } from './prompts'
 import { channelIsReady, friendlyError, generateReply, summarize } from './provider'
-import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from './types'
 import type { ForumReply, NarrativeReply, RequestKind } from './schemas'
 import { sanitizePartial } from './schemas'
+import { appendMessage, archiveMessages, commitSummary, db, revise } from './storage'
+import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from './types'
 
 const supersededCompaction = Symbol('supersededCompaction')
 
@@ -35,7 +35,6 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
       data: sanitizePartial('forum', message.partial.value),
     })
   else if (message.kind === 'notice') parts.push({ type: 'data-notice', data: message.content })
-  else if (message.legacy) parts.push({ type: 'data-legacy', data: message.legacy })
   else parts.push({ type: 'text', text: message.content })
   return {
     id: message.id,

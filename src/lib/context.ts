@@ -1,4 +1,11 @@
 import { z } from 'zod'
+import { estimatedProtocol } from './channels'
+import {
+  buildInstructions,
+  compressionInstructions,
+  modelMessages,
+  serializeMessage,
+} from './prompts'
 import {
   compressionSchema,
   forumSchema,
@@ -6,14 +13,7 @@ import {
   type CompressionResult,
   type RequestKind,
 } from './schemas'
-import {
-  buildInstructions,
-  compressionInstructions,
-  modelMessages,
-  serializeMessage,
-} from './prompts'
 import type { Archive, Channel, Persona, StoredMessage, Summary } from './types'
-import { estimatedProtocol } from './channels'
 
 export const COMPRESSION_THRESHOLD = 0.85
 export const COMPRESSION_TARGET = 0.7
@@ -184,7 +184,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     }
     for (const message of pending) {
       const raw = serializeMessage(message)
-      // Split exceptionally large legacy messages. No prefix is committed until every segment succeeds.
+      // Split exceptionally large messages. No prefix is committed until every segment succeeds.
       const charBudget = Math.max(
         128,
         Math.floor(

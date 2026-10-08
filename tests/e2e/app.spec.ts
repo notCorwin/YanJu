@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import {
   capabilityFixture,
+  messageFixture,
   channelFixture,
   completion,
   compressionFixture,
@@ -11,13 +12,13 @@ import {
   responseSse,
   sse,
 } from '../fixtures'
-import type { SaveFile } from '../../src/lib/types'
+import { defaults, type SaveFile } from '../../src/lib/types'
 
 async function readOpfs(page: Page): Promise<SaveFile | undefined> {
   return page.evaluate(async () => {
     try {
       const root = await navigator.storage.getDirectory()
-      const directory = await root.getDirectoryHandle('yanju-v2')
+      const directory = await root.getDirectoryHandle('yanju-v3')
       const handle = await directory.getFileHandle('save.json')
       return JSON.parse(await (await handle.getFile()).text())
     } catch (error) {
@@ -60,96 +61,83 @@ type ResponseBody = {
   temperature?: number
   max_output_tokens: number
 }
+function nativeSave(
+  seed: { historyTurns?: number; historyRepeats?: number; contextWindow?: number } = {},
+): SaveFile {
+  return {
+    version: 3,
+    exportedAt: '2026-10-08T00:00:00.000Z',
+    archives: [
+      { id: 'archive-1', name: '阅读篇章', createdAt: 1, updatedAt: 2, revision: 0, draft: '' },
+      { id: 'archive-2', name: '第二篇章', createdAt: 1, updatedAt: 1, revision: 0, draft: '' },
+    ],
+    messages: [
+      {
+        ...messageFixture('opening', 'assistant', '午后的书房很安静，今天想读哪一本书？', 0),
+        kind: 'text',
+      },
+      ...Array.from({ length: (seed.historyTurns ?? 0) * 2 }, (_, i) =>
+        messageFixture(
+          `history-${i}`,
+          i % 2 ? 'assistant' : 'user',
+          `旧历史${i}：${'讨论阅读和明天的安排。'.repeat(seed.historyRepeats ?? 1)}`,
+          i + 1,
+        ),
+      ),
+      {
+        ...messageFixture('opening-2', 'assistant', '第二篇章的开场。', 0),
+        archiveId: 'archive-2',
+        kind: 'text',
+      },
+    ],
+    masks: [
+      {
+        id: 'persona-1',
+        name: '测试读者',
+        gender: '其他',
+        identity: '读者',
+        prefer: '阅读',
+        force: '不允许代替我说话。',
+        createdAt: 1,
+      },
+    ],
+    channels: [
+      { ...channelFixture, contextWindow: seed.contextWindow ?? 131072 },
+      {
+        ...channelFixture,
+        id: 'channel-2',
+        name: '第二渠道',
+        model: 'second-model',
+        contextWindow: 131072,
+      },
+    ],
+    settings: {
+      ...defaults,
+      activeArchiveId: 'archive-1',
+      activeChannelId: 'channel-1',
+      activePersonaId: 'persona-1',
+    },
+  }
+}
+async function importFixture(page: Page, save: SaveFile) {
+  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  await page.getByLabel('导入存档文件').setInputFiles({
+    name: 'native-v3.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(save)),
+  })
+  await page
+    .getByRole('alertdialog', { name: '导入并替换当前资料？' })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
+}
 async function prepare(
   page: Page,
   respond?: (body: Body) => { value: unknown; finish?: string; status?: number },
   seed: { historyTurns?: number; historyRepeats?: number; contextWindow?: number } = {},
 ) {
   const requests: Body[] = []
-  await page.addInitScript((seed) => {
-    if (localStorage.getItem('test-seeded')) return
-    localStorage.setItem('test-seeded', 'true')
-    localStorage.setItem(
-      'yanju_archives',
-      JSON.stringify([
-        {
-          id: 'archive-1',
-          name: '阅读篇章',
-          createdAt: 1,
-          updatedAt: 2,
-          messages: [
-            {
-              id: 'opening',
-              role: 'assistant',
-              content: '午后的书房很安静，今天想读哪一本书？',
-              timestamp: 1,
-            },
-            ...Array.from({ length: (seed.historyTurns ?? 0) * 2 }, (_, i) => ({
-              id: `history-${i}`,
-              role: i % 2 ? 'assistant' : 'user',
-              content: `旧历史${i}：${'讨论阅读和明天的安排。'.repeat(seed.historyRepeats ?? 1)}`,
-              timestamp: i + 2,
-            })),
-          ],
-        },
-        {
-          id: 'archive-2',
-          name: '第二篇章',
-          createdAt: 1,
-          updatedAt: 1,
-          messages: [
-            { id: 'opening-2', role: 'assistant', content: '第二篇章的开场。', timestamp: 1 },
-          ],
-        },
-      ]),
-    )
-    localStorage.setItem(
-      'yanju_masks',
-      JSON.stringify([
-        {
-          id: 'persona-1',
-          name: '测试读者',
-          gender: '其他',
-          identity: '读者',
-          prefer: '阅读',
-          force: '不允许代替我说话。',
-          createdAt: 1,
-        },
-      ]),
-    )
-    localStorage.setItem('yanju_archive_cur', JSON.stringify('archive-1'))
-    localStorage.setItem('yanju_channel_cur', JSON.stringify('channel-1'))
-    localStorage.setItem('yanju_mask_cur', JSON.stringify('persona-1'))
-    localStorage.setItem(
-      'yanju_channels',
-      JSON.stringify([
-        {
-          id: 'channel-1',
-          name: '测试渠道',
-          baseUrl: 'https://mock.example/v1',
-          apiKey: 'test-key-not-real',
-          model: 'test-model',
-          apiMode: 'chat-completions',
-          maxTokens: 4096,
-          temperature: 0.9,
-          contextWindow: seed.contextWindow ?? 131072,
-          createdAt: 1,
-        },
-        {
-          id: 'channel-2',
-          name: '第二渠道',
-          baseUrl: 'https://mock.example/v1',
-          apiKey: 'test-key-not-real',
-          model: 'second-model',
-          apiMode: 'chat-completions',
-          maxTokens: 4096,
-          temperature: 0.9,
-          contextWindow: 131072,
-          createdAt: 1,
-        },
-      ]),
-    )
-  }, seed)
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
     requests.push(body)
@@ -176,6 +164,8 @@ async function prepare(
   })
   await page.goto('./')
   await expect(page.getByRole('button', { name: '进入聊天' })).toBeVisible()
+  await importFixture(page, nativeSave(seed))
+  await page.getByRole('button', { name: '返回首页', exact: true }).click()
   return requests
 }
 async function enableChannel(
@@ -242,6 +232,258 @@ async function enter(page: Page) {
   await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
 }
 
+test('原生文本的编辑复制清空与旧版本拒绝', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await prepare(page)
+  await enter(page)
+  await page.getByRole('button', { name: '编辑消息', exact: true }).click()
+  await page.getByRole('textbox', { name: '消息内容' }).fill('<p>新的原生开场</p>')
+  await page.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(page.getByText('<p>新的原生开场</p>', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '复制消息', exact: true }).click()
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe('<p>新的原生开场</p>')
+  await expect
+    .poll(async () => (await readOpfs(page))?.messages.find((m) => m.id === 'opening')?.content)
+    .toBe('<p>新的原生开场</p>')
+  const before = await readOpfs(page)
+  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  for (const version of [1, 2]) {
+    await page.getByLabel('导入存档文件').setInputFiles({
+      name: `unsupported-${version}.json`,
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({ version, archives: [], channels: [], masks: [], messages: [] }),
+      ),
+    })
+    await expect(
+      page.getByText('仅支持版本 3 的盐焗 JSON 存档；旧版本不会导入或迁移。').first(),
+    ).toBeVisible()
+    await expect(page.getByRole('alertdialog')).toHaveCount(0)
+    expect({ ...(await readOpfs(page)), exportedAt: before?.exportedAt }).toEqual(before)
+  }
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('button', { name: '清空当前聊天', exact: true }).click()
+  await page
+    .getByRole('alertdialog', { name: '清空当前聊天？' })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await expect
+    .poll(
+      async () =>
+        (await readOpfs(page))?.messages.filter((m) => m.archiveId === 'archive-1').length,
+    )
+    .toBe(1)
+  const saved = await readOpfs(page)
+  expect(lastSavedMessage(saved)?.kind).toBe('text')
+  expect(saved?.archives.find((a) => a.id === 'archive-1')?.name).toBe('阅读篇章')
+  expect(saved?.messages.find((m) => m.archiveId === 'archive-2')?.content).toBe('第二篇章的开场。')
+  await page.reload()
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(1)
+})
+
+test('人设切换每轮注入', async ({ page }) => {
+  const requests = await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  await page.getByRole('button', { name: '人设管理', exact: true }).click()
+  await page.getByRole('button', { name: '新建人设', exact: true }).click()
+  await page.getByRole('textbox', { name: '姓名', exact: true }).fill('测试本人')
+  await page
+    .getByRole('textbox', { name: '强制指令', exact: true })
+    .fill('本轮称呼我为测试本人，不要代替我决定。')
+  await page.getByRole('button', { name: '使用此人设', exact: true }).click()
+  await expect(page.getByText('当前人设已更新。')).toBeVisible()
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('一起阅读。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expectArchiveAvailable(page)
+  expect(businessRequests(requests).at(-1)?.messages[0].content).toContain('本轮称呼我为测试本人')
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('继续阅读。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expectArchiveAvailable(page)
+  expect(businessRequests(requests).at(-1)?.messages[0].content).toContain('本轮称呼我为测试本人')
+})
+
+test('存档创建重命名删除与外观恢复', async ({ page }) => {
+  await prepare(page)
+  await enter(page)
+  await page.getByRole('button', { name: '外观设置', exact: true }).click()
+  await page.getByRole('spinbutton', { name: '聊天字号', exact: true }).fill('19')
+  await page.getByRole('spinbutton', { name: '界面字号', exact: true }).fill('15')
+  await page.getByRole('combobox', { name: '字体', exact: true }).click()
+  await page.getByRole('option', { name: '楷体', exact: true }).click()
+  await page.getByLabel('背景图片', { exact: true }).setInputFiles({
+    name: 'background.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aDAAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  })
+  await page.getByRole('slider', { name: /背景透明度/ }).focus()
+  await page.keyboard.press('End')
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await expect.poll(async () => (await readOpfs(page))?.settings.fontChat).toBe(19)
+  await expect
+    .poll(async () => (await readOpfs(page))?.settings.bgImage)
+    .toContain('data:image/png')
+  await expect.poll(async () => (await readOpfs(page))?.settings.bgOpacity).toBe(100)
+  await page.reload()
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
+  expect(
+    await page.evaluate(() => document.documentElement.style.getPropertyValue('--font-chat-size')),
+  ).toBe('1.1875rem')
+  expect(
+    await page.evaluate(() => document.documentElement.style.getPropertyValue('--font-body')),
+  ).toContain('KaiTi')
+  expect(
+    await page.evaluate(() => document.documentElement.style.getPropertyValue('--font-ui-size')),
+  ).toBe('0.9375rem')
+  expect(
+    await page.evaluate(() =>
+      document.documentElement.style.getPropertyValue('--background-opacity'),
+    ),
+  ).toBe('1')
+  expect(
+    await page.evaluate(() =>
+      document.documentElement.style.getPropertyValue('--background-image'),
+    ),
+  ).toContain('data:image/png;base64,')
+  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  await page.getByRole('button', { name: '新建', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
+  const id = decodeURIComponent(new URL(page.url()).hash.slice(7))
+  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  await page.getByRole('button', { name: '重命名 新的篇章', exact: true }).click()
+  await page.getByRole('textbox', { name: '存档名称', exact: true }).fill('新篇章验收')
+  await page.getByRole('button', { name: '保存名称', exact: true }).click()
+  await expect(page.getByRole('button', { name: '删除 新篇章验收', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '删除 新篇章验收', exact: true }).click()
+  await page
+    .getByRole('alertdialog', { name: '删除存档？' })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect
+    .poll(async () => (await readOpfs(page))?.archives.some((a) => a.id === id))
+    .toBe(false)
+  expect((await readOpfs(page))?.archives).toHaveLength(2)
+})
+
+test('世界与音乐切换保持音频节点及音量，指令复制填入并保存草稿', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.addInitScript(() => {
+    const paused = new WeakMap<HTMLMediaElement, boolean>()
+    Object.defineProperty(HTMLMediaElement.prototype, 'paused', {
+      get() {
+        return paused.get(this) ?? true
+      },
+    })
+    Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
+      get() {
+        return 180
+      },
+    })
+    HTMLMediaElement.prototype.play = function () {
+      paused.set(this, false)
+      this.dispatchEvent(new Event('loadedmetadata'))
+      this.dispatchEvent(new Event('play'))
+      return Promise.resolve()
+    }
+    HTMLMediaElement.prototype.pause = function () {
+      paused.set(this, true)
+      this.dispatchEvent(new Event('pause'))
+    }
+  })
+  await prepare(page)
+  await page.locator('audio').evaluate((element) => {
+    element.dataset.continuity = 'same-player'
+  })
+  await page.getByRole('button', { name: '世界与音乐', exact: true }).click()
+  await expect(page.getByRole('button', { name: '背景 · SETTING', exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: '音乐', exact: true }).click()
+  await page.getByRole('button', { name: '播放音乐', exact: true }).click()
+  await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
+  await page.getByRole('slider', { name: '音量', exact: true }).focus()
+  await page.keyboard.press('Home')
+  for (let i = 0; i < 7; i++) await page.keyboard.press('ArrowRight')
+  await expect
+    .poll(() => page.locator('audio').evaluate((element) => element.volume))
+    .toBeCloseTo(0.35)
+  await page.getByRole('button', { name: '下一曲', exact: true }).click()
+  await expect(page.locator('audio')).toHaveAttribute('src', /\/true\.mp3$/)
+  await page.getByRole('button', { name: '切换到单曲循环', exact: true }).click()
+  await page.locator('audio').evaluate((element) => {
+    element.currentTime = 42
+    element.dispatchEvent(new Event('ended'))
+  })
+  await expect.poll(() => page.locator('audio').evaluate((element) => element.currentTime)).toBe(0)
+  await expect(page.locator('audio')).toHaveAttribute('src', /\/true\.mp3$/)
+  await page.getByRole('button', { name: '切换到列表循环', exact: true }).click()
+  await page.locator('audio').dispatchEvent('ended')
+  await expect(page.locator('audio')).toHaveAttribute('src', /\/staywithme\.mp3$/)
+  await page.getByRole('tab', { name: '世界', exact: true }).click()
+  await page.getByRole('tab', { name: '音乐', exact: true }).click()
+  await expect(page.getByRole('slider', { name: '音量', exact: true })).toHaveValue('0.35')
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await enter(page)
+  expect(await page.locator('audio').evaluate((element) => element.paused)).toBe(false)
+  await expect(page.locator('audio')).toHaveAttribute('data-continuity', 'same-player')
+  await page.getByRole('button', { name: '世界、指令与音乐', exact: true }).click()
+  await page.getByRole('tab', { name: '指令', exact: true }).click()
+  await page.getByRole('button', { name: '复制防夺舍用户', exact: true }).click()
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain('$禁止代替沈辞玉')
+  await page.getByRole('button', { name: '填入聊天', exact: true }).nth(1).click()
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toHaveValue(/\$禁止代替沈辞玉/)
+  await expect
+    .poll(async () => (await readOpfs(page))?.archives.find((a) => a.id === 'archive-1')?.draft)
+    .toContain('$禁止代替沈辞玉')
+  await page.reload()
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toHaveValue(/\$禁止代替沈辞玉/)
+})
+
+test('结构化回复编辑后从早期消息重说，成功后替换分支', async ({ page }) => {
+  const requests = await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  for (const text of ['第一轮阅读。', '第二轮阅读。']) {
+    await page.getByRole('textbox', { name: '聊天输入' }).fill(text)
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expectArchiveAvailable(page)
+  }
+  const original = await readOpfs(page)
+  const edited = structuredClone(narrativeFixture)
+  edited.scene.location = '编辑后的书房'
+  await page.getByRole('button', { name: '编辑消息', exact: true }).nth(2).click()
+  await page.getByRole('textbox', { name: '消息内容' }).fill(JSON.stringify(edited))
+  await page.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(page.getByText('编辑后的书房', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '重新生成', exact: true }).first().click()
+  await page
+    .getByRole('alertdialog', { name: '从这里重新生成？' })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await expectArchiveAvailable(page)
+  const result = (await readOpfs(page))?.messages
+    .filter((m) => m.archiveId === 'archive-1')
+    .sort((a, b) => a.sequence - b.sequence)
+  expect(result).toHaveLength(3)
+  expect(result?.some((m) => m.content === '第二轮阅读。')).toBe(false)
+  expect(result?.at(-1)?.reply).toEqual({ kind: 'narrative', value: narrativeFixture })
+  expect((await readOpfs(page))?.messages.find((m) => m.id === 'opening-2')).toEqual(
+    original?.messages.find((m) => m.id === 'opening-2'),
+  )
+  expect(businessRequests(requests)).toHaveLength(3)
+  await page.reload()
+  await expect(page.getByRole('button', { name: '重新生成', exact: true })).toHaveCount(1)
+})
+
 test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) => {
   const requests = await prepare(page)
   await enableChannel(page)
@@ -278,6 +520,16 @@ test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) 
   await expect.poll(() => businessRequests(requests).length).toBe(3)
   await expectArchiveAvailable(page)
   expect((await readOpfs(page))?.messages.filter((m) => m.reply).length).toBe(3)
+  await page.getByRole('button', { name: '发布帖子', exact: true }).first().click()
+  await page.getByRole('textbox', { name: '帖子标题', exact: true }).fill('今天的阅读笔记')
+  await page.getByRole('textbox', { name: '内容', exact: true }).fill('分享今天读到的一段故事。')
+  await page.getByRole('dialog').getByRole('button', { name: '发送', exact: true }).click()
+  await expect.poll(() => businessRequests(requests).length).toBe(4)
+  await expectArchiveAvailable(page)
+  expect((await readOpfs(page))?.messages.filter((m) => m.reply).length).toBe(4)
+  expect(businessRequests(requests).at(-1)?.messages.at(-1)?.content).toContain(
+    '$发送帖子\n标题：今天的阅读笔记',
+  )
   expect(
     requests.every(
       (r) => r.response_format.type === 'json_schema' && r.response_format.json_schema.strict,
@@ -358,7 +610,7 @@ test('纠正成功后刷新续聊，纠正请求仍保留在上下文前缀', as
   expect(next.response_format).toEqual(corrected.response_format)
 })
 
-test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page }) => {
+test('渠道切换、存档链接、刷新和 v3 导入导出', async ({ page }) => {
   const requests = await prepare(page)
   await enableChannel(page)
   await enableChannel(page, '第二渠道')
@@ -386,7 +638,7 @@ test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page })
   expect(path).toBeTruthy()
   await page.getByLabel('导入存档文件').setInputFiles(path!)
   await page
-    .getByRole('dialog', { name: '导入并替换当前资料？' })
+    .getByRole('alertdialog', { name: '导入并替换当前资料？' })
     .getByRole('button', { name: '确认', exact: true })
     .click()
   await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
@@ -394,7 +646,7 @@ test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page })
   await expect(page.getByRole('combobox', { name: '当前渠道' })).toContainText('第二渠道')
 })
 
-test('中文输入法、换行、移动端宽度和触控尺寸', async ({ page }) => {
+test('中文输入法、换行、滚动、移动端宽度和触控', async ({ page, isMobile }) => {
   const requests = await prepare(page)
   await enableChannel(page)
   await enter(page)
@@ -430,6 +682,33 @@ test('中文输入法、换行、移动端宽度和触控尺寸', async ({ page 
   expect(
     await input.evaluate((el) => parseFloat(getComputedStyle(el).fontSize)),
   ).toBeGreaterThanOrEqual(16)
+  const viewport = page.locator('[data-slot="message-scroller-viewport"]')
+  await viewport.evaluate((el) => {
+    el.scrollTop = el.scrollHeight
+  })
+  const atEnd = await viewport.evaluate((el) => el.scrollTop)
+  expect(atEnd).toBeGreaterThan(0)
+  if (isMobile) {
+    const bounds = await viewport.boundingBox()
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Input.synthesizeScrollGesture', {
+      x: bounds!.x + bounds!.width / 2,
+      y: bounds!.y + bounds!.height / 2,
+      yDistance: Math.round(bounds!.height / 3),
+      gestureSourceType: 'touch',
+    })
+    await cdp.detach()
+  } else {
+    await viewport.hover()
+    await page.mouse.wheel(0, -10000)
+  }
+  await expect.poll(() => viewport.evaluate((el) => el.scrollTop)).toBeLessThan(atEnd)
+  const jump = page.getByRole('button', { name: '回到最新消息', exact: true })
+  await expect(jump).toHaveAttribute('data-active', 'true')
+  if (isMobile) await jump.tap()
+  else await jump.click()
+  await expect(jump).toHaveAttribute('data-active', 'false')
+  await page.screenshot({ path: test.info().outputPath('workspace.png') })
 })
 
 test('截断保留收到的内容，并可重试', async ({ page }) => {
@@ -546,7 +825,7 @@ test('只保留 OPFS 文件时仍恢复完整聊天、草稿、人设与已测�
   await recovered.evaluate(async () => {
     localStorage.clear()
     await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.deleteDatabase('yanju-v2')
+      const request = indexedDB.deleteDatabase('yanju-v3')
       request.onsuccess = () => resolve()
       request.onerror = () => reject(request.error)
       request.onblocked = () => reject(new Error('工作数据库仍有连接'))
@@ -617,7 +896,7 @@ test('没有部分内容的模型错误结束后仍可管理和导出存档', as
   expect(lastSavedMessage(await readOpfs(page))?.status).toBe('failed')
 })
 
-test('自动优先 Responses，叙事、论坛、摘要续聊及 v2 存档往返', async ({ page }) => {
+test('自动优先 Responses，叙事、论坛、摘要续聊及 v3 存档往返', async ({ page }) => {
   const { requests, chatRequests } = await prepareResponses(page)
   await enableChannel(page, '测试渠道', { mode: 'auto', defaultTemperature: true })
   expect(requests).toHaveLength(2)
@@ -670,14 +949,14 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v2 存档往返
   await page.getByRole('button', { name: '导出全部' }).click()
   const path = await (await downloadPromise).path()
   const exported = JSON.parse(await readFile(path!, 'utf8'))
-  expect(exported.version).toBe(2)
+  expect(exported.version).toBe(3)
   expect(exported.channels.find((c: { id: string }) => c.id === 'channel-1')).toMatchObject({
     apiMode: 'auto',
     temperature: null,
   })
   await page.getByLabel('导入存档文件').setInputFiles(path!)
   await page
-    .getByRole('dialog', { name: '导入并替换当前资料？' })
+    .getByRole('alertdialog', { name: '导入并替换当前资料？' })
     .getByRole('button', { name: '确认', exact: true })
     .click()
   await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
@@ -766,7 +1045,7 @@ for (const action of ['修改', '删除']) {
     } else {
       await other.getByRole('button', { name: '删除渠道', exact: true }).click()
       await other
-        .getByRole('dialog', { name: '删除渠道？' })
+        .getByRole('alertdialog', { name: '删除渠道？' })
         .getByRole('button', { name: '确认', exact: true })
         .click()
       await expect(

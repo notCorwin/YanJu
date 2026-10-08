@@ -1,9 +1,9 @@
 import character from '@/content/character.txt?raw'
 import rules from '@/content/narrative-rules.txt?raw'
 import style from '@/content/style.txt?raw'
-import type { Persona, StoredMessage, Summary } from './types'
 import type { ModelMessage } from 'ai'
 import type { RequestKind } from './schemas'
+import type { Persona, StoredMessage, Summary } from './types'
 
 const narrativeProtocol = `输出协议：只返回 NarrativeReply 根对象，禁止 HTML、XML、CSS、脚本或 Markdown 代码块。
 所有核心模块必填。scene 有剧情时间、地点、在场人物，中文引语 30–50 字，英文引语 10–20 个词及出处。
@@ -30,7 +30,6 @@ export function buildInstructions(persona: Persona | undefined, kind: RequestKin
 
 export function serializeMessage(message: StoredMessage) {
   if (message.reply) return JSON.stringify(message.reply.value)
-  if (message.legacy) return JSON.stringify(message.legacy)
   return message.content
 }
 export function modelMessages(messages: StoredMessage[], summary?: Summary): ModelMessage[] {

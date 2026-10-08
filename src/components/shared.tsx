@@ -1,17 +1,20 @@
-import { useId, type ComponentProps, type ReactNode } from 'react'
+import { friendlyError } from '@/lib/provider'
+import { useEffect, useId, useState, type ComponentProps, type ReactNode } from 'react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog'
 import { Button } from './ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
-import { Field, FieldLabel, FieldDescription } from './ui/field'
+import { Field, FieldDescription, FieldLabel } from './ui/field'
 import { Input } from './ui/input'
 import { Textarea } from './ui/textarea'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './ui/dialog'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 export function IconButton({
   label,
@@ -71,26 +74,43 @@ export function ConfirmDialog({
   onConfirm: () => Promise<void> | void
   destructive?: boolean
 }) {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (open) setError('')
+  }, [open])
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{detail}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            取消
-          </Button>
-          <Button
+    <AlertDialog open={open} onOpenChange={(v) => !v && !pending && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{detail}</AlertDialogDescription>
+        </AlertDialogHeader>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>取消</AlertDialogCancel>
+          <AlertDialogAction
             variant={destructive ? 'destructive' : 'default'}
-            onClick={() => void Promise.resolve(onConfirm()).then(onClose)}
+            disabled={pending}
+            onClick={(event) => {
+              event.preventDefault()
+              setPending(true)
+              void Promise.resolve()
+                .then(onConfirm)
+                .then(onClose)
+                .catch((e) => setError(friendlyError(e)))
+                .finally(() => setPending(false))
+            }}
           >
-            确认
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            {pending ? '正在处理…' : '确认'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 export function Prose({ text }: { text?: string }) {

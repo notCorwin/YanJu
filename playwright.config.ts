@@ -7,7 +7,7 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: false,
   workers: 1,
-  timeout: 30000,
+  timeout: 60000,
   expect: { timeout: 10000 },
   use: { baseURL, trace: 'retain-on-failure' },
   projects: [

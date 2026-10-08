@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { exportSave, initializeStorage, YanJuDatabase } from '../../src/lib/db'
+import { exportSave, initializeStorage, YanJuDatabase } from '../../src/lib/storage'
 import { OPFS_SAVE_FILE, OpfsPersistence } from '../../src/lib/opfs'
 import { defaults, type SaveFile } from '../../src/lib/types'
 import { channelFixture, messageFixture, narrativeFixture } from '../fixtures'
 import { channelFingerprint, channelIsReady } from '../../src/lib/provider'
 
 const save: SaveFile = {
-  version: 2,
+  version: 3,
   exportedAt: '2026-10-08T00:00:00.000Z',
   archives: [{ id: 'archive-1', name: '篇章', createdAt: 1, updatedAt: 1, revision: 1, draft: '' }],
   messages: [

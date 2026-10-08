@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { afterEach } from 'vitest'
-import { db } from '../../src/lib/db'
+import { db } from '../../src/lib/storage'
 
 afterEach(async () => {
   await Promise.all([

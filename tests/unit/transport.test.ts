@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { db, archiveMessages, appendMessage } from '../../src/lib/db'
+import { db, archiveMessages, appendMessage } from '../../src/lib/storage'
 import { defaults } from '../../src/lib/types'
 import { channelFingerprint } from '../../src/lib/provider'
 import { BrowserChatTransport, toChatMessage } from '../../src/lib/transport'

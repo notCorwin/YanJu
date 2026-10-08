@@ -1,6 +1,12 @@
+import Dexie from 'dexie'
+import { toChatMessage } from '../../src/lib/transport'
+import { modelMessages } from '../../src/lib/prompts'
 import { describe, it, expect } from 'vitest'
 import {
   appendMessage,
+  createArchive,
+  initializeStorage,
+  YanJuDatabase,
   archiveMessages,
   commitSummary,
   commitChannelCapability,
@@ -9,8 +15,7 @@ import {
   exportSave,
   importSave,
   normalizeImport,
-} from '../../src/lib/db'
-import { convertLegacy } from '../../src/lib/legacy'
+} from '../../src/lib/storage'
 import { defaults, type Archive, type ChannelCapability } from '../../src/lib/types'
 import { channelFingerprint, channelIsReady } from '../../src/lib/channels'
 import { channelFixture, compressionFixture, messageFixture, narrativeFixture } from '../fixtures'
@@ -82,10 +87,10 @@ describe('渠道测试结果的并发提交', () => {
     expect(channelIsReady(saved!)).toBe(true)
   })
 })
-describe('IndexedDB 与存档迁移', () => {
-  it('v2 渠道协议和模型默认温度往返保留，导入清除能力缓存', async () => {
+describe('IndexedDB 与原生 v3 存档', () => {
+  it('v3 渠道协议和模型默认温度往返保留，导入清除能力缓存', async () => {
     await importSave({
-      version: 2,
+      version: 3,
       archives: [],
       messages: [],
       masks: [],
@@ -99,96 +104,78 @@ describe('IndexedDB 与存档迁移', () => {
       ],
     })
     const exported = await exportSave()
-    expect(exported.version).toBe(2)
+    expect(exported.version).toBe(3)
     expect(exported.channels[0]).toMatchObject({ apiMode: 'responses', temperature: null })
     expect(exported.channels[0].capability).toBeUndefined()
     await importSave(JSON.parse(JSON.stringify(exported)))
     expect((await exportSave()).channels).toEqual(exported.channels)
     expect(() =>
-      normalizeImport({ version: 2, channels: [{ ...channelFixture, apiMode: 'unknown' }] }),
+      normalizeImport({ version: 3, channels: [{ ...channelFixture, apiMode: 'unknown' }] }),
     ).toThrow('API 模式')
     expect(() =>
-      normalizeImport({ version: 2, channels: [{ ...channelFixture, apiMode: ['responses'] }] }),
+      normalizeImport({ version: 3, channels: [{ ...channelFixture, apiMode: ['responses'] }] }),
     ).toThrow('API 模式')
   })
-  it('v1 保留消息、渠道、人设、时间与外观，升级为 v2', async () => {
-    const v1 = {
-      version: 1,
-      archives: [
-        {
-          id: archive.id,
-          name: '旧存档',
-          createdAt: 1,
-          updatedAt: 2,
-          messages: [
-            {
-              id: 'old-msg',
-              role: 'assistant',
-              content: '纯文本',
-              rawContent:
-                '<div class="censy-lux-header"><div class="censy-meta-val">2019年</div><div class="censy-meta-val">书房</div><div class="censy-meta-val">宴雎</div></div><p>旧正文</p><div class="lux_wrap"><details><div class="lux_lab">STATE / INTERNAL</div><div class="lux_sec"><div class="lux_h">心声</div><div class="lux_ph">旧心声</div></div></details><details><div class="lux_lab">ARCHIVE / PROTOCOL</div><div>短中长记忆</div></details></div><script>window.legacyExecuted=true</script>',
-              timestamp: 123,
-            },
-          ],
-        },
-      ],
-      channels: [
-        {
-          ...channelFixture,
-          maxTokens: 2048,
-          maxOutputTokens: undefined,
-          contextWindow: undefined,
-        },
-      ],
-      masks: [
-        {
-          id: 'mask',
-          name: '旧人设',
-          gender: '其他',
-          identity: '读者',
-          prefer: '阅读',
-          force: '不要替我说话',
-          createdAt: 3,
-        },
-      ],
-      settings: {
-        fontChat: 18,
-        fontUi: 14,
-        fontFamily: 'KaiTi',
-        bgImage: 'data:image/png;base64,test',
-        bgOpacity: 25,
-      },
-    }
-    const result = await importSave(v1)
-    expect(result.channels[0].maxOutputTokens).toBe(2048)
-    expect(result.channels[0].contextWindow).toBe(32768)
-    expect(result.messages[0].createdAt).toBe(123)
-    expect(result.messages[0].legacy?.panels).toHaveLength(1)
-    expect(result.messages[0].legacy?.scene?.location).toBe('书房')
-    expect(result.messages[0].legacy?.body).toContain('旧正文')
-    expect(result.messages[0].legacy?.body).not.toContain('legacyExecuted')
-    const exported = await exportSave()
-    expect(exported.version).toBe(2)
-    expect(exported.channels[0].apiKey).toBe(channelFixture.apiKey)
-    expect(exported.settings.bgOpacity).toBe(25)
-    expect(exported.masks[0].force).toBe(v1.masks[0].force)
-    await importSave(JSON.parse(JSON.stringify(exported)))
-    expect((await exportSave()).messages).toEqual(exported.messages)
-    expect((await exportSave()).settings).toEqual(exported.settings)
+  it.each([1, 2])('拒绝版本 %s，现有消息、渠道和设置不受影响', async (version) => {
+    await db.archives.put(archive)
+    await db.messages.put(messageFixture('retained', 'user', '当前消息', 0))
+    await db.channels.put(channelFixture)
+    await db.settings.put(defaults)
+    const before = await exportSave()
+    await expect(
+      importSave({ version, archives: [], messages: [], channels: [], masks: [] }),
+    ).rejects.toThrow('仅支持版本 3')
+    const after = await exportSave()
+    expect({ ...after, exportedAt: before.exportedAt }).toEqual(before)
   })
-  it('旧论坛 XML 转换为帖子与全部回答', () => {
-    const xml = `<zf><g5>旧标题</g5><g6>旧时间</g6><g7>旧帖子正文</g7>${Array.from({ length: 50 }, (_, i) => `<r>${i}|作者${i}|今天|回答${i}|${i}|回复</r>`).join('')}</zf>`
-    const converted = convertLegacy(xml)
-    expect(converted.forum?.post.title).toBe('旧标题')
-    expect(converted.forum?.answers).toHaveLength(50)
+  it('开场白为原生文本，编辑后保留时间并可直接进入模型上下文', async () => {
+    const created = await createArchive()
+    const [opening] = await archiveMessages(created.id)
+    expect(opening.kind).toBe('text')
+    expect(opening.content.length).toBeGreaterThan(0)
+    await editMessage(opening.id, '新的开场白')
+    const [edited] = await archiveMessages(created.id)
+    expect(edited).toMatchObject({
+      kind: 'text',
+      content: '新的开场白',
+      createdAt: opening.createdAt,
+    })
+    expect(toChatMessage(edited).parts).toEqual([{ type: 'text', text: '新的开场白' }])
+    expect(modelMessages([edited])).toEqual([{ role: 'assistant', content: '新的开场白' }])
+    await importSave(JSON.parse(JSON.stringify(await exportSave())))
+    expect(await archiveMessages(created.id)).toEqual([edited])
+  })
+  it('新启动忽略旧 localStorage 和数据库，并保留旧数据', async () => {
+    const previous = new Dexie('yanju-v2')
+    previous.version(2).stores({ archives: 'id' })
+    const fresh = new YanJuDatabase('test-native-startup')
+    try {
+      await previous.table('archives').put({ id: 'old-archive', name: '旧数据库' })
+      localStorage.setItem(
+        'yanju_archives',
+        JSON.stringify([{ id: 'old-local', name: '旧本地资料' }]),
+      )
+      await initializeStorage(fresh)
+      expect(new YanJuDatabase().name).toBe('yanju-v3')
+      expect((await fresh.archives.toArray()).map((a) => a.name)).toEqual(['新的篇章'])
+      expect((await fresh.messages.toArray())[0].kind).toBe('text')
+      expect(await previous.table('archives').get('old-archive')).toEqual({
+        id: 'old-archive',
+        name: '旧数据库',
+      })
+      expect(localStorage.getItem('yanju_archives')).toContain('old-local')
+    } finally {
+      await fresh.delete()
+      await previous.delete()
+    }
   })
   it('非法导入在修改数据库前失败', async () => {
     await db.archives.put(archive)
     await expect(
-      importSave({ version: 2, archives: [archive, archive], messages: [] }),
+      importSave({ version: 3, archives: [archive, archive], messages: [] }),
     ).rejects.toThrow(/重复/)
     expect(await db.archives.count()).toBe(1)
-    expect(() => normalizeImport({ version: 3 })).toThrow()
+    expect(() => normalizeImport({ version: 4 })).toThrow()
   })
   it('追加保留覆盖边界，编辑已覆盖消息使摘要失效', async () => {
     await db.archives.put(archive)
@@ -224,14 +211,14 @@ describe('IndexedDB 与存档迁移', () => {
     ).rejects.toThrow(/变更/)
     expect((await db.archives.get(archive.id))?.summary).toBeUndefined()
   })
-  it('v2 保留严格对象、恢复数据、草稿与边界', async () => {
+  it('v3 保留严格对象、恢复数据、草稿与边界', async () => {
     const m = {
       ...messageFixture('m-0', 'assistant', '', 0),
       reply: { kind: 'narrative' as const, value: narrativeFixture },
       correction: '上次校验失败，请输出完整回复。',
     }
     await importSave({
-      version: 2,
+      version: 3,
       archives: [{ ...archive, draft: '未发出的输入' }],
       messages: [m],
       channels: [channelFixture],

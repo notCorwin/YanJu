@@ -1,6 +1,8 @@
 import type { DeepPartial, UIMessage } from 'ai'
 import type { CompressionResult, ForumReply, NarrativeReply, Reply, RequestKind } from './schemas'
 
+export type Notify = (message: string, error?: boolean) => void
+
 export type ApiProtocol = 'chat-completions' | 'responses'
 export type ApiMode = 'auto' | ApiProtocol
 export interface ProtocolCapability {
@@ -51,7 +53,6 @@ export interface Settings extends Appearance {
   activeChannelId: string
   activePersonaId: string
   activeArchiveId: string
-  migrated: boolean
 }
 export interface Usage {
   input: number
@@ -79,23 +80,6 @@ export interface Archive {
   draft: string
   compactionError?: string
 }
-export interface LegacyPanel {
-  title: string
-  sections: { heading: string; text: string }[]
-}
-export interface LegacyContent {
-  body: string
-  scene?: {
-    time: string
-    location: string
-    characters: string
-    quoteZh: string
-    quoteEn: string
-    source: string
-  }
-  panels: LegacyPanel[]
-  forum?: ForumReply
-}
 export type MessageStatus = 'complete' | 'partial' | 'failed' | 'cancelled'
 export interface StoredMessage {
   id: string
@@ -104,13 +88,12 @@ export interface StoredMessage {
   content: string
   createdAt: number
   sequence: number
-  kind: RequestKind | 'legacy' | 'notice'
+  kind: RequestKind | 'text' | 'notice'
   status: MessageStatus
   reply?: Reply
   partial?:
     | { kind: 'narrative'; value: DeepPartial<NarrativeReply> }
     | { kind: 'forum'; value: DeepPartial<ForumReply> }
-  legacy?: LegacyContent
   rawContent?: string
   /** A user message already sent to correct this generation, replayed before the assistant reply. */
   correction?: string
@@ -128,7 +111,6 @@ export type ChatMessage = UIMessage<
   {
     narrative: DeepPartial<NarrativeReply>
     forum: DeepPartial<ForumReply>
-    legacy: LegacyContent
     notice: string
     status: {
       phase: 'compressing' | 'generating' | 'correcting' | 'complete' | 'failed' | 'cancelled'
@@ -138,7 +120,7 @@ export type ChatMessage = UIMessage<
   Record<string, never>
 >
 export interface SaveFile {
-  version: 2
+  version: 3
   exportedAt: string
   archives: Archive[]
   messages: StoredMessage[]
@@ -152,7 +134,6 @@ export const defaults: Settings = {
   activeChannelId: '',
   activePersonaId: '',
   activeArchiveId: '',
-  migrated: false,
   fontChat: 16,
   fontUi: 14,
   fontFamily: 'Noto Serif SC',
