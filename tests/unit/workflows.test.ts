@@ -1,13 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+import { channelFingerprint } from '../../src/lib/provider'
 import {
+  appendMessage,
   archiveMessages,
   db,
-  importSave,
-  appendMessage,
   editMessage,
   exportSave,
-} from '../../src/lib/db'
+  importSave,
+} from '../../src/lib/storage'
+import { taskSchemas, validateTask, type AuxiliaryKind, type TaskInput } from '../../src/lib/tasks'
+import { defaults, type StoredMessage } from '../../src/lib/types'
 import {
   applyTask,
   chooseContinuation,
@@ -15,19 +18,16 @@ import {
   saveMediaDraft,
   storyMarkdown,
 } from '../../src/lib/workflows'
-import { taskSchemas, validateTask, type AuxiliaryKind, type TaskInput } from '../../src/lib/tasks'
-import { channelFingerprint } from '../../src/lib/provider'
-import { defaults, type StoredMessage } from '../../src/lib/types'
+import { auxiliaryFixture } from '../auxiliary-fixtures'
 import {
   channelFixture,
+  compressionFixture,
+  forumFixture,
   messageFixture,
   narrativeFixture,
-  forumFixture,
-  compressionFixture,
-  sse,
   responseSse,
+  sse,
 } from '../fixtures'
-import { auxiliaryFixture } from '../auxiliary-fixtures'
 
 const archive = {
   id: 'archive-1',
@@ -419,7 +419,8 @@ describe('辅助任务完整链路', () => {
     expect((await db.tasks.get(task.id))?.output).toEqual(task.output)
     if (kind === 'persona' || kind === 'archiveMetadata') {
       await applyTask(task.id)
-      if (kind === 'persona') expect((await db.personas.toArray()).some((p) => p.name === '林晚')).toBe(true)
+      if (kind === 'persona')
+        expect((await db.personas.toArray()).some((p) => p.name === '林晚')).toBe(true)
       else expect((await db.archives.get(archive.id))?.description).toContain('书房')
     }
     expect((await db.storyStates.get(archive.id))!.events).toHaveLength(1)

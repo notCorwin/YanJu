@@ -1,7 +1,7 @@
 import Dexie from 'dexie'
 import { describe, expect, it, vi } from 'vitest'
-import { db, exportSave, initializeStorage, YanJuDatabase, importSave } from '../../src/lib/db'
 import { acquireArchiveOperation } from '../../src/lib/operations'
+import { db, exportSave, importSave, initializeStorage, YanJuDatabase } from '../../src/lib/storage'
 import { defaults } from '../../src/lib/types'
 import { messageFixture } from '../fixtures'
 

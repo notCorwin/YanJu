@@ -2,12 +2,14 @@ import { readFile } from 'node:fs/promises'
 import { expect, type Page } from '@playwright/test'
 import { test } from './fixtures'
 
-const pngDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE9kAAAAASUVORK5CYII='
+const pngDataUrl =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE9kAAAAASUVORK5CYII='
 const background = (page: Page) =>
   page.evaluate(() => document.documentElement.style.getPropertyValue('--background-image'))
 async function upload(page: Page) {
   await page.getByLabel('背景图片', { exact: true }).setInputFiles({
-    name: 'background.png', mimeType: 'image/png',
+    name: 'background.png',
+    mimeType: 'image/png',
     buffer: Buffer.from(pngDataUrl.split(',')[1], 'base64'),
   })
   await expect.poll(() => background(page)).toContain('blob:')
@@ -45,11 +47,14 @@ test('完整 v3 导出包含图片字节，替换导入后恢复背景预览', a
   expect(data.version).toBe(3)
   expect(data.settings.bgImage).toBe(pngDataUrl)
   await page.getByLabel('导入存档文件').setInputFiles({
-    name: 'background-v3.json', mimeType: 'application/json',
+    name: 'background-v3.json',
+    mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(data)),
   })
-  await page.getByRole('dialog', { name: '导入并替换当前资料？', exact: true })
-    .getByRole('button', { name: '确认', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '导入并替换当前资料？', exact: true })
+    .getByRole('button', { name: '确认', exact: true })
+    .click()
   await page.reload()
   await expect.poll(() => background(page)).toContain('blob:')
 })

@@ -18,5 +18,5 @@ export function useBackground(image: string | undefined) {
       if (url) URL.revokeObjectURL(url)
     }
   }, [image])
-  return resolved.image === image ? resolved.url : image ?? ''
+  return resolved.image === image ? resolved.url : (image ?? '')
 }

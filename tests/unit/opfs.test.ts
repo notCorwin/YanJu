@@ -1,10 +1,10 @@
+import { webcrypto } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { exportSave, initializeStorage, YanJuDatabase } from '../../src/lib/db'
 import { OPFS_SAVE_FILE, OpfsPersistence } from '../../src/lib/opfs'
+import { channelFingerprint, channelIsReady } from '../../src/lib/provider'
+import { exportSave, initializeStorage, YanJuDatabase } from '../../src/lib/storage'
 import { defaults, type SaveFile } from '../../src/lib/types'
 import { channelFixture, messageFixture, narrativeFixture } from '../fixtures'
-import { channelFingerprint, channelIsReady } from '../../src/lib/provider'
-import { webcrypto } from 'node:crypto'
 
 const save: SaveFile = {
   version: 3,

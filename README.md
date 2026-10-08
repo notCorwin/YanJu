@@ -24,7 +24,7 @@ pnpm dev
 - Vite 8、React 19、TypeScript 7、Tailwind CSS 4、shadcn/ui、AI SDK 7、Zod、Dexie。TypeScript 7 原生编译器与 ESLint 所需的 TypeScript 6 API 按[官方并行配置](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6-0)安装。
 - `src/styles/tokens.css` 是颜色、字体、字号、间距、圆角、边框、阴影与动效的唯一来源，映射到 Tailwind 语义工具类。外观设置只修改根 Token。`pnpm check:tokens` 阻止组件新增裸视觉值，包含 shadcn 源码。
 - 使用官方 shadcn MessageScroller / Message / Bubble，Field / InputGroup，Card / Accordion / Dialog / Sheet。共享组件和变体统一视觉与触控尺寸。
-- 角色、人设规则、文风、开场白、世界和常用指令保存在 `src/content`。文本不再嵌入脚本边界。原文件 `宴雎.html` 保留供旧版行为和数据格式参考，不参与生产构建。
+- 角色、人设规则、文风、开场白、世界和常用指令保存在 `src/content`。文本不再嵌入脚本边界。源代码按应用、渠道、人设、聊天、外观、存档和世界功能拆分，存储逻辑集中在 `src/lib/storage`。
 - Hash 路由 `#/chat/<archiveId>` 支持存档链接及刷新；链接载入当前浏览器已有的存档，跨浏览器需要先导入存档。
 
 渠道与人设编辑器支持字段级提示、未保存修改保护和关闭后的键盘回焦，桌面、窄屏及横屏共用同一套组件与视觉 Token。结构化回复可按正文、场景、状态、手机、日记或论坛分区编辑，也保留原始 JSON 编辑。存档支持搜索和创建时命名；聊天和指令草稿自动保存，移动端 Enter 换行、点击发送，桌面 Enter 发送、Shift + Enter 换行。

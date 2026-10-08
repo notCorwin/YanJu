@@ -1,29 +1,29 @@
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { channelFingerprint, channelIsReady } from '../../src/lib/channels'
+import { emptyEffects } from '../../src/lib/domain-schema'
+import { modelMessages } from '../../src/lib/prompts'
 import {
   appendMessage,
   archiveMessages,
-  commitSummary,
   commitChannelCapability,
+  commitSummary,
   db,
   editMessage,
-  exportSave,
   exportArchive,
+  exportSave,
   forkArchive,
   importSave,
+  initializeStorage,
   normalizeImport,
   YanJuDatabase,
-  initializeStorage,
-} from '../../src/lib/db'
-import { emptyEffects } from '../../src/lib/domain-schema'
+} from '../../src/lib/storage'
 import { defaults, type Archive, type ChannelCapability } from '../../src/lib/types'
-import { channelFingerprint, channelIsReady } from '../../src/lib/channels'
-import { modelMessages } from '../../src/lib/prompts'
 import {
   channelFixture,
   compressionFixture,
+  forumFixture,
   messageFixture,
   narrativeFixture,
-  forumFixture,
 } from '../fixtures'
 
 const archive: Archive = {

@@ -1,7 +1,82 @@
+import { MessageEditor } from '@/components/message-editor'
+import { RecoveryBoundary } from '@/components/recovery-boundary'
+import { RequestDetails } from '@/components/request-details'
+import { ConfirmDialog, IconButton, Prose } from '@/components/shared'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Bubble, BubbleContent } from '@/components/ui/bubble'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from '@/components/ui/input-group'
+import { Message, MessageContent, MessageFooter, MessageHeader } from '@/components/ui/message'
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from '@/components/ui/message-scroller'
+import { Progress } from '@/components/ui/progress'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { ForumView } from '@/features/chat/replies/forum-view'
+import { NarrativeView } from '@/features/chat/replies/narrative-view'
+import type { ExternalChatRequest } from '@/features/chat/types'
+import { contextBudget } from '@/lib/context'
+import type { Notify } from '@/lib/notify'
 import { withArchiveOperation } from '@/lib/operations'
-import { MessageEditor } from './message-editor'
-import { RecoveryBoundary } from './recovery-boundary'
-import { RequestDetails } from './request-details'
+import { channelIsReady, friendlyError } from '@/lib/provider'
+import type { RequestKind } from '@/lib/schemas'
+import {
+  appendMessage,
+  archiveMessages,
+  createArchiveData,
+  db,
+  forkArchive,
+  refreshStory,
+  revise,
+} from '@/lib/storage'
+import {
+  BrowserChatTransport,
+  compressArchive,
+  persistCancelledMessage,
+  toChatMessage,
+} from '@/lib/transport'
+import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from '@/lib/types'
+import { executeAuxiliary } from '@/lib/workflows'
+import { useChat } from '@ai-sdk/react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import {
+  ArrowDownToLine,
+  BookOpen,
+  Copy,
+  FileJson,
+  GitBranch,
+  LoaderCircle,
+  Pencil,
+  RotateCcw,
+  Send,
+  Square,
+  Trash2,
+} from 'lucide-react'
 import {
   memo,
   useEffect,
@@ -11,107 +86,8 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import { useChat } from '@ai-sdk/react'
-import { useLiveQuery } from 'dexie-react-hooks'
-import {
-  archiveMessages,
-  db,
-  appendMessage,
-  createArchiveData,
-  forkArchive,
-  revise,
-  refreshStory,
-} from '@/lib/db'
-import {
-  BrowserChatTransport,
-  compressArchive,
-  persistCancelledMessage,
-  toChatMessage,
-} from '@/lib/transport'
-import { executeAuxiliary } from '@/lib/workflows'
-import { contextBudget } from '@/lib/context'
-import { channelIsReady, friendlyError } from '@/lib/provider'
-import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from '@/lib/types'
-import type { RequestKind } from '@/lib/schemas'
-import {
-  MessageScrollerProvider,
-  MessageScroller,
-  MessageScrollerViewport,
-  MessageScrollerContent,
-  MessageScrollerItem,
-  MessageScrollerButton,
-} from './ui/message-scroller'
-import { Message, MessageContent, MessageHeader, MessageFooter } from './ui/message'
-import { Bubble, BubbleContent } from './ui/bubble'
-import { InputGroup, InputGroupTextarea, InputGroupAddon, InputGroupButton } from './ui/input-group'
-import { Button } from './ui/button'
-import { Badge } from './ui/badge'
-import { Progress } from './ui/progress'
-import {
-  Select,
-  SelectContent,
-  SelectTrigger,
-  SelectValue,
-  SelectItem,
-  SelectGroup,
-} from './ui/select'
-import { Alert, AlertTitle, AlertDescription } from './ui/alert'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
-import { NarrativeView, ForumView } from './replies'
-import { ConfirmDialog, IconButton, Prose } from './shared'
-import type { Notify } from './managers'
-import {
-  Send,
-  Square,
-  Copy,
-  Pencil,
-  RotateCcw,
-  LoaderCircle,
-  Trash2,
-  ArrowDownToLine,
-  BookOpen,
-  GitBranch,
-  FileJson,
-} from 'lucide-react'
 
-export interface ExternalChatRequest {
-  id: string
-  text: string
-  kind: RequestKind
-  expectedRevision?: number
-  complete: (committed: boolean) => void
-}
-
-export function ChatSession(props: {
-  archive: Archive
-  channel?: Channel
-  persona?: Persona
-  notify: Notify
-  onBusy: (value: boolean) => void
-  onWorld: () => void
-  onChannels: () => void
-  insert: string
-  onInserted: () => void
-  externalRequest: ExternalChatRequest | null
-  onExternalHandled: () => void
-  externalMode: RequestKind | null
-  onModeHandled: () => void
-  sourceMessage?: string
-  sourceBlock?: string
-  onSourceHandled: (messageId: string, blockId?: string) => void
-  disabled: boolean
-  onStudio: () => void
-}) {
-  const stored = useLiveQuery(() => archiveMessages(props.archive.id), [props.archive.id])
-  if (!stored)
-    return (
-      <p role="status" className="p-6 text-muted-foreground">
-        正在读取存档…
-      </p>
-    )
-  return <ChatRunner {...props} stored={stored} />
-}
-function ChatRunner({
+export function ChatRunner({
   archive,
   channel,
   persona,
@@ -974,5 +950,6 @@ function ChatRunner({
   )
 }
 
-const MemoNarrativeView = memo(NarrativeView)
-const MemoForumView = memo(ForumView)
+export const MemoNarrativeView = memo(NarrativeView)
+
+export const MemoForumView = memo(ForumView)

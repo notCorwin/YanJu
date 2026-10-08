@@ -1,15 +1,18 @@
+import { NarrativeView } from '@/features/chat/replies/narrative-view'
+import type { SourceRef } from '@/lib/domain-schema'
 import { downloadText } from '@/lib/download'
-import { useState } from 'react'
-import type { TaskRun, Archive, StoredMessage } from '@/lib/types'
-import { taskDefinitions, validateTask, type TaskOutput } from '@/lib/tasks'
+import { tracks } from '@/lib/media'
 import type { StoryState } from '@/lib/story'
 import { entityName } from '@/lib/story'
-import type { SourceRef } from '@/lib/domain-schema'
+import { taskDefinitions, validateTask, type TaskOutput } from '@/lib/tasks'
+import type { Archive, StoredMessage, TaskRun } from '@/lib/types'
 import { searchStory, storyMarkdown } from '@/lib/workflows'
-import { tracks } from '@/lib/media'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from './ui/card'
-import { Button } from './ui/button'
+import { useState } from 'react'
+import { SourceButton } from './archive-browser'
+import { FormField, Prose } from './shared'
 import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './ui/card'
 import { FieldGroup } from './ui/field'
 import {
   Select,
@@ -19,9 +22,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from './ui/select'
-import { FormField, Prose } from './shared'
-import { SourceButton } from './archive-browser'
-import { NarrativeView } from './replies'
 
 export function TaskResult({
   task,

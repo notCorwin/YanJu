@@ -1,27 +1,38 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
-import world from '@/content/world.json'
-import commands from '@/content/commands.json'
-import { tracks } from '@/lib/media'
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from './ui/sheet'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './ui/accordion'
-import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
-import { Button } from './ui/button'
-import { Input } from './ui/input'
-import { Alert, AlertTitle, AlertDescription } from './ui/alert'
-import { IconButton, Prose } from './shared'
-import type { Notify } from './managers'
+import { IconButton, Prose } from '@/components/shared'
 import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import commands from '@/content/commands.json'
+import world from '@/content/world.json'
+import { tracks } from '@/lib/media'
+import type { Notify } from '@/lib/notify'
+import {
+  Copy,
+  LoaderCircle,
+  Music2,
   Pause,
   Play,
+  Repeat,
   SkipBack,
   SkipForward,
-  Copy,
-  Repeat,
-  Music2,
-  LoaderCircle,
 } from 'lucide-react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 
 const time = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 

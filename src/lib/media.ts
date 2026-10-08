@@ -1,13 +1,11 @@
-export const tracks = [
-  ['熄灭', 'ximie'],
-  ['true', 'true'],
-  ['Stay with me', 'staywithme'],
-  ['来自天堂的魔鬼', 'mogui'],
-  ['A.I.N.Y 爱你', 'ainy'],
-].map(([name, id]) => ({
-  id,
-  name,
-  url: `https://cdn.jsdelivr.net/gh/hmt20061008-oss/music@main/${id}.mp3`,
+import music from '@/content/music.json'
+
+export const tracks = music.map((track) => ({
+  ...track,
+  id: new URL(track.url).pathname
+    .split('/')
+    .at(-1)!
+    .replace(/\.mp3$/, ''),
 }))
 
 export function requestTrack(id: string, play = true) {

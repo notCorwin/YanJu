@@ -1,4 +1,4 @@
-import { db, type YanJuDatabase } from './db'
+import { db, type YanJuDatabase } from './storage'
 
 export interface OperationLease {
   archiveId: string
