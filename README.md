@@ -6,7 +6,7 @@
 
 ## 本地开发
 
-需要 Node.js 24.21+（最新 LTS 系列）和 pnpm 12.10.1；`.nvmrc` 与部署环境使用相同版本。
+需要 Node.js 26.11+（当前正式稳定版）和 pnpm 12.10.1；`.nvmrc` 与部署环境使用相同版本。
 
 ```sh
 pnpm install --frozen-lockfile

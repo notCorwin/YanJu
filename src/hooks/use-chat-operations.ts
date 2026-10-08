@@ -135,7 +135,6 @@ export function useChatOperations(options: {
           },
         )
       })
-      inputRef.current?.focus()
     },
     [draft, run],
   )
