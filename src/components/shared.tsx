@@ -1,10 +1,11 @@
 import { useEffect, useId, useState, type ComponentProps, type ReactNode } from 'react'
-import { LoaderCircle } from 'lucide-react'
 import { friendlyError } from '@/lib/provider'
 import { Button } from './ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
-import { Field, FieldLabel, FieldDescription } from './ui/field'
+import { Field, FieldLabel, FieldDescription, FieldError } from './ui/field'
+import { LoaderCircle } from 'lucide-react'
 import { Input } from './ui/input'
+import { InputGroup, InputGroupInput, InputGroupAddon } from './ui/input-group'
 import { Textarea } from './ui/textarea'
 import {
   Dialog,
@@ -34,6 +35,8 @@ export function IconButton({
 export function FormField({
   label,
   help,
+  error,
+  endAddon,
   value,
   onChange,
   multiline,
@@ -41,20 +44,50 @@ export function FormField({
 }: {
   label: string
   help?: string
+  error?: string
+  endAddon?: ReactNode
   value: string | number
   onChange: (value: string) => void
   multiline?: boolean
 } & Omit<ComponentProps<typeof Input>, 'value' | 'onChange'>) {
-  const id = useId()
+  const generatedId = useId()
+  const id = props.id || generatedId
+  const describedBy =
+    [help && `${id}-help`, error && `${id}-error`].filter(Boolean).join(' ') || undefined
+  const Control = endAddon ? InputGroupInput : Input
+  const control = (
+    <Control
+      {...props}
+      id={id}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-invalid={!!error}
+      aria-describedby={describedBy}
+    />
+  )
   return (
-    <Field>
+    <Field data-invalid={!!error} data-disabled={props.disabled}>
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       {multiline ? (
-        <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} rows={4} />
+        <Textarea
+          {...(props as ComponentProps<typeof Textarea>)}
+          id={id}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-invalid={!!error}
+          aria-describedby={describedBy}
+          rows={4}
+        />
+      ) : endAddon ? (
+        <InputGroup>
+          {control}
+          <InputGroupAddon align="inline-end">{endAddon}</InputGroupAddon>
+        </InputGroup>
       ) : (
-        <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} {...props} />
+        control
       )}
-      {help && <FieldDescription>{help}</FieldDescription>}
+      {help && <FieldDescription id={`${id}-help`}>{help}</FieldDescription>}
+      {error && <FieldError id={`${id}-error`}>{error}</FieldError>}
     </Field>
   )
 }
@@ -65,6 +98,7 @@ export function ConfirmDialog({
   onClose,
   onConfirm,
   destructive = true,
+  confirmLabel = '确认',
 }: {
   title: string
   detail: ReactNode
@@ -72,27 +106,24 @@ export function ConfirmDialog({
   onClose: () => void
   onConfirm: () => Promise<void> | void
   destructive?: boolean
+  confirmLabel?: string
 }) {
-  const [busy, setBusy] = useState(false)
+  const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
     if (open) setError('')
   }, [open])
-  const confirm = async () => {
-    if (busy) return
-    setBusy(true)
-    try {
-      await onConfirm()
-      onClose()
-    } catch (error) {
-      setError(friendlyError(error))
-    } finally {
-      setBusy(false)
-    }
+  const close = () => {
+    if (pending) return
+    setError('')
+    onClose()
   }
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && !busy && onClose()}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={(v) => !v && close()}>
+      <DialogContent
+        onInteractOutside={(e) => pending && e.preventDefault()}
+        onEscapeKeyDown={(e) => pending && e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{detail}</DialogDescription>
@@ -103,16 +134,28 @@ export function ConfirmDialog({
           </p>
         )}
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={onClose}>
+          <Button variant="outline" disabled={pending} onClick={close}>
             取消
           </Button>
           <Button
             variant={destructive ? 'destructive' : 'default'}
-            disabled={busy}
-            onClick={() => void confirm()}
+            disabled={pending}
+            onClick={async () => {
+              if (pending) return
+              setPending(true)
+              setError('')
+              try {
+                await onConfirm()
+                onClose()
+              } catch (e) {
+                setError(friendlyError(e))
+              } finally {
+                setPending(false)
+              }
+            }}
           >
-            {busy && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
-            确认
+            {pending && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+            {confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -132,6 +175,10 @@ export function Prose({ text }: { text?: string }) {
     </div>
   )
 }
-export function Eyebrow({ children }: { children: ReactNode }) {
-  return <span className="text-xs font-mono tracking-editorial text-primary">{children}</span>
+export function Eyebrow({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return (
+    <span className={`text-xs font-mono tracking-editorial text-primary ${className}`}>
+      {children}
+    </span>
+  )
 }

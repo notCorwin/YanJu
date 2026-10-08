@@ -61,7 +61,7 @@ async function expectArchiveAvailable(page: Page) {
   await expect(page.getByRole('button', { name: '当前存档', exact: true })).toBeEnabled()
   await expect(page.getByRole('button', { name: '载入', exact: true }).first()).toBeEnabled()
   await expect(page.getByRole('button', { name: '导出全部', exact: true })).toBeEnabled()
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
 }
 
 type Body = {
@@ -171,6 +171,8 @@ async function prepare(
       ]),
     )
   }, seed)
+  await page.context().route('https://fonts.googleapis.com/**', (route) => route.abort())
+  await page.context().route('https://fonts.gstatic.com/**', (route) => route.abort())
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
     requests.push(body)
@@ -224,10 +226,10 @@ async function enableChannel(
     await page.getByRole('combobox', { name: '温度设置' }).click()
     await page.getByRole('option', { name: '模型默认', exact: true }).click()
   }
-  await page.locator('fieldset').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
   await expect(page.getByText(/测试通过 ·/)).toBeVisible()
   await page.getByRole('button', { name: '使用此渠道' }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
 }
 async function prepareResponses(
   page: Page,
@@ -403,7 +405,9 @@ test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page })
   await page.getByRole('button', { name: '重命名 第二篇章' }).click()
   await page.getByRole('textbox', { name: '存档名称' }).fill('改名篇章')
   await page.getByRole('button', { name: '保存名称' }).click()
-  await expect(page.getByText('改名篇章', { exact: true }).first()).toBeVisible()
+  await expect(
+    page.getByRole('dialog', { name: '存档', exact: true }).getByText('改名篇章', { exact: true }),
+  ).toBeVisible()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出全部' }).click()
   const download = await downloadPromise
@@ -416,7 +420,8 @@ test('渠道切换、存档链接、刷新和 v2 导入导出', async ({ page })
     .click()
   await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
   await expect(page.getByText('第二篇章的开场。')).toBeVisible()
-  await expect(page.getByRole('combobox', { name: '当前渠道' })).toContainText('第二渠道')
+  await expect(page.getByRole('button', { name: '配置渠道', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
 })
 
 test('中文输入法、换行、移动端宽度和触控尺寸', async ({ page }) => {
@@ -438,7 +443,12 @@ test('中文输入法、换行、移动端宽度和触控尺寸', async ({ page 
   await input.press('Shift+Enter')
   await expect(input).toHaveValue('正在输入中文\n')
   expect(businessRequests(requests)).toHaveLength(0)
-  await input.press('Enter')
+  if (await page.evaluate(() => matchMedia('(pointer: coarse)').matches)) {
+    await input.press('Enter')
+    await expect(input).toHaveValue('正在输入中文\n\n')
+    expect(businessRequests(requests)).toHaveLength(0)
+    await input.press('Control+Enter')
+  } else await input.press('Enter')
   await expect.poll(() => businessRequests(requests).length).toBe(1)
   await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
@@ -543,7 +553,7 @@ test('不支持严格结构化的渠道不能用于聊天', async ({ page }) => 
     value: { error: { message: 'json_schema strict unsupported', type: 'invalid_request_error' } },
   }))
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
-  await page.locator('fieldset').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
   await expect(page.getByText(/渠道未能完成严格结构化请求/).first()).toBeVisible()
   expect(requests).toHaveLength(1)
@@ -581,7 +591,12 @@ test('只保留 OPFS 文件时仍恢复完整聊天、草稿、人设与已测�
   await expect(recovered.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
   await expect(recovered.getByRole('textbox', { name: '聊天输入' })).toHaveValue('未发送的草稿')
   await expect(recovered.getByRole('combobox', { name: '当前渠道' })).toContainText('测试渠道')
-  await expect(recovered.getByText('宴雎 / 测试读者', { exact: true })).toBeVisible()
+  const restoredAuthor = recovered
+    .getByRole('article', { name: '你的消息' })
+    .locator('[data-slot="message-header"]')
+  await restoredAuthor.scrollIntoViewIfNeeded()
+  await expect(restoredAuthor).toBeVisible()
+  await expect(restoredAuthor).toContainText('测试读者')
   await expectArchiveAvailable(recovered)
   expect(lastSavedMessage(await readOpfs(recovered))?.reply?.value).toEqual(narrativeFixture)
 })
@@ -607,7 +622,7 @@ test('OPFS 写入失败后存档仍可载入和导出，并可重试同步', asy
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
   await expectArchiveAvailable(page)
   await page.getByRole('button', { name: '存档管理' }).click()
-  await expect(page.getByText(/OPFS 同步失败：测试磁盘已满/)).toBeVisible()
+  await expect(page.getByText(/存档备份未完成：测试磁盘已满/)).toBeVisible()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出全部' }).click()
   const downloaded = await downloadPromise
@@ -621,7 +636,7 @@ test('OPFS 写入失败后存档仍可载入和导出，并可重试同步', asy
     (window as typeof window & { allowOpfsWrites: () => void }).allowOpfsWrites(),
   )
   await page.getByRole('button', { name: '重试存档同步' }).click()
-  await expect(page.getByText(/已同步 OPFS 存档/)).toBeVisible()
+  await expect(page.getByText(/全部更改已保存/)).toBeVisible()
   expect(lastSavedMessage(await readOpfs(page))?.reply?.value).toEqual(narrativeFixture)
   await page.getByRole('button', { name: '载入', exact: true }).first().click()
   await expect(page.getByText('第二篇章的开场。')).toBeVisible()
@@ -690,7 +705,7 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v2 存档往返
   await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
   await expect(page.getByRole('combobox', { name: 'API 协议' })).toContainText('自动探测')
   await expect(page.getByRole('combobox', { name: '温度设置' })).toContainText('模型默认')
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
   await page.getByRole('button', { name: '存档管理' }).click()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出全部' }).click()
@@ -728,7 +743,7 @@ test('手动协议、取消重测保留结果，配置修改使缓存失效', as
     })
     await route.fulfill({ json: response(capabilityFixture) }).catch(() => {})
   })
-  await page.locator('fieldset').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
   await expect.poll(() => pending).toBe(true)
   await expect(page.getByRole('status').filter({ hasText: /正在测试 Responses/ })).toBeVisible()
   await page.getByRole('button', { name: '取消测试', exact: true }).click()
@@ -740,10 +755,10 @@ test('手动协议、取消重测保留结果，配置修改使缓存失效', as
   await page.getByRole('option', { name: 'Chat Completions', exact: true }).click()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
   await expect(page.getByText(/当前协议：Responses/)).toHaveCount(0)
-  await page.locator('fieldset').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
   await expect(page.getByText(/当前协议：Chat Completions/)).toBeVisible()
   await page.getByRole('button', { name: '使用此渠道' }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
   await enter(page)
   await page.getByRole('textbox', { name: '聊天输入' }).fill('切换协议后继续。')
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
@@ -919,7 +934,7 @@ test('完整协议能力测试覆盖真实流式结构，不写入聊天存档',
   ])
   expect(requests.filter((body) => body.stream)).toHaveLength(3)
   await page.getByRole('button', { name: '使用此渠道' }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
   await enter(page)
   await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(1)
 })
@@ -942,7 +957,7 @@ test('自动选定 Responses 后完整协议测试仍覆盖叙事论坛摘要并
   expect(chatRequests).toHaveLength(2)
   expect(requests.every((body) => body.text.format.strict && body.store === false)).toBe(true)
   await page.getByRole('button', { name: '使用此渠道' }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
   await enter(page)
   await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(1)
 })
@@ -959,8 +974,8 @@ test('内容分区编辑校验完整协议，失败保留编辑内容并显示�
   await expect(page.getByText('mock-request', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '编辑消息', exact: true }).last().click()
   const dialog = page.getByRole('dialog', { name: '编辑消息', exact: true })
-  await dialog.getByRole('button', { name: '正文与对白 · 第 1 条', exact: true }).click()
-  const input = dialog.getByRole('textbox', { name: '正文与对白 · 第 1 条 · 内容', exact: true })
+  await dialog.getByRole('tab', { name: '正文', exact: true }).click()
+  const input = dialog.getByRole('textbox', { name: '内容', exact: true }).first()
   const tabs = (await dialog.getByRole('tablist').first().boundingBox())!
   expect((await input.boundingBox())!.y).toBeGreaterThanOrEqual(tabs.y + tabs.height)
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
@@ -1023,9 +1038,9 @@ test('从指定消息分叉、单篇章导出和冲突存档合并都保留原�
   await expect(page.getByText('第一轮。', { exact: true })).toBeVisible()
   await expect(page.getByText('第二轮。', { exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: '存档管理' }).click()
-  await page.getByRole('textbox', { name: '搜索存档', exact: true }).fill('第二篇章')
+  await page.getByRole('searchbox', { name: '搜索存档', exact: true }).fill('第二篇章')
   await expect(page.getByRole('button', { name: '导出 阅读篇章', exact: true })).toHaveCount(0)
-  await page.getByRole('textbox', { name: '搜索存档', exact: true }).fill('')
+  await page.getByRole('searchbox', { name: '搜索存档', exact: true }).fill('')
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出 阅读篇章', exact: true }).click()
   const download = await downloadPromise

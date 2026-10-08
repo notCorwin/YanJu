@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, initializeStorage } from '@/lib/db'
 import { applyAppearance } from '@/lib/appearance'
@@ -20,8 +21,17 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SelectGroup,
 } from '@/components/ui/select'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+import {
+  Empty,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+  EmptyDescription,
+  EmptyContent,
+} from '@/components/ui/empty'
 import { IconButton, Eyebrow } from '@/components/shared'
 import {
   ArrowRight,
@@ -40,6 +50,14 @@ const subscribeRoute = (notify: () => void) => {
   return () => window.removeEventListener('hashchange', notify)
 }
 const currentRoute = () => window.location.hash
+const archiveIdFromRoute = (route: string) => {
+  if (!route.startsWith('#/chat/')) return ''
+  try {
+    return decodeURIComponent(route.slice(7))
+  } catch {
+    return route.slice(7)
+  }
+}
 
 export default function App() {
   const [ready, setReady] = useState(false)
@@ -95,11 +113,20 @@ function Workspace() {
   useEffect(() => {
     if (settings) applyAppearance(settings)
   }, [settings])
-  const routeId = route.startsWith('#/chat/') ? decodeURIComponent(route.slice(7)) : ''
+  const routeId = archiveIdFromRoute(route)
   const archive = archives.find((a) => a.id === (routeId || settings?.activeArchiveId))
   const channel = channels.find((c) => c.id === settings?.activeChannelId)
   const persona = personas.find((p) => p.id === settings?.activePersonaId)
   const chatting = route.startsWith('#/chat')
+  useEffect(() => {
+    document.title = chatting ? `${archive?.name || '存档未找到'} · 宴雎` : '宴雎'
+  }, [chatting, archive?.name])
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current)
+    },
+    [],
+  )
   useEffect(() => {
     if (routeId && archive && settings?.activeArchiveId !== routeId)
       void db.settings.update('app', { activeArchiveId: routeId })
@@ -115,26 +142,38 @@ function Workspace() {
   if (!settings) return null
   return (
     <div className="relative isolate flex chat-height flex-col overflow-hidden bg-background">
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={(e) => {
+          e.preventDefault()
+          document.getElementById('main-content')?.focus()
+        }}
+      >
+        跳到主要内容
+      </a>
       <div className="pointer-events-none fixed inset-0 backdrop-scene" aria-hidden="true" />
-      <header className="surface relative z-10 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) px-3 py-2 sm:px-6">
-        <div className="flex min-w-0 items-center gap-3">
-          <IconButton
-            label="返回首页"
-            onClick={() => {
-              if (!busy) window.location.hash = '/'
-            }}
-            disabled={busy}
-          >
-            <Home />
-          </IconButton>
+      <header className="surface relative z-10 flex shrink-0 items-center justify-between gap-2 border-b-(length:--border-width) px-3 py-2 sm:px-6">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          {chatting && (
+            <IconButton
+              label="返回首页"
+              onClick={() => {
+                if (!busy) window.location.hash = '/'
+              }}
+              disabled={busy}
+            >
+              <Home />
+            </IconButton>
+          )}
           <div className="min-w-0">
             <h1 className="text-lg text-primary">宴雎</h1>
-            <p className="truncate text-xs text-muted-foreground">
+            <p className="hidden truncate text-xs text-muted-foreground sm:block">
               {chatting ? archive?.name || '存档未找到' : 'Abyss & Desire'}
             </p>
           </div>
         </div>
-        <nav className="flex items-center gap-1" aria-label="应用操作">
+        <nav className="flex shrink-0 items-center gap-1" aria-label="应用操作">
           <IconButton label="渠道管理" onClick={() => setDialog('channels')}>
             <SlidersHorizontal />
           </IconButton>
@@ -155,33 +194,50 @@ function Workspace() {
         </nav>
       </header>
       {chatting && archive ? (
-        <main className="relative z-10 flex min-h-0 flex-1 flex-col">
-          <div className="surface flex flex-wrap items-center justify-between gap-2 border-b-(length:--border-width) px-4 py-2 sm:px-6">
-            <div className="flex min-w-0 items-center gap-2">
-              <Eyebrow>宴雎 / {persona?.name || '沈辞玉'}</Eyebrow>
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="relative z-10 flex min-h-0 flex-1 flex-col"
+        >
+          <div className="surface flex min-w-0 items-center justify-between gap-2 border-b-(length:--border-width) px-4 py-2 sm:px-6">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <p className="truncate text-sm text-muted-foreground sm:hidden">{archive.name}</p>
+              <Eyebrow className="hidden truncate sm:inline">
+                宴雎 / {persona?.name || '沈辞玉'}
+              </Eyebrow>
             </div>
-            <Select
-              value={channel?.id || ''}
-              onValueChange={(value) => void db.settings.update('app', { activeChannelId: value })}
-              disabled={busy}
-            >
-              <SelectTrigger aria-label="当前渠道">
-                <SelectValue placeholder="选择已测试渠道" />
-              </SelectTrigger>
-              <SelectContent>
-                {channels.map((c) => (
-                  <SelectItem key={c.id} value={c.id} disabled={!channelIsReady(c)}>
-                    {c.name}
-                    {channelIsReady(c) ? '' : ' · 需测试'}
-                  </SelectItem>
-                ))}
-                {!channels.length && (
-                  <SelectItem value="no-channel" disabled>
-                    请先添加渠道
-                  </SelectItem>
-                )}
-              </SelectContent>
-            </Select>
+            {channels.some(channelIsReady) ? (
+              <Select
+                value={channel?.id || ''}
+                onValueChange={(value) =>
+                  void db.settings.update('app', { activeChannelId: value })
+                }
+                disabled={busy}
+              >
+                <SelectTrigger aria-label="当前渠道" className="max-w-40 shrink-0 sm:max-w-64">
+                  <SelectValue placeholder="选择已测试渠道" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {channels.map((c) => (
+                      <SelectItem key={c.id} value={c.id} disabled={!channelIsReady(c)}>
+                        {c.name}
+                        {channelIsReady(c) ? '' : ' · 需测试'}
+                      </SelectItem>
+                    ))}
+                    {!channels.length && (
+                      <SelectItem value="no-channel" disabled>
+                        请先添加渠道
+                      </SelectItem>
+                    )}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            ) : (
+              <Button variant="outline" disabled={busy} onClick={() => setDialog('channels')}>
+                配置渠道
+              </Button>
+            )}
           </div>
           <ChatSession
             key={archive.id}
@@ -191,12 +247,46 @@ function Workspace() {
             notify={notify}
             onBusy={onBusy}
             onWorld={() => setDialog('world')}
+            onChannels={() => setDialog('channels')}
             insert={insert}
             onInserted={onInserted}
           />
         </main>
+      ) : chatting ? (
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="relative z-10 flex min-h-0 flex-1 overflow-y-auto px-4 py-8"
+        >
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <FolderOpen />
+              </EmptyMedia>
+              <EmptyTitle>这个篇章尚未在此浏览器保存</EmptyTitle>
+              <EmptyDescription>
+                可以从存档列表打开已有篇章，或导入之前导出的文件，继续阅读和聊天。
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button onClick={() => setDialog('archives')}>打开存档列表</Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  window.location.hash = '/'
+                }}
+              >
+                返回首页
+              </Button>
+            </EmptyContent>
+          </Empty>
+        </main>
       ) : (
-        <main className="relative z-10 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 py-10 sm:py-16">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="relative z-10 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 py-10 sm:py-16"
+        >
           <div className="mx-auto flex w-full reading-width flex-col items-center gap-6 text-center">
             <Eyebrow>A PRIVATE NARRATIVE SPACE</Eyebrow>
             <div className="flex flex-col items-center gap-1">
@@ -226,11 +316,15 @@ function Workspace() {
                   <CardDescription>支持多渠道与严格结构化输出。</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Button variant="outline" onClick={() => setDialog('channels')}>
+                  <Button
+                    variant="outline"
+                    className="max-w-full"
+                    onClick={() => setDialog('channels')}
+                  >
                     {channel && channelIsReady(channel) ? (
                       <>
                         <Check />
-                        {channel.name}
+                        <span className="truncate">{channel.name}</span>
                       </>
                     ) : (
                       '配置渠道'
@@ -245,8 +339,12 @@ function Workspace() {
                   <CardDescription>姓名、身份与规则，每轮生效。</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Button variant="outline" onClick={() => setDialog('personas')}>
-                    {persona?.name || '创建人设'}
+                  <Button
+                    variant="outline"
+                    className="max-w-full"
+                    onClick={() => setDialog('personas')}
+                  >
+                    <span className="truncate">{persona?.name || '创建人设'}</span>
                   </Button>
                 </CardContent>
               </Card>
@@ -254,11 +352,6 @@ function Workspace() {
             <p className="text-xs text-muted-foreground">
               聊天、人设与配置保存在当前浏览器 · 可导出完整存档
             </p>
-            {chatting && !archive && (
-              <p role="alert" className="text-destructive">
-                链接中的存档在此浏览器中不存在，请从存档列表载入或导入。
-              </p>
-            )}
           </div>
         </main>
       )}
@@ -302,20 +395,31 @@ function Workspace() {
           enter()
         }}
       />
-      {toast && (
+      {createPortal(
         <div
-          role={toast.error ? 'alert' : 'status'}
-          className="fixed top-20 right-4 z-50 flex max-w-[calc(100%-2rem)] panel-width items-start gap-3 rounded-lg border-(length:--border-width) bg-popover p-4 shadow-lg"
+          data-toast-region
+          aria-live="polite"
+          aria-atomic="true"
+          className="toast-layer pointer-events-auto fixed top-20 right-4 max-w-[calc(100%-2rem)] panel-width"
         >
-          <p
-            className={`min-w-0 flex-1 wrap-break-word text-sm ${toast.error ? 'text-destructive' : 'text-foreground'}`}
-          >
-            {toast.text}
-          </p>
-          <IconButton label="关闭提示" onClick={() => setToast(null)}>
-            <X />
-          </IconButton>
-        </div>
+          {toast && (
+            <div
+              data-global-toast
+              role={toast.error ? 'alert' : 'status'}
+              className="flex items-start gap-3 rounded-lg border-(length:--border-width) bg-popover p-4 shadow-lg"
+            >
+              <p
+                className={`min-w-0 flex-1 wrap-break-word text-sm ${toast.error ? 'text-destructive' : 'text-foreground'}`}
+              >
+                {toast.text}
+              </p>
+              <IconButton label="关闭提示" onClick={() => setToast(null)}>
+                <X />
+              </IconButton>
+            </div>
+          )}
+        </div>,
+        document.body,
       )}
     </div>
   )

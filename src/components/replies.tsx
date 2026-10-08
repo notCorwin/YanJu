@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { DeepPartial } from 'ai'
 import type { ForumReply, NarrativeReply } from '@/lib/schemas'
 import type { LegacyContent } from '@/lib/types'
@@ -16,9 +16,9 @@ import {
   DialogDescription,
   DialogFooter,
 } from './ui/dialog'
-import { Textarea } from './ui/textarea'
-import { Field, FieldLabel } from './ui/field'
-import { Eyebrow, Prose } from './shared'
+import { FieldGroup } from './ui/field'
+import { Eyebrow, Prose, FormField, ConfirmDialog } from './shared'
+import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
 import { MessageSquare, PenLine } from 'lucide-react'
 
 type Scene = DeepPartial<NarrativeReply['scene']>
@@ -27,15 +27,15 @@ function SceneCard({ scene }: { scene: Scene }) {
     <Card size="sm">
       <CardHeader>
         <Eyebrow>SCENE / 场景</Eyebrow>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {[
             ['时间', scene.time],
             ['地点', scene.location],
             ['在场', scene.characters?.filter(Boolean).join('、')],
           ].map(([name, value]) => (
-            <div key={name}>
+            <div key={name} className="min-w-0 first:col-span-2 sm:first:col-span-1">
               <p className="text-xs text-muted-foreground">{name}</p>
-              <p className="text-ui">{value || '…'}</p>
+              <p className="wrap-anywhere text-ui">{value || '…'}</p>
             </div>
           ))}
         </div>
@@ -241,9 +241,35 @@ export function ForumView({
   onSend: (text: string) => void
   disabled?: boolean
 }) {
-  const [target, setTarget] = useState<string | null>(null)
+  const [target, setTarget] = useState<{ kind: 'post' } | { kind: 'reply'; author: string } | null>(
+    null,
+  )
   const [text, setText] = useState('')
   const [title, setTitle] = useState('')
+  const [errors, setErrors] = useState<{ title?: string; text?: string }>({})
+  const formRef = useRef<HTMLFormElement>(null)
+  const isNewPost = target?.kind === 'post'
+  const { guard, confirmation } = useUnsavedChanges(target !== null && !!(text || title))
+  const submit = () => {
+    if (disabled) return
+    const issues = {
+      title: isNewPost && !title.trim() ? '请输入帖子标题。' : undefined,
+      text: !text.trim() ? '请输入内容。' : undefined,
+    }
+    setErrors(issues)
+    if (issues.title || issues.text) {
+      requestAnimationFrame(() =>
+        formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
+      )
+      return
+    }
+    onSend(
+      isNewPost
+        ? `$发送帖子\n标题：${title.trim()}\n${text.trim()}`
+        : `回复${target?.kind === 'reply' ? target.author : '匿名'}：${text.trim()}`,
+    )
+    setTarget(null)
+  }
   const [shown, setShown] = useState(10)
   const answers = reply.answers?.filter(Boolean) ?? []
   return (
@@ -275,7 +301,8 @@ export function ForumView({
             variant="outline"
             disabled={disabled}
             onClick={() => {
-              setTarget('新帖')
+              setErrors({})
+              setTarget({ kind: 'post' })
               setText('')
               setTitle('')
             }}
@@ -307,8 +334,10 @@ export function ForumView({
                       variant="ghost"
                       disabled={disabled}
                       onClick={() => {
-                        setTarget(answer.author || '匿名')
+                        setErrors({})
+                        setTarget({ kind: 'reply', author: answer.author || '匿名' })
                         setText('')
+                        setTitle('')
                       }}
                     >
                       <MessageSquare />
@@ -325,49 +354,76 @@ export function ForumView({
           展开更多回答（还有 {answers.length - shown} 条）
         </Button>
       )}
-      <Dialog open={target !== null} onOpenChange={(v) => !v && setTarget(null)}>
+      <Dialog open={target !== null} onOpenChange={(v) => !v && guard(() => setTarget(null))}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{target === '新帖' ? '发布帖子' : `回复 ${target}`}</DialogTitle>
+            <DialogTitle>
+              {isNewPost ? '发布帖子' : `回复 ${target?.kind === 'reply' ? target.author : ''}`}
+            </DialogTitle>
             <DialogDescription>发送后由当前渠道生成完整论坛内容和 50 条回答。</DialogDescription>
           </DialogHeader>
-          {target === '新帖' && (
-            <Field>
-              <FieldLabel htmlFor="forum-title">帖子标题</FieldLabel>
-              <Textarea
-                id="forum-title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                rows={2}
+          <form
+            ref={formRef}
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              submit()
+            }}
+            onKeyDown={(e) => {
+              if (
+                e.key === 'Enter' &&
+                (e.ctrlKey || e.metaKey) &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+          >
+            <FieldGroup>
+              {isNewPost && (
+                <FormField
+                  label="帖子标题"
+                  name="forum-title"
+                  value={title}
+                  error={errors.title}
+                  onChange={(value) => {
+                    setTitle(value)
+                    setErrors((previous) => ({ ...previous, title: undefined }))
+                  }}
+                  autoFocus
+                />
+              )}
+              <FormField
+                label="内容"
+                name="forum-content"
+                value={text}
+                error={errors.text}
+                multiline
+                autoFocus={!isNewPost}
+                onChange={(value) => {
+                  setText(value)
+                  setErrors((previous) => ({ ...previous, text: undefined }))
+                }}
+                help="⌘ / Ctrl + Enter 发送"
               />
-            </Field>
-          )}
-          <Field>
-            <FieldLabel htmlFor="forum-reply">内容</FieldLabel>
-            <Textarea
-              id="forum-reply"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={4}
-            />
-          </Field>
-          <DialogFooter>
-            <Button
-              disabled={!text.trim() || (target === '新帖' && !title.trim()) || disabled}
-              onClick={() => {
-                onSend(
-                  target === '新帖'
-                    ? `$发送帖子\n标题：${title}\n${text}`
-                    : `回复${target}：${text}`,
-                )
-                setTarget(null)
-              }}
-            >
-              发送
-            </Button>
-          </DialogFooter>
+            </FieldGroup>
+            <DialogFooter>
+              <Button type="submit" disabled={disabled}>
+                发送
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        {...confirmation}
+        title="放弃未发送的内容？"
+        detail="帖子或回复还没有发送，可以取消返回继续编辑。"
+        confirmLabel="放弃内容"
+        destructive={false}
+      />
     </div>
   )
 }

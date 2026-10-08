@@ -40,31 +40,42 @@ import { buildInstructions, compressionInstructions } from './prompts'
 import type { CompressionInput } from './context'
 
 import { ChannelRequestError, requestTimeout, requestTrace } from './request-trace'
-export function validateChannel(channel: Channel) {
-  if (!channel.name.trim() || !channel.model.trim() || !channel.apiKey.trim())
-    throw new Error('请填写渠道名称、模型和 API Key。')
-  const url = new URL(channel.baseUrl)
-  if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Base URL 必须是 HTTP(S) 地址。')
+export function channelValidationErrors(channel: Channel) {
+  const errors: Partial<Record<keyof Channel, string>> = {}
+  if (!channel.name.trim()) errors.name = '请输入渠道名称。'
+  if (!channel.apiKey.trim()) errors.apiKey = '请输入渠道提供的 API Key。'
+  if (!channel.model.trim()) errors.model = '请输入渠道提供的模型 ID。'
+  try {
+    const url = new URL(channel.baseUrl)
+    if (!['https:', 'http:'].includes(url.protocol)) throw new Error()
+  } catch {
+    errors.baseUrl = '请输入完整的 HTTP(S) 地址，例如 https://example.com/v1。'
+  }
   if (!['auto', 'chat-completions', 'responses'].includes(channel.apiMode))
-    throw new Error('请选择自动探测、Chat Completions 或 Responses。')
+    errors.apiMode = '请选择自动探测、Chat Completions 或 Responses。'
   if (
     channel.temperature !== null &&
     (!Number.isFinite(channel.temperature) || channel.temperature < 0 || channel.temperature > 2)
   )
-    throw new Error('温度应在 0–2 之间。')
+    errors.temperature = '温度应在 0–2 之间。'
   if (
     channel.requestTimeoutMs !== undefined &&
     (!Number.isInteger(channel.requestTimeoutMs) || channel.requestTimeoutMs < 0)
   )
-    throw new Error('请求等待上限须为非负整数；0 表示不限。')
+    errors.requestTimeoutMs = '请求等待上限须为非负整数；0 表示不限。'
   if (!Number.isInteger(channel.contextWindow) || channel.contextWindow < 1024)
-    throw new Error('上下文容量至少为 1,024 tokens。')
+    errors.contextWindow = '上下文容量须为至少 1,024 的整数。'
   if (
     !Number.isInteger(channel.maxOutputTokens) ||
     channel.maxOutputTokens < 128 ||
     channel.maxOutputTokens >= channel.contextWindow
   )
-    throw new Error('输出上限须至少 128 tokens 且小于上下文容量。')
+    errors.maxOutputTokens = '输出上限须为至少 128 的整数，且小于上下文容量。'
+  return errors
+}
+export function validateChannel(channel: Channel) {
+  const error = Object.values(channelValidationErrors(channel))[0]
+  if (error) throw new Error(error)
 }
 export function channelRequest(channel: Channel, fetcher?: typeof fetch, protocol?: ApiProtocol) {
   validateChannel(channel)

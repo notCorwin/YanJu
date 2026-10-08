@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { useChat } from '@ai-sdk/react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
@@ -11,7 +19,7 @@ import {
 } from '@/lib/db'
 import { BrowserChatTransport, toChatMessage } from '@/lib/transport'
 import { contextBudget } from '@/lib/context'
-import { friendlyError } from '@/lib/provider'
+import { channelIsReady, friendlyError } from '@/lib/provider'
 import { useChatOperations } from '@/hooks/use-chat-operations'
 import { withArchiveOperation } from '@/lib/operations'
 import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from '@/lib/types'
@@ -30,7 +38,16 @@ import { InputGroup, InputGroupTextarea, InputGroupAddon, InputGroupButton } fro
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Progress } from './ui/progress'
-import { Select, SelectContent, SelectTrigger, SelectValue, SelectItem } from './ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectTrigger,
+  SelectValue,
+  SelectItem,
+  SelectGroup,
+} from './ui/select'
+import { Alert, AlertTitle, AlertDescription } from './ui/alert'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
 import { NarrativeView, ForumView, LegacyView } from './replies'
 import { RecoveryBoundary } from './recovery-boundary'
 import { MessageEditor } from './message-editor'
@@ -48,6 +65,7 @@ import {
   ArrowDownToLine,
   BookOpen,
   GitBranch,
+  FileJson,
 } from 'lucide-react'
 
 export function ChatSession(props: {
@@ -57,6 +75,7 @@ export function ChatSession(props: {
   notify: Notify
   onBusy: (value: boolean) => void
   onWorld: () => void
+  onChannels: () => void
   insert: string
   onInserted: () => void
 }) {
@@ -94,6 +113,7 @@ function ChatRunner({
   notify,
   onBusy,
   onWorld,
+  onChannels,
   stored,
   context,
   limit,
@@ -108,6 +128,7 @@ function ChatRunner({
   notify: Notify
   onBusy: (value: boolean) => void
   onWorld: () => void
+  onChannels: () => void
   stored: StoredMessage[]
   context: StoredMessage[]
   limit: number
@@ -126,6 +147,7 @@ function ChatRunner({
     onError: (e) => notify(friendlyError(e), true),
   })
   const [mode, setMode] = useState<RequestKind>('narrative')
+  const [contextOpen, setContextOpen] = useState(false)
   const [editing, setEditing] = useState<StoredMessage | null>(null)
   const [regenId, setRegenId] = useState('')
   const [clear, setClear] = useState(false)
@@ -153,6 +175,14 @@ function ChatRunner({
     settle: transport.waitForIdle,
   })
   const composing = useRef(false)
+  const touchInput = useSyncExternalStore(
+    (notify) => {
+      const query = window.matchMedia('(pointer: coarse)')
+      query.addEventListener('change', notify)
+      return () => query.removeEventListener('change', notify)
+    },
+    () => window.matchMedia('(pointer: coarse)').matches,
+  )
   useEffect(() => {
     if (!lock.current && !busy) setMessages(stored.map(toChatMessage))
   }, [stored, busy, setMessages, lock])
@@ -186,16 +216,45 @@ function ChatRunner({
     [send],
   )
   const latestStatus = messages.at(-1)?.parts.find((p) => p.type === 'data-status')
-  const copy = (message: ChatMessage) => {
+  const copy = (message: ChatMessage, raw = false) => {
     const source = stored.find((m) => m.id === message.id)
+    const live = message.parts.find(
+      (part) => part.type === 'data-narrative' || part.type === 'data-forum',
+    )
+    const reply =
+      live?.type === 'data-narrative'
+        ? { kind: 'narrative' as const, value: live.data }
+        : live?.type === 'data-forum'
+          ? { kind: 'forum' as const, value: live.data }
+          : source?.reply || source?.partial
     const text =
-      source?.reply?.kind === 'narrative'
-        ? source.reply.value.blocks
-            .map((b) => b.text + (b.translation ? `\n「${b.translation}」` : ''))
-            .join('\n\n')
-        : source?.legacy?.body || source?.content || JSON.stringify(message.parts)
+      raw && reply
+        ? source?.rawContent || JSON.stringify(reply.value, null, 2)
+        : reply?.kind === 'narrative'
+          ? reply.value.blocks
+              ?.filter(Boolean)
+              .map(
+                (block) => block!.text + (block!.translation ? `\n「${block!.translation}」` : ''),
+              )
+              .join('\n\n') || ''
+          : reply?.kind === 'forum'
+            ? [
+                reply.value.post?.title,
+                reply.value.post?.content,
+                ...(reply.value.answers
+                  ?.filter(Boolean)
+                  .map((answer) => `${answer!.author}：${answer!.content}`) || []),
+              ]
+                .filter(Boolean)
+                .join('\n\n')
+            : source?.legacy?.body ||
+              source?.content ||
+              message.parts
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text)
+                .join('\n')
     void navigator.clipboard.writeText(text).then(
-      () => notify('消息已复制。'),
+      () => notify(raw ? '原始数据已复制。' : '消息已复制。'),
       () => notify('复制失败，请使用浏览器的文本选择功能。', true),
     )
   }
@@ -214,22 +273,26 @@ function ChatRunner({
           </Button>
         </div>
       )}
-      <MessageScrollerProvider defaultScrollPosition="end">
+      <MessageScrollerProvider autoScroll={busy} defaultScrollPosition="end">
         <MessageScroller>
-          <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto reading-width px-4 py-8 sm:px-6">
+          <MessageScrollerViewport aria-label="聊天记录">
+            <MessageScrollerContent className="mx-auto w-full reading-width px-4 py-8 sm:px-6">
               {remaining > 0 && (
                 <Button variant="outline" disabled={busy} onClick={onLoadEarlier}>
                   加载较早消息（还有 {remaining} 条）
                 </Button>
               )}
               {messages.map((message, i) => (
-                <MessageScrollerItem key={message.id} scrollAnchor={message.role === 'user'}>
+                <MessageScrollerItem
+                  key={message.id}
+                  messageId={message.id}
+                  scrollAnchor={message.role === 'user'}
+                >
                   <article aria-label={message.role === 'user' ? '你的消息' : '宴雎的回复'}>
                     <Message align={message.role === 'user' ? 'end' : 'start'}>
                       <MessageContent>
                         <MessageHeader>
-                          <span className="flex items-center gap-2">
+                          <span className="flex min-w-0 flex-wrap items-center gap-2">
                             {message.role === 'user' ? persona?.name || '你' : '宴雎'}
                             {message.metadata?.createdAt && (
                               <time dateTime={new Date(message.metadata.createdAt).toISOString()}>
@@ -242,7 +305,9 @@ function ChatRunner({
                             {message.metadata?.status && message.metadata.status !== 'complete' && (
                               <Badge variant="outline">
                                 {message.metadata.status === 'partial'
-                                  ? '生成中'
+                                  ? busy
+                                    ? '生成中'
+                                    : '未完成'
                                   : message.metadata.status === 'cancelled'
                                     ? '已停止'
                                     : '待恢复'}
@@ -263,37 +328,38 @@ function ChatRunner({
                             <Bubble variant="ghost">
                               <BubbleContent className="w-full">
                                 {message.parts.map((p, j) => {
+                                  const key = 'id' in p ? `${p.type}:${p.id}` : `${p.type}:${j}`
                                   if (p.type === 'data-narrative')
-                                    return <MemoNarrativeView key={j} reply={p.data} />
+                                    return <MemoNarrativeView key={key} reply={p.data} />
                                   if (p.type === 'data-forum')
                                     return (
                                       <MemoForumView
-                                        key={j}
+                                        key={key}
                                         reply={p.data}
-                                        disabled={busy}
+                                        disabled={busy || !channel || !channelIsReady(channel)}
                                         onSend={onForumSend}
                                       />
                                     )
                                   if (p.type === 'data-legacy')
                                     return (
                                       <MemoLegacyView
-                                        key={j}
+                                        key={key}
                                         value={p.data}
-                                        disabled={busy}
+                                        disabled={busy || !channel || !channelIsReady(channel)}
                                         onSend={onForumSend}
                                       />
                                     )
                                   if (p.type === 'data-notice')
                                     return (
                                       <img
-                                        key={j}
+                                        key={key}
                                         src={p.data}
                                         alt="角色设定提示"
                                         className="max-w-full rounded-lg"
                                         loading="lazy"
                                       />
                                     )
-                                  if (p.type === 'text') return <Prose key={j} text={p.text} />
+                                  if (p.type === 'text') return <Prose key={key} text={p.text} />
                                   return null
                                 })}
                               </BubbleContent>
@@ -308,9 +374,24 @@ function ChatRunner({
                         )}
                         <MessageFooter>
                           <div className="flex flex-wrap gap-1">
-                            <IconButton label="复制消息" onClick={() => copy(message)}>
+                            <IconButton
+                              label={
+                                message.parts.some((part) => part.type === 'data-narrative')
+                                  ? '复制正文'
+                                  : '复制消息'
+                              }
+                              onClick={() => copy(message)}
+                            >
                               <Copy />
                             </IconButton>
+                            {message.parts.some(
+                              (part) =>
+                                part.type === 'data-narrative' || part.type === 'data-forum',
+                            ) && (
+                              <IconButton label="复制原始数据" onClick={() => copy(message, true)}>
+                                <FileJson />
+                              </IconButton>
+                            )}
                             <IconButton
                               label="编辑消息"
                               disabled={busy}
@@ -342,6 +423,7 @@ function ChatRunner({
                               <IconButton
                                 label={
                                   message.metadata?.status === 'failed' ||
+                                  message.metadata?.status === 'partial' ||
                                   message.metadata?.status === 'cancelled'
                                     ? '重试回复'
                                     : '重新生成'
@@ -362,6 +444,17 @@ function ChatRunner({
                   </article>
                 </MessageScrollerItem>
               ))}
+              {(!channel || !channelIsReady(channel)) && (
+                <Alert role="status">
+                  <AlertTitle>连接模型后，故事就能继续</AlertTitle>
+                  <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                    <span>可以先阅读开场、写下回应，草稿会自动保存。</span>
+                    <Button variant="outline" onClick={onChannels}>
+                      配置并测试渠道
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
               {busy && (
                 <div
                   role="status"
@@ -381,7 +474,7 @@ function ChatRunner({
           <MessageScrollerButton aria-label="回到最新消息" size="icon" />
         </MessageScroller>
       </MessageScrollerProvider>
-      <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-3 sm:px-6">
+      <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-2 sm:px-6 sm:pt-3">
         <div className="mx-auto flex reading-width flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1">
@@ -390,8 +483,10 @@ function ChatRunner({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="narrative">叙事</SelectItem>
-                  <SelectItem value="forum">论坛</SelectItem>
+                  <SelectGroup>
+                    <SelectItem value="narrative">叙事</SelectItem>
+                    <SelectItem value="forum">论坛</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <IconButton label="世界、指令与音乐" onClick={onWorld}>
@@ -403,26 +498,20 @@ function ChatRunner({
             </div>
             {budget && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span>
-                  上下文约 {Math.round(budget.percent * 100)}% · {budget.estimated.toLocaleString()}{' '}
-                  / {channel!.contextWindow.toLocaleString()}
-                </span>
+                <Button
+                  variant="ghost"
+                  onClick={() => setContextOpen(true)}
+                  aria-label="查看上下文详情"
+                >
+                  <span className="hidden sm:inline">上下文约</span>{' '}
+                  {Math.round(budget.percent * 100)}%
+                </Button>
                 <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
                   <ArrowDownToLine />
                 </IconButton>
               </div>
             )}
           </div>
-          {budget && (
-            <Progress aria-label="估算上下文占用" value={Math.min(100, budget.percent * 100)} />
-          )}
-          {archive.lastUsage && (
-            <p className="text-xs text-muted-foreground">
-              上次实际输入 {archive.lastUsage.input.toLocaleString()} · 输出{' '}
-              {archive.lastUsage.output.toLocaleString()} tokens
-              {archive.summary && ` · 摘要覆盖 ${archive.summary.coveredCount} 条消息`}
-            </p>
-          )}
           <form
             onSubmit={(e) => {
               e.preventDefault()
@@ -431,6 +520,7 @@ function ChatRunner({
           >
             <InputGroup>
               <InputGroupTextarea
+                id="chat-input"
                 ref={inputRef}
                 aria-label="聊天输入"
                 value={input}
@@ -445,6 +535,7 @@ function ChatRunner({
                   if (
                     e.key === 'Enter' &&
                     !e.shiftKey &&
+                    (!touchInput || e.ctrlKey || e.metaKey) &&
                     !e.nativeEvent.isComposing &&
                     !composing.current &&
                     e.keyCode !== 229
@@ -453,12 +544,20 @@ function ChatRunner({
                     if (!busy) void send()
                   }
                 }}
+                className="composer-height resize-none overflow-y-auto"
                 rows={2}
                 placeholder={mode === 'forum' ? '输入帖子或回复内容…' : '写下你的回应…'}
               />
               <InputGroupAddon align="block-end" className="justify-between">
                 <span className="text-xs text-muted-foreground">
-                  Enter 发送 · Shift + Enter 换行
+                  {touchInput ? (
+                    '草稿自动保存 · 点击发送'
+                  ) : (
+                    <>
+                      <span>Enter 发送</span>
+                      <span className="hidden sm:inline"> · Shift + Enter 换行</span>
+                    </>
+                  )}
                 </span>
                 {busy ? (
                   <InputGroupButton
@@ -476,7 +575,7 @@ function ChatRunner({
                     aria-label="发送消息"
                     variant="default"
                     size="sm"
-                    disabled={!input.trim()}
+                    disabled={!input.trim() || !channel || !channelIsReady(channel)}
                   >
                     <Send />
                     发送
@@ -492,6 +591,47 @@ function ChatRunner({
           )}
         </div>
       </footer>
+      <Dialog open={contextOpen} onOpenChange={setContextOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>上下文与摘要</DialogTitle>
+            <DialogDescription>
+              接近容量上限时会自动整理旧对话，完整聊天记录会保留。
+            </DialogDescription>
+          </DialogHeader>
+          {budget && (
+            <div className="flex flex-col gap-3">
+              <p className="text-ui tabular-nums">
+                预计输入 {budget.estimated.toLocaleString('zh-CN')} /{' '}
+                {channel!.contextWindow.toLocaleString('zh-CN')} tokens ·{' '}
+                {Math.round(budget.percent * 100)}%
+              </p>
+              <Progress aria-label="估算上下文占用" value={Math.min(100, budget.percent * 100)} />
+              {archive.lastUsage && (
+                <p className="text-sm tabular-nums">
+                  上次实际输入 {archive.lastUsage.input.toLocaleString('zh-CN')} · 输出{' '}
+                  {archive.lastUsage.output.toLocaleString('zh-CN')} tokens
+                </p>
+              )}
+              <p className="text-sm text-muted-foreground">
+                {archive.summary
+                  ? `摘要已覆盖 ${archive.summary.coveredCount} 条消息。`
+                  : '当前还没有压缩摘要。'}
+              </p>
+              {archive.summary && <Prose text={archive.summary.value.summary} />}
+              <Button
+                disabled={busy}
+                onClick={() => {
+                  setContextOpen(false)
+                  void compress()
+                }}
+              >
+                整理并压缩历史
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       {editing && (
         <MessageEditor
           key={editing.id}
