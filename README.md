@@ -15,7 +15,9 @@ pnpm dev
 
 访问终端显示的 `/YanJu/` 地址。应用是纯静态 SPA，不需要后端或构建时 API Key。
 
-首次使用时打开「渠道管理」，填写 OpenAI-compatible Base URL、Key 和模型，按实际模型容量设置上下文及输出上限，运行「测试渠道」，通过后点「使用此渠道」。请求由浏览器直接发送，渠道必须允许站点来源的 CORS 请求和 Authorization、Content-Type 请求头，并支持 `response_format: json_schema` 与 `strict: true`。不支持时显示错误，不降级到 JSON Mode。
+首次使用时打开「渠道管理」，填写 OpenAI-compatible Base URL、Key 和模型，按实际模型容量设置上下文及输出上限，运行「测试渠道」，通过后点「使用此渠道」。可选择自动探测、Responses 或 Chat Completions；自动探测优先 Responses，并测试两种协议的非流式与流式严格输出，最多四个短请求。模型不接受温度参数时选择「模型默认」。
+
+请求由浏览器直接发送，渠道必须允许站点来源的 CORS 请求和 Authorization、Content-Type 请求头，并支持 Responses 的 `text.format` 或 Chat Completions 的 `response_format` 严格 JSON Schema。正式请求固定使用测试选定的协议；失败不降级到 JSON Mode。Responses 请求不依赖服务端保存或 `previous_response_id`，上下文仍由本地完整管理。
 
 ## 技术与设计
 

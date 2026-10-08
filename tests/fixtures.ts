@@ -140,6 +140,7 @@ export const channelFixture: Channel = {
   baseUrl: 'https://mock.example/v1',
   apiKey: 'test-key-not-real',
   model: 'test-model',
+  apiMode: 'chat-completions',
   temperature: 0.9,
   maxOutputTokens: 4096,
   contextWindow: 131072,
@@ -166,6 +167,7 @@ export function completion(value: unknown, finishReason = 'stop') {
     object: 'chat.completion',
     created: 1,
     model: 'test-model',
+    apiMode: 'chat-completions',
     choices: [
       {
         index: 0,
@@ -200,4 +202,68 @@ export const capabilityFixture = {
       { label: 'array', note: 'ok', enabled: false },
     ],
   },
+}
+
+export function response(value: unknown, status = 'completed', reason?: string) {
+  return {
+    id: 'resp_mock',
+    object: 'response',
+    created_at: 1,
+    model: 'test-model',
+    status,
+    error: null,
+    incomplete_details: reason ? { reason } : null,
+    output: [
+      {
+        type: 'message',
+        id: 'msg_mock',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: JSON.stringify(value), annotations: [] }],
+      },
+    ],
+    usage: { input_tokens: 12000, output_tokens: 2048, total_tokens: 14048 },
+  }
+}
+
+export function responseSse(value: unknown, terminal = 'completed', reason?: string, step = 150) {
+  const json = JSON.stringify(value)
+  let sequence = 0
+  const event = (frame: Record<string, unknown>) =>
+    `event: ${frame.type}\ndata: ${JSON.stringify({ ...frame, sequence_number: sequence++ })}\n\n`
+  const chunks = [
+    event({
+      type: 'response.created',
+      response: { ...response(value), status: 'in_progress', output: [] },
+    }),
+    event({
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: {
+        type: 'message',
+        id: 'msg_mock',
+        role: 'assistant',
+        status: 'in_progress',
+        content: [],
+      },
+    }),
+  ]
+  for (let i = 0; i < json.length; i += step)
+    chunks.push(
+      event({
+        type: 'response.output_text.delta',
+        item_id: 'msg_mock',
+        output_index: 0,
+        content_index: 0,
+        delta: json.slice(i, i + step),
+      }),
+    )
+  chunks.push(
+    event({ type: 'response.output_item.done', output_index: 0, item: response(value).output[0] }),
+  )
+  if (terminal !== 'missing')
+    chunks.push(
+      event({ type: `response.${terminal}`, response: response(value, terminal, reason) }),
+    )
+  return chunks
 }

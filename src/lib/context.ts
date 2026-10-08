@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { ModelMessage } from 'ai'
 import {
   compressionSchema,
   forumSchema,
@@ -12,7 +13,8 @@ import {
   modelMessages,
   serializeMessage,
 } from './prompts'
-import type { Archive, Channel, Persona, StoredMessage, Summary } from './types'
+import type { ApiProtocol, Archive, Channel, Persona, StoredMessage, Summary } from './types'
+import { estimatedProtocol } from './channels'
 
 export const COMPRESSION_THRESHOLD = 0.85
 export const COMPRESSION_TARGET = 0.7
@@ -30,6 +32,42 @@ export const requestSchema = (kind: RequestKind) =>
   kind === 'forum' ? forumSchema : narrativeSchema
 export const schemaString = (kind: RequestKind) =>
   JSON.stringify(z.toJSONSchema(requestSchema(kind)))
+export function serializeRequest(
+  channel: Channel,
+  instructions: string,
+  history: ModelMessage[],
+  schema: unknown,
+  name: string,
+  protocol: ApiProtocol = estimatedProtocol(channel),
+) {
+  const format = { name, strict: true, schema }
+  return JSON.stringify(
+    protocol === 'responses'
+      ? {
+          input: [
+            { role: 'system', content: instructions },
+            ...history.map((message) => ({
+              role: message.role,
+              content: [
+                {
+                  type: message.role === 'assistant' ? 'output_text' : 'input_text',
+                  text: message.content,
+                },
+              ],
+            })),
+          ],
+          text: { format: { type: 'json_schema', ...format } },
+          store: false,
+        }
+      : {
+          messages: [{ role: 'system', content: instructions }, ...history],
+          response_format: {
+            type: 'json_schema',
+            json_schema: format,
+          },
+        },
+  )
+}
 export function contextBudget(
   channel: Channel,
   persona: Persona | undefined,
@@ -37,14 +75,13 @@ export function contextBudget(
   messages: StoredMessage[],
   summary?: Summary,
 ) {
-  const serialized = JSON.stringify({
-    instructions: buildInstructions(persona, kind),
-    messages: modelMessages(messages, summary),
-    response_format: {
-      type: 'json_schema',
-      json_schema: { name: kind, strict: true, schema: JSON.parse(schemaString(kind)) },
-    },
-  })
+  const serialized = serializeRequest(
+    channel,
+    buildInstructions(persona, kind),
+    modelMessages(messages, summary),
+    JSON.parse(schemaString(kind)),
+    kind === 'forum' ? 'ForumReply' : 'NarrativeReply',
+  )
   const estimated = estimateTokens(serialized, channel.calibration?.ratio)
   return {
     estimated,
@@ -113,7 +150,13 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
   let changed = false
   // A summarizer request has its own bounded budget and does not repeat the character prompt.
   const overhead = estimate(
-    compressionInstructions + JSON.stringify(z.toJSONSchema(compressionSchema)),
+    serializeRequest(
+      channel,
+      compressionInstructions,
+      [{ role: 'user', content: '' }],
+      z.toJSONSchema(compressionSchema),
+      'CompressionResult',
+    ),
   )
   const batchBudget =
     Math.floor(channel.contextWindow * COMPRESSION_TARGET) -

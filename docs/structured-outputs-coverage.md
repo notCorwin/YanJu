@@ -5,6 +5,7 @@
 ## 协议与提交边界
 
 - `src/lib/tasks.ts` 注册 16 类任务，`task-runner.ts` 共用真实 AI SDK 的 `Output.object`、`json_schema` 和 `strict: true`。根对象与嵌套对象严格，所有输出字段必填，未知值用可空类型表达。结构和业务错误最多纠正一次；取消、截断及渠道错误保留恢复记录。
+- 保留 `master` 的 Responses / Chat Completions 选择、自动探测、模型默认温度与并发测试结果提交。两种协议均接入统一执行器，能力测试覆盖非流式和流式嵌套 schema；Responses 的截断、拒绝、服务端失败和缺少终止事件不提交剧情，也不触发结构纠正。
 - `NarrativeReply` 同轮包含正文和 `TurnEffects`。`SourceRef` 定位消息和段落；`new:study` 等请求内临时引用分配为 `<messageId>:entity:study`，随后使用稳定程序 ID。数据由 React 展示。
 - `story.ts` 重放有效消息生成当前状态；完整消息、事件账本和状态投影在同一个事务中提交。状态跨轮延续，金额使用最小单位整数，日期由程序运算。
 - 每次请求保存冻结事实、输入、schema、部分及完整输出、纠正、usage 和错误。普通续聊及纠正保留可重放前缀；摘要压缩不会修改已提交事实。

@@ -22,7 +22,7 @@ import { validDate } from './domain-schema'
 import type { Archive, StoredMessage, TaskRun } from './types'
 import { tracks } from './media'
 import { z } from 'zod'
-import { calibrate, compactContext, estimateTokens } from './context'
+import { calibrate, compactContext, estimateTokens, serializeRequest } from './context'
 import { commitSummary } from './db'
 import { taskInstructions } from './task-runner'
 import { taskSchemas } from './tasks'
@@ -280,11 +280,13 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
   try {
     const estimate = () =>
       estimateTokens(
-        JSON.stringify({
-          instructions: taskInstructions(kind),
-          input,
-          schema: z.toJSONSchema(taskSchemas[kind]),
-        }),
+        serializeRequest(
+          channel,
+          taskInstructions(kind),
+          [{ role: 'user', content: JSON.stringify(input) }],
+          z.toJSONSchema(taskSchemas[kind]),
+          taskDefinitions[kind].name,
+        ),
         channel.calibration?.ratio,
       )
     if (estimate() + channel.maxOutputTokens > channel.contextWindow && history.length > 2) {

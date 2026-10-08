@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/lib/db'
+import { protocolLabels } from '@/lib/channels'
 import { taskDefinitions } from '@/lib/tasks'
 import { downloadText } from '@/lib/download'
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './ui/accordion'
@@ -60,6 +61,7 @@ export function RequestHistory({ archiveId }: { archiveId: string }) {
                   </CardTitle>
                   <CardDescription>
                     {record.channel.name} · {record.channel.model} ·{' '}
+                    {protocolLabels[record.channel.protocol]} ·{' '}
                     {new Date(record.createdAt).toLocaleString('zh-CN')}
                   </CardDescription>
                 </CardHeader>

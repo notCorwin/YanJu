@@ -3,6 +3,7 @@ import {
   appendMessage,
   archiveMessages,
   commitSummary,
+  commitChannelCapability,
   db,
   editMessage,
   exportSave,
@@ -11,7 +12,8 @@ import {
   YanJuDatabase,
   initializeStorage,
 } from '../../src/lib/db'
-import { defaults, type Archive } from '../../src/lib/types'
+import { defaults, type Archive, type ChannelCapability } from '../../src/lib/types'
+import { channelFingerprint, channelIsReady } from '../../src/lib/channels'
 import { modelMessages } from '../../src/lib/prompts'
 import { channelFixture, compressionFixture, messageFixture, narrativeFixture } from '../fixtures'
 
@@ -38,6 +40,65 @@ const save = (messages = [messageFixture('m-0', 'user', '开始阅读', 0)]) => 
   requests: [],
 })
 
+const testedCapability: ChannelCapability = {
+  fingerprint: channelFingerprint(channelFixture),
+  testedAt: 2,
+  ok: true,
+  protocol: 'chat-completions',
+  checks: { 'chat-completions': { nonStreaming: 'passed', streaming: 'passed' } },
+}
+describe('渠道测试结果的并发提交', () => {
+  it('事务提交有效结果，保留其他窗口的改名、时间和最新 token 校准', async () => {
+    const current = {
+      ...channelFixture,
+      name: '其他窗口修改的名称',
+      createdAt: 123,
+      capability: { ...testedCapability, testedAt: 1 },
+      calibration: { ratio: 1.3, samples: 4 },
+    }
+    await db.channels.put(current)
+    const saved = await commitChannelCapability(channelFixture, testedCapability)
+    expect(saved).toEqual({ ...current, capability: testedCapability })
+    expect(await db.channels.get(channelFixture.id)).toEqual(saved)
+    expect(channelIsReady(saved!)).toBe(true)
+  })
+  it.each([true, false])('配置变更后拒绝保存旧探测结果（ok=%s）', async (ok) => {
+    const current = {
+      ...channelFixture,
+      model: '其他窗口的新模型',
+      calibration: { ratio: 2, samples: 3 },
+    }
+    await db.channels.put(current)
+    expect(
+      await commitChannelCapability(channelFixture, { ...testedCapability, ok }),
+    ).toBeUndefined()
+    expect(await db.channels.get(current.id)).toEqual(current)
+  })
+  it('测试期间删除渠道后不重新创建记录', async () => {
+    await db.channels.put(channelFixture)
+    await db.channels.delete(channelFixture.id)
+    expect(await commitChannelCapability(channelFixture, testedCapability)).toBeUndefined()
+    expect(await db.channels.count()).toBe(0)
+  })
+  it('同一配置切换实际协议时仅清除校准并更新能力', async () => {
+    const channel = { ...channelFixture, apiMode: 'auto' as const }
+    const fingerprint = channelFingerprint(channel)
+    await db.channels.put({
+      ...channel,
+      capability: { ...testedCapability, fingerprint },
+      calibration: { ratio: 2, samples: 3 },
+    })
+    const next: ChannelCapability = {
+      ...testedCapability,
+      fingerprint,
+      protocol: 'responses',
+      checks: { responses: { nonStreaming: 'passed', streaming: 'passed' } },
+    }
+    const saved = await commitChannelCapability(channel, next)
+    expect(saved).toEqual({ ...channel, capability: next, calibration: undefined })
+    expect(channelIsReady(saved!)).toBe(true)
+  })
+})
 describe('v3 IndexedDB 与独立存档协议', () => {
   it('默认使用新库，不读取旧 localStorage 或旧数据库', async () => {
     expect(db.name).toBe('yanju-v3')

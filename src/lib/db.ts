@@ -5,6 +5,7 @@ import {
   newPersona,
   type Archive,
   type Channel,
+  type ChannelCapability,
   type Persona,
   type Settings,
   type StoredMessage,
@@ -18,6 +19,7 @@ import { rebuildStory, type StoryState, type StoryEvent } from './story'
 import type { TaskRun, RequestRecord } from './types'
 import { taskSchemas, taskInputSchema, validateTask, type TaskKind } from './tasks'
 import { effectsSchema } from './domain-schema'
+import { channelFingerprint, withCapability } from './channels'
 
 export class YanJuDatabase extends Dexie {
   archives!: Table<Archive, string>
@@ -64,6 +66,23 @@ export class YanJuDatabase extends Dexie {
 export const db = new YanJuDatabase()
 export const archiveMessages = (id: string, database = db) =>
   database.messages.where('archiveId').equals(id).sortBy('sequence')
+
+export async function commitChannelCapability(
+  tested: Channel,
+  capability: ChannelCapability,
+  database = db,
+): Promise<Channel | undefined> {
+  return database.transaction('rw', database.channels, async () => {
+    const current = await database.channels.get(tested.id)
+    if (!current || channelFingerprint(current) !== channelFingerprint(tested)) return undefined
+    const next = withCapability(current, capability)
+    await database.channels.update(current.id, {
+      capability: next.capability,
+      calibration: next.calibration,
+    })
+    return next
+  })
+}
 
 export function createArchiveData(name = '新的篇章'): { archive: Archive; opening: StoredMessage } {
   const now = Date.now()
@@ -261,7 +280,8 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       baseUrl: z.string().parse(c.baseUrl),
       apiKey: z.string().parse(c.apiKey),
       model: z.string().parse(c.model),
-      temperature: z.number().min(0).max(2).parse(c.temperature),
+      apiMode: z.enum(['auto', 'chat-completions', 'responses']).parse(c.apiMode),
+      temperature: z.number().min(0).max(2).nullable().parse(c.temperature),
       maxOutputTokens: z.number().int().min(128).parse(c.maxOutputTokens),
       contextWindow: z.number().int().min(1024).parse(c.contextWindow),
       createdAt: z.number().parse(c.createdAt),
@@ -381,10 +401,15 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       z.object({ role: z.enum(['system', 'user', 'assistant', 'tool']), content: z.unknown() }),
     ).parse(request.messages)
     z.number().int().positive().parse(request.maxOutputTokens)
-    z.number().min(0).max(2).parse(request.temperature)
-    z.object({ id: z.string(), name: z.string(), baseUrl: z.string(), model: z.string() }).parse(
-      r.channel,
-    )
+    z.number().min(0).max(2).nullable().parse(request.temperature)
+    z.boolean().parse(request.streaming)
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      baseUrl: z.string(),
+      model: z.string(),
+      protocol: z.enum(['responses', 'chat-completions']),
+    }).parse(r.channel)
     return {
       ...r,
       id: z.string().min(1).parse(r.id),

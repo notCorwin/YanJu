@@ -4,17 +4,33 @@ import type { TurnEffects } from './domain-schema'
 import type { StoryState, StoryEvent } from './story'
 import type { AuxiliaryKind, TaskInput, TaskKind } from './tasks'
 
+export type ApiProtocol = 'chat-completions' | 'responses'
+export type ApiMode = 'auto' | ApiProtocol
+export interface ProtocolCapability {
+  nonStreaming: 'passed' | 'failed' | 'untested'
+  streaming: 'passed' | 'failed' | 'untested'
+  error?: string
+}
+export interface ChannelCapability {
+  fingerprint: string
+  testedAt: number
+  ok: boolean
+  protocol?: ApiProtocol
+  checks?: Partial<Record<ApiProtocol, ProtocolCapability>>
+  error?: string
+}
 export interface Channel {
   id: string
   name: string
   baseUrl: string
   apiKey: string
   model: string
-  temperature: number
+  apiMode: ApiMode
+  temperature: number | null
   maxOutputTokens: number
   contextWindow: number
   createdAt: number
-  capability?: { fingerprint: string; testedAt: number; ok: boolean; error?: string }
+  capability?: ChannelCapability
   calibration?: { ratio: number; samples: number }
 }
 export interface Persona {
@@ -136,13 +152,14 @@ export interface RequestRecord {
   kind: TaskKind
   attempt: number
   createdAt: number
-  channel: { id: string; name: string; baseUrl: string; model: string }
+  channel: { id: string; name: string; baseUrl: string; model: string; protocol: ApiProtocol }
   request: {
     instructions: string
     messages: ModelMessage[]
     schema: unknown
     maxOutputTokens: number
-    temperature: number
+    temperature: number | null
+    streaming: boolean
   }
   estimatedInput: number
   status: MessageStatus
@@ -204,6 +221,7 @@ export const newChannel = (): Channel => ({
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
   model: '',
+  apiMode: 'auto',
   temperature: 0.9,
   maxOutputTokens: 8192,
   contextWindow: 65536,

@@ -12,7 +12,14 @@ import { applyTask, executeAuxiliary, saveMediaDraft, storyMarkdown } from '../.
 import { taskSchemas, validateTask, type AuxiliaryKind, type TaskInput } from '../../src/lib/tasks'
 import { channelFingerprint } from '../../src/lib/provider'
 import { defaults, type StoredMessage } from '../../src/lib/types'
-import { channelFixture, messageFixture, narrativeFixture, forumFixture, sse } from '../fixtures'
+import {
+  channelFixture,
+  messageFixture,
+  narrativeFixture,
+  forumFixture,
+  sse,
+  responseSse,
+} from '../fixtures'
 import { auxiliaryFixture } from '../auxiliary-fixtures'
 
 const archive = {
@@ -50,7 +57,13 @@ beforeEach(async () => {
     requests: [],
   })
   await db.channels.update('channel-1', {
-    capability: { fingerprint: channelFingerprint(channelFixture), ok: true, testedAt: 0 },
+    capability: {
+      fingerprint: channelFingerprint(channelFixture),
+      ok: true,
+      testedAt: 0,
+      protocol: 'chat-completions',
+      checks: { 'chat-completions': { nonStreaming: 'passed', streaming: 'passed' } },
+    },
   })
 })
 function fake(
@@ -60,16 +73,72 @@ function fake(
 ) {
   return vi.fn<typeof fetch>(async (_url, options) => {
     const body = JSON.parse(String(options?.body))
-    expect(body.response_format.type).toBe('json_schema')
-    expect(body.response_format.json_schema.strict).toBe(true)
-    const input = JSON.parse(body.messages[1].content) as TaskInput
+    const responses = !!body.text
+    if (responses) {
+      expect(body.text.format.type).toBe('json_schema')
+      expect(body.text.format.strict).toBe(true)
+      expect(body.store).toBe(false)
+    } else {
+      expect(body.response_format.type).toBe('json_schema')
+      expect(body.response_format.json_schema.strict).toBe(true)
+    }
+    const input = JSON.parse(
+      responses
+        ? body.input.find((m: { role: string }) => m.role === 'user').content[0].text
+        : body.messages[1].content,
+    ) as TaskInput
     const output = auxiliaryFixture(kind, input)
-    return new Response(sse(transform ? transform(output, input) : output, finish).join(''), {
+    const value = transform ? transform(output, input) : output
+    return new Response((responses ? responseSse(value) : sse(value, finish)).join(''), {
       headers: { 'content-type': 'text/event-stream' },
     })
   })
 }
 describe('辅助任务完整链路', () => {
+  it.each([
+    'phoneReply',
+    'forumReply',
+    'search',
+    'persona',
+    'archiveMetadata',
+    'continuation',
+    'rewrite',
+    'consistency',
+    'contentImport',
+    'chapters',
+    'media',
+    'command',
+  ] as AuxiliaryKind[])('Responses %s 贯通冻结输入、严格请求与持久化结果', async (kind) => {
+    const channel = { ...channelFixture, apiMode: 'responses' as const, temperature: null }
+    await db.channels.put({
+      ...channel,
+      capability: {
+        fingerprint: channelFingerprint(channel),
+        ok: true,
+        testedAt: 0,
+        protocol: 'responses',
+        checks: { responses: { nonStreaming: 'passed', streaming: 'passed' } },
+      },
+    })
+    const target =
+      kind === 'phoneReply'
+        ? 'character-shendu'
+        : kind === 'forumReply'
+          ? 'f:answer-0'
+          : ['rewrite', 'media'].includes(kind)
+            ? 'n'
+            : null
+    const task = await executeAuxiliary(archive.id, kind, '按当前剧情生成', target, {
+      fetcher: fake(kind),
+    })
+    expect(task.status, task.error).toBe('complete')
+    expect((await db.tasks.get(task.id))?.output).toEqual(task.output)
+    expect((await db.requests.toArray())[0]).toMatchObject({
+      channel: { protocol: 'responses' },
+      request: { temperature: null, streaming: true },
+      status: 'complete',
+    })
+  })
   it('所有根对象和嵌套对象严格且字段全部必填', () => {
     const walk = (node: unknown) => {
       if (!node || typeof node !== 'object') return

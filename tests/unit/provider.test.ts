@@ -5,7 +5,7 @@ import {
   generateReply,
   testChannel,
 } from '../../src/lib/provider'
-import { narrativeFixture, channelFixture, capabilityFixture, sse } from '../fixtures'
+import { narrativeFixture, channelFixture, capabilityFixture, sse, completion } from '../fixtures'
 import type { DeepPartial } from 'ai'
 import type { NarrativeReply } from '../../src/lib/schemas'
 
@@ -27,7 +27,13 @@ function streaming(value: unknown, finishReason = 'stop'): Response {
 }
 describe('OpenAI-compatible 严格协议', () => {
   it('能力测试发送 json_schema / strict true，不使用 json_object', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(streaming(capabilityFixture))
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (_url, init) =>
+        JSON.parse(String(init?.body)).stream
+          ? streaming(capabilityFixture)
+          : Response.json(completion(capabilityFixture)),
+      )
     const capability = await testChannel(channelFixture, undefined, fetcher)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.response_format.type).toBe('json_schema')
