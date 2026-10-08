@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { db, initializeStorage, YanJuDatabase, importSave } from '../../src/lib/db'
+import Dexie from 'dexie'
+import { describe, expect, it, vi } from 'vitest'
+import { db, exportSave, initializeStorage, YanJuDatabase, importSave } from '../../src/lib/db'
 import { acquireArchiveOperation } from '../../src/lib/operations'
 import { defaults } from '../../src/lib/types'
 import { messageFixture } from '../fixtures'
@@ -41,6 +42,62 @@ describe('跨窗口会话操作', () => {
       expect((await db.archives.get('archive-1'))?.name).toBe('篇章')
     } finally {
       await operation.release()
+    }
+  })
+  it.each(['replace', 'merge'] as const)(
+    '%s 导入事务期间新发起的操作不能排队写入恢复后的篇章',
+    async (mode) => {
+      await seed()
+      const backup = await exportSave()
+      const other = new YanJuDatabase(db.name)
+      const entered = Promise.withResolvers<void>()
+      const resume = Promise.withResolvers<void>()
+      const write = db.messages.bulkPut.bind(db.messages)
+      const paused = vi.spyOn(db.messages, 'bulkPut').mockImplementationOnce(async (...args) => {
+        const result = await write(...args)
+        entered.resolve()
+        await Dexie.waitFor(resume.promise)
+        return result
+      })
+      const importing = importSave(backup, db, false, mode)
+      try {
+        await entered.promise
+        // The old lease acquisition queued behind this write transaction and appended afterward.
+        const pending = acquireArchiveOperation('archive-1', other).then(async (lease) => {
+          try {
+            await other.messages.put(messageFixture('stale-send', 'user', '旧窗口的发送', 1))
+          } finally {
+            await lease.release()
+          }
+        })
+        const rejected = expect(pending).rejects.toThrow(/正在导入存档/)
+        resume.resolve()
+        await importing
+        await rejected
+        expect(await db.messages.get('stale-send')).toBeUndefined()
+        const next = await acquireArchiveOperation('archive-1', other)
+        await next.release()
+        expect(await db.operations.count()).toBe(0)
+      } finally {
+        resume.resolve()
+        await importing
+        paused.mockRestore()
+        other.close()
+      }
+    },
+  )
+  it('导入写入失败时回滚资料并释放全局租约', async () => {
+    await seed()
+    const backup = await exportSave()
+    const failed = vi.spyOn(db.messages, 'bulkPut').mockRejectedValueOnce(new Error('写入失败'))
+    try {
+      await expect(importSave(backup)).rejects.toThrow('写入失败')
+      expect((await db.archives.get('archive-1'))?.name).toBe('篇章')
+      expect(await db.operations.count()).toBe(0)
+      const next = await acquireArchiveOperation('archive-1')
+      await next.release()
+    } finally {
+      failed.mockRestore()
     }
   })
   it('第二个窗口启动时保留正在生成的部分消息', async () => {

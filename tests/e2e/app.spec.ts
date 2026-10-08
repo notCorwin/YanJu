@@ -812,6 +812,105 @@ test('两个窗口争用同一篇章时拒绝重复发送，停止后锁可立�
   await second.close()
 })
 
+test('导入持有全局锁时另一窗口不能排队发送到恢复后的同名篇章', async ({ page, context }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  const second = await context.newPage()
+  let secondRequests = 0
+  await second.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+    secondRequests++
+    const body = route.request().postDataJSON() as Body
+    const value =
+      body.response_format.json_schema.name === 'ChannelCapability'
+        ? { ready: true, echo: 'YanJu strict output' }
+        : narrativeFixture
+    await route.fulfill({
+      contentType: body.stream ? 'text/event-stream' : 'application/json',
+      body: body.stream ? sse(value).join('') : JSON.stringify(completion(value)),
+    })
+  })
+  await second.goto(page.url())
+  const input = second.getByRole('textbox', { name: '聊天输入' })
+  await input.fill('导入期间旧窗口的发送')
+  await page.getByRole('button', { name: '存档管理' }).click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出全部', exact: true }).click()
+  const backup = await downloadPromise
+  await page.getByLabel('导入存档文件').setInputFiles((await backup.path())!)
+
+  // Hold the lease store so the real import stays in progress until both tabs exercise its gate.
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yanju-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const transaction = database.transaction('operations', 'readwrite')
+    const store = transaction.objectStore('operations')
+    let active = true
+    const completed = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => {
+        database.close()
+        resolve()
+      }
+      transaction.onabort = () => {
+        database.close()
+        reject(transaction.error)
+      }
+    })
+    const keepAlive = () => {
+      const request = store.get('fixture-import-block')
+      request.onsuccess = () => {
+        if (active) keepAlive()
+      }
+    }
+    keepAlive()
+    ;(window as Window & { releaseImportFixture: () => Promise<void> }).releaseImportFixture =
+      () => {
+        active = false
+        return completed
+      }
+  })
+  const release = () =>
+    page.evaluate(() =>
+      (window as Window & { releaseImportFixture: () => Promise<void> }).releaseImportFixture(),
+    )
+  try {
+    await page
+      .getByRole('dialog', { name: '导入并替换当前资料？' })
+      .getByRole('button', { name: '确认', exact: true })
+      .click()
+    await expect
+      .poll(() =>
+        page.evaluate(async () =>
+          (await navigator.locks.query()).held?.some(
+            (lock) => lock.name === 'yanju-import:yanju-v2' && lock.mode === 'exclusive',
+          ),
+        ),
+      )
+      .toBe(true)
+    await second.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(second.getByText(/正在导入存档/).first()).toBeVisible()
+    await expect(input).toHaveValue('导入期间旧窗口的发送')
+    expect(secondRequests).toBe(0)
+    await release()
+    await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
+    await expect
+      .poll(async () => (await readOpfs(page))?.messages.some((message) => message.role === 'user'))
+      .toBe(false)
+    await enableChannel(second)
+    await second.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(second.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+    await expect(second.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+    const saved = (await readOpfs(second))!.messages
+    expect(saved.filter((message) => message.content === '导入期间旧窗口的发送')).toHaveLength(1)
+  } finally {
+    await release()
+    await second.close()
+  }
+})
+
 test('单条损坏的旧记录由局部恢复界面接住，编辑与导出仍可用', async ({ page }) => {
   await prepare(page)
   await enter(page)

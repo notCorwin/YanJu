@@ -70,7 +70,22 @@ function mockStorage() {
     persist: vi.fn(async () => false),
   }
   const locks = {
-    request: vi.fn(async (_name: string, callback: () => Promise<void>) => callback()),
+    request: vi.fn(
+      async (
+        name: string,
+        optionsOrCallback: LockOptions | ((lock: Lock) => Promise<unknown>),
+        callback?: (lock: Lock) => Promise<unknown>,
+      ) => {
+        const run = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback!
+        return run({
+          name,
+          mode:
+            typeof optionsOrCallback === 'function'
+              ? 'exclusive'
+              : (optionsOrCallback.mode ?? 'exclusive'),
+        })
+      },
+    ),
   }
   vi.stubGlobal('navigator', { storage, locks, userAgent: navigator.userAgent })
   return { files, close, write, abort, storage, locks }

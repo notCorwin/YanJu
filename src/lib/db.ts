@@ -23,7 +23,7 @@ import {
   storedMessageSchema,
   usageSchema,
 } from './save-schema'
-import { activeArchiveOperations, type OperationLease } from './operations'
+import { activeArchiveOperations, withImportOperation, type OperationLease } from './operations'
 
 interface PersistenceChange {
   id: string
@@ -489,100 +489,111 @@ export async function importSave(
   mode: 'replace' | 'merge' = 'replace',
 ) {
   const data = normalizeImport(input, restore)
-  await database.transaction(
-    'rw',
-    [
-      database.archives,
-      database.messages,
-      database.channels,
-      database.personas,
-      database.settings,
-      database.operations,
-    ],
-    async () => {
-      if ((await database.operations.toArray()).some((lease) => lease.expiresAt > Date.now()))
-        throw new Error('另一个窗口正在操作存档，请等待完成后导入。')
-      if (mode === 'merge') {
-        const remap = (incoming: { id: string }[], existing: string[]) => {
-          const taken = new Set(existing)
-          return new Map(
-            incoming.map((item) => [item.id, taken.has(item.id) ? crypto.randomUUID() : item.id]),
-          )
-        }
-        const archiveIds = remap(
-          data.archives,
-          await database.archives.toCollection().primaryKeys(),
-        )
-        const messageIds = remap(
-          data.messages,
-          await database.messages.toCollection().primaryKeys(),
-        )
-        const channelIds = remap(
-          data.channels,
-          await database.channels.toCollection().primaryKeys(),
-        )
-        const personaIds = remap(data.masks, await database.personas.toCollection().primaryKeys())
-        const usage = (value: Archive['lastUsage']) =>
-          value && { ...value, channelId: channelIds.get(value.channelId) ?? value.channelId }
-        data.archives = data.archives.map((archive) => ({
-          ...archive,
-          id: archiveIds.get(archive.id)!,
-          name: archiveIds.get(archive.id) !== archive.id ? `${archive.name} · 导入` : archive.name,
-          lastUsage: usage(archive.lastUsage),
-          summary: archive.summary && {
-            ...archive.summary,
-            coveredThroughId: messageIds.get(archive.summary.coveredThroughId)!,
-          },
-        }))
-        data.messages = data.messages.map((message) => ({
-          ...message,
-          id: messageIds.get(message.id)!,
-          archiveId: archiveIds.get(message.archiveId)!,
-          usage: usage(message.usage),
-        }))
-        data.channels = data.channels.map((channel) => ({
-          ...channel,
-          id: channelIds.get(channel.id)!,
-        }))
-        data.masks = data.masks.map((persona) => ({ ...persona, id: personaIds.get(persona.id)! }))
-        const existingSettings = (await database.settings.get('app')) ?? defaults
-        data.settings = {
-          ...existingSettings,
-          activeArchiveId:
-            archiveIds.get(data.settings.activeArchiveId) ??
-            data.archives[0]?.id ??
-            existingSettings.activeArchiveId,
-        }
-      } else {
-        await Promise.all([
-          database.archives.clear(),
-          database.messages.clear(),
-          database.channels.clear(),
-          database.personas.clear(),
-        ])
-      }
-      await database.archives.bulkPut(data.archives)
-      await database.messages.bulkPut(data.messages)
-      await database.channels.bulkPut(data.channels)
-      await database.personas.bulkPut(data.masks)
-      await database.settings.put(data.settings)
-      if (!(await database.personas.count())) {
-        const persona = newPersona()
-        await database.personas.add(persona)
-        await database.settings.update('app', { activePersonaId: persona.id })
-        data.masks.push(persona)
-        data.settings.activePersonaId = persona.id
-      }
-      if (!(await database.archives.count())) {
-        const created = createArchiveData()
-        await database.archives.add(created.archive)
-        await database.messages.add(created.opening)
-        await database.settings.update('app', { activeArchiveId: created.archive.id })
-        data.archives.push(created.archive)
-        data.messages.push(created.opening)
-        data.settings.activeArchiveId = created.archive.id
-      }
-    },
+  await withImportOperation(
+    () =>
+      database.transaction(
+        'rw',
+        [
+          database.archives,
+          database.messages,
+          database.channels,
+          database.personas,
+          database.settings,
+        ],
+        async () => {
+          if (mode === 'merge') {
+            const remap = (incoming: { id: string }[], existing: string[]) => {
+              const taken = new Set(existing)
+              return new Map(
+                incoming.map((item) => [
+                  item.id,
+                  taken.has(item.id) ? crypto.randomUUID() : item.id,
+                ]),
+              )
+            }
+            const archiveIds = remap(
+              data.archives,
+              await database.archives.toCollection().primaryKeys(),
+            )
+            const messageIds = remap(
+              data.messages,
+              await database.messages.toCollection().primaryKeys(),
+            )
+            const channelIds = remap(
+              data.channels,
+              await database.channels.toCollection().primaryKeys(),
+            )
+            const personaIds = remap(
+              data.masks,
+              await database.personas.toCollection().primaryKeys(),
+            )
+            const usage = (value: Archive['lastUsage']) =>
+              value && { ...value, channelId: channelIds.get(value.channelId) ?? value.channelId }
+            data.archives = data.archives.map((archive) => ({
+              ...archive,
+              id: archiveIds.get(archive.id)!,
+              name:
+                archiveIds.get(archive.id) !== archive.id ? `${archive.name} · 导入` : archive.name,
+              lastUsage: usage(archive.lastUsage),
+              summary: archive.summary && {
+                ...archive.summary,
+                coveredThroughId: messageIds.get(archive.summary.coveredThroughId)!,
+              },
+            }))
+            data.messages = data.messages.map((message) => ({
+              ...message,
+              id: messageIds.get(message.id)!,
+              archiveId: archiveIds.get(message.archiveId)!,
+              usage: usage(message.usage),
+            }))
+            data.channels = data.channels.map((channel) => ({
+              ...channel,
+              id: channelIds.get(channel.id)!,
+            }))
+            data.masks = data.masks.map((persona) => ({
+              ...persona,
+              id: personaIds.get(persona.id)!,
+            }))
+            const existingSettings = (await database.settings.get('app')) ?? defaults
+            data.settings = {
+              ...existingSettings,
+              activeArchiveId:
+                archiveIds.get(data.settings.activeArchiveId) ??
+                data.archives[0]?.id ??
+                existingSettings.activeArchiveId,
+            }
+          } else {
+            await Promise.all([
+              database.archives.clear(),
+              database.messages.clear(),
+              database.channels.clear(),
+              database.personas.clear(),
+            ])
+          }
+          await database.archives.bulkPut(data.archives)
+          await database.messages.bulkPut(data.messages)
+          await database.channels.bulkPut(data.channels)
+          await database.personas.bulkPut(data.masks)
+          await database.settings.put(data.settings)
+          if (!(await database.personas.count())) {
+            const persona = newPersona()
+            await database.personas.add(persona)
+            await database.settings.update('app', { activePersonaId: persona.id })
+            data.masks.push(persona)
+            data.settings.activePersonaId = persona.id
+          }
+          if (!(await database.archives.count())) {
+            const created = createArchiveData()
+            await database.archives.add(created.archive)
+            await database.messages.add(created.opening)
+            await database.settings.update('app', { activeArchiveId: created.archive.id })
+            data.archives.push(created.archive)
+            data.messages.push(created.opening)
+            data.settings.activeArchiveId = created.archive.id
+          }
+        },
+      ),
+    database,
   )
   return data
 }
