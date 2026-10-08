@@ -304,6 +304,12 @@ export function TaskResult({
     )
   } else if (task.kind === 'chapters') {
     const v = value as TaskOutput<'chapters'>
+    let markdown: string | undefined
+    try {
+      markdown = storyMarkdown(archive, history, v)
+    } catch {
+      /* An older chapter result must not omit or export changed story records. */
+    }
     result = (
       <>
         <h4 className="text-lg">{v.title}</h4>
@@ -332,12 +338,16 @@ export function TaskResult({
         ))}
         <Button
           variant="outline"
-          onClick={() =>
-            downloadText(`${archive.name}.md`, storyMarkdown(archive, history, v), 'text/markdown')
-          }
+          disabled={busy || markdown === undefined}
+          onClick={() => downloadText(`${archive.name}.md`, markdown!, 'text/markdown')}
         >
           导出整理后的剧情 Markdown
         </Button>
+        {markdown === undefined && (
+          <p role="alert" className="text-sm text-destructive">
+            有效剧情已变化，请重新整理章节后导出全部原文。
+          </p>
+        )}
       </>
     )
   } else if (task.kind === 'media') {

@@ -61,6 +61,14 @@ import {
   BookOpen,
 } from 'lucide-react'
 
+export interface ExternalChatRequest {
+  id: string
+  text: string
+  kind: RequestKind
+  expectedRevision?: number
+  complete: (committed: boolean) => void
+}
+
 export function ChatSession(props: {
   archive: Archive
   channel?: Channel
@@ -70,12 +78,14 @@ export function ChatSession(props: {
   onWorld: () => void
   insert: string
   onInserted: () => void
-  externalRequest: { id: string; text: string; kind: RequestKind } | null
+  externalRequest: ExternalChatRequest | null
   onExternalHandled: () => void
   externalMode: RequestKind | null
   onModeHandled: () => void
   sourceMessage?: string
   sourceBlock?: string
+  onSourceHandled: (messageId: string, blockId?: string) => void
+  disabled: boolean
   onStudio: () => void
 }) {
   const stored = useLiveQuery(() => archiveMessages(props.archive.id), [props.archive.id])
@@ -103,6 +113,8 @@ function ChatRunner({
   onModeHandled,
   sourceMessage,
   sourceBlock,
+  onSourceHandled,
+  disabled,
   onStudio,
 }: {
   archive: Archive
@@ -114,15 +126,18 @@ function ChatRunner({
   stored: StoredMessage[]
   insert: string
   onInserted: () => void
-  externalRequest: { id: string; text: string; kind: RequestKind } | null
+  externalRequest: ExternalChatRequest | null
   onExternalHandled: () => void
   externalMode: RequestKind | null
   onModeHandled: () => void
   sourceMessage?: string
   sourceBlock?: string
+  onSourceHandled: (messageId: string, blockId?: string) => void
+  disabled: boolean
   onStudio: () => void
 }) {
   const transport = useMemo(() => new BrowserChatTransport(), [])
+  const finishedMessage = useRef<string | null>(null)
   const { messages, sendMessage, regenerate, setMessages, stop, status, error, clearError } =
     useChat<ChatMessage>({
       id: archive.id,
@@ -130,6 +145,9 @@ function ChatRunner({
       messages: stored.map(toChatMessage),
       generateId: () => crypto.randomUUID(),
       onError: (e) => notify(friendlyError(e), true),
+      onFinish: ({ message }) => {
+        finishedMessage.current = message.id
+      },
     })
   const [input, setInput] = useState(archive.draft)
   const [mode, setMode] = useState<RequestKind>('narrative')
@@ -145,11 +163,12 @@ function ChatRunner({
   const composing = useRef(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const controller = useRef<AbortController | null>(null)
-  const busy = status === 'streaming' || status === 'submitted' || compressing || forumRunning
+  const chatBusy = status === 'streaming' || status === 'submitted' || compressing || forumRunning
+  const busy = chatBusy || disabled
 
   useEffect(() => {
-    onBusy(busy)
-  }, [busy, onBusy])
+    onBusy(chatBusy)
+  }, [chatBusy, onBusy])
   useEffect(
     () => () => {
       void stop()
@@ -173,16 +192,22 @@ function ChatRunner({
     void db.archives.update(archive.id, { draft: text })
   }
 
-  const send = async (text = input, explicitKind?: RequestKind) => {
-    if (!text.trim() || busy || lock.current) return
+  const send = async (
+    text = input,
+    explicitKind?: RequestKind,
+    expectedRevision?: number,
+    fromStudio = false,
+  ) => {
+    if (!text.trim() || chatBusy || (!fromStudio && disabled) || lock.current) return false
     if (!channel || !channelIsReady(channel)) {
       notify('请先配置渠道，并通过严格结构化和浏览器连接测试。', true)
-      return
+      return false
     }
     const kind = explicitKind ?? (/^(\$发送帖子|新帖[：:]|回复.+[：:])/.test(text) ? 'forum' : mode)
     lock.current = true
     onBusy(true)
     clearError()
+    finishedMessage.current = null
     try {
       const current = await archiveMessages(archive.id)
       const user: StoredMessage = {
@@ -196,7 +221,7 @@ function ChatRunner({
         kind,
         status: 'complete',
       }
-      await appendMessage(user)
+      await appendMessage(user, expectedRevision)
       draft('')
       await sendMessage(
         {
@@ -207,8 +232,13 @@ function ChatRunner({
         },
         { body: { kind } },
       )
+      const complete = finishedMessage.current
+        ? await db.messages.get(finishedMessage.current)
+        : undefined
+      return complete?.status === 'complete' && !complete.stale && complete.reply?.kind === kind
     } catch (e) {
       notify(friendlyError(e), true)
+      return false
     } finally {
       lock.current = false
       onBusy(false)
@@ -220,13 +250,18 @@ function ChatRunner({
       inputRef.current?.focus()
     }
   }
-  const external = useEffectEvent((request: { text: string; kind: RequestKind }) => {
+  const external = useEffectEvent(async (request: ExternalChatRequest) => {
     onExternalHandled()
-    void send(request.text, request.kind)
+    let committed = false
+    try {
+      committed = await send(request.text, request.kind, request.expectedRevision, true)
+    } finally {
+      request.complete(committed)
+    }
   })
   useEffect(() => {
-    if (externalRequest && !busy && !lock.current) external(externalRequest)
-  }, [externalRequest, busy])
+    if (externalRequest && !chatBusy && !lock.current) void external(externalRequest)
+  }, [externalRequest, chatBusy])
   useEffect(() => {
     if (externalMode) {
       setMode(externalMode)
@@ -241,13 +276,14 @@ function ChatRunner({
       )
       if (!element) {
         notify('这条消息已被重说替换，可在工作台的请求记录中查看原结果。', true)
-        return
+      } else {
+        element.scrollIntoView({ block: 'center' })
+        element.focus({ preventScroll: true })
       }
-      element.scrollIntoView({ block: 'center' })
-      element?.focus({ preventScroll: true })
+      onSourceHandled(sourceMessage, sourceBlock)
     })
     return () => cancelAnimationFrame(frame)
-  }, [sourceMessage, sourceBlock, busy, notify])
+  }, [sourceMessage, sourceBlock, busy, notify, onSourceHandled])
   const replyToForum = async (id: string, text: string) => {
     if (busy || lock.current) return
     lock.current = true
@@ -535,7 +571,7 @@ function ChatRunner({
                 </MessageScrollerItem>
               ))}
               {forumRunning && forumPartial && <Prose text={forumPartial} />}
-              {busy && (
+              {chatBusy && (
                 <div
                   role="status"
                   aria-live="polite"
@@ -638,7 +674,7 @@ function ChatRunner({
                 <span className="text-xs text-muted-foreground">
                   Enter 发送 · Shift + Enter 换行
                 </span>
-                {busy ? (
+                {chatBusy ? (
                   <InputGroupButton
                     aria-label="停止生成"
                     onClick={() => void stopGeneration()}
@@ -654,7 +690,7 @@ function ChatRunner({
                     aria-label="发送消息"
                     variant="default"
                     size="sm"
-                    disabled={!input.trim()}
+                    disabled={busy || !input.trim()}
                   >
                     <Send />
                     发送
@@ -691,9 +727,9 @@ function ChatRunner({
           </Field>
           <DialogFooter>
             <Button
-              disabled={!editText.trim()}
+              disabled={busy || !editText.trim()}
               onClick={() => {
-                if (editing)
+                if (editing && !busy)
                   void editMessage(editing.id, editText)
                     .then(() => {
                       setEditing(null)
@@ -721,6 +757,7 @@ function ChatRunner({
         title="清空当前聊天？"
         detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
         onConfirm={async () => {
+          if (busy || lock.current) return
           const data = createArchiveData()
           await db.transaction(
             'rw',

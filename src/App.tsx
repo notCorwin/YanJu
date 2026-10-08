@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db, initializeStorage } from '@/lib/db'
 import { applyAppearance } from '@/lib/appearance'
 import { channelIsReady, friendlyError } from '@/lib/provider'
-import { ChatSession } from '@/components/chat'
+import { ChatSession, type ExternalChatRequest } from '@/components/chat'
 import {
   AppearanceDialog,
   ArchivesSheet,
@@ -86,11 +86,8 @@ function Workspace() {
   const [chatBusy, setBusy] = useState(false)
   const [studioBusy, setStudioBusy] = useState(false)
   const busy = chatBusy || studioBusy
-  const [externalRequest, setExternalRequest] = useState<{
-    id: string
-    text: string
-    kind: RequestKind
-  } | null>(null)
+  const [externalRequest, setExternalRequest] = useState<ExternalChatRequest | null>(null)
+  const pendingSend = useRef<ExternalChatRequest | null>(null)
   const [externalMode, setExternalMode] = useState<RequestKind | null>(null)
   const [insert, setInsert] = useState('')
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null)
@@ -105,6 +102,18 @@ function Workspace() {
   const onExternalHandled = useCallback(() => setExternalRequest(null), [])
   const onModeHandled = useCallback(() => setExternalMode(null), [])
   const onStudioBusy = useCallback((value: boolean) => setStudioBusy(value), [])
+  const onSourceHandled = useCallback((messageId: string, blockId?: string) => {
+    const [path, query] = window.location.hash.split('?')
+    const params = new URLSearchParams(query)
+    if (params.get('message') !== messageId || (params.get('block') ?? undefined) !== blockId)
+      return
+    params.delete('message')
+    params.delete('block')
+    const rest = params.toString()
+    window.history.replaceState(null, '', `${path}${rest ? `?${rest}` : ''}`)
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+  }, [])
+  useEffect(() => () => pendingSend.current?.complete(false), [])
   useEffect(() => {
     if (settings) applyAppearance(settings)
   }, [settings])
@@ -131,12 +140,24 @@ function Workspace() {
     if (archive) selectArchive(archive.id)
     else setDialog('archives')
   }
-  const sendFromStudio = (text: string, kind: RequestKind) => {
-    if (archive) {
+  const sendFromStudio = (text: string, kind: RequestKind, expectedRevision?: number) => {
+    if (!archive || pendingSend.current) return Promise.resolve(false)
+    return new Promise<boolean>((resolve) => {
+      const request: ExternalChatRequest = {
+        id: crypto.randomUUID(),
+        text,
+        kind,
+        expectedRevision,
+        complete: (committed) => {
+          if (pendingSend.current?.id === request.id) pendingSend.current = null
+          resolve(committed)
+        },
+      }
+      pendingSend.current = request
       selectArchive(archive.id)
-      setExternalRequest({ id: crypto.randomUUID(), text, kind })
+      setExternalRequest(request)
       setDialog(null)
-    }
+    })
   }
   const sourceFromStudio = (source: SourceRef) => {
     if (source.messageId === 'setting') {
@@ -262,6 +283,8 @@ function Workspace() {
             onModeHandled={onModeHandled}
             sourceMessage={sourceMessage}
             sourceBlock={sourceBlock}
+            onSourceHandled={onSourceHandled}
+            disabled={studioBusy}
             onStudio={() => setDialog('studio')}
           />
         </main>

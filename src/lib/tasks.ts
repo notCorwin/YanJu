@@ -237,7 +237,7 @@ export const taskDefinitions: Record<
     name: 'StoryChapters',
     label: '章节整理',
     instructions:
-      '将有效剧情整理成按时间排序的章节。每章给出标题、简介和输入中真实的 messageIds，不重复或编造消息 ID，不添加新剧情。',
+      '将全部有效剧情按原消息顺序整理成章节。每章给出标题、简介和输入中真实的 messageIds；输入中的每条消息必须恰好出现一次，不遗漏、重复或编造消息 ID，不添加新剧情。',
     commit: 'draft',
   },
   media: {

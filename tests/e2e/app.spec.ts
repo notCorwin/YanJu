@@ -649,8 +649,8 @@ test('没有部分内容的模型错误结束后仍可管理和导出存档', as
   expect(lastSavedMessage(await readOpfs(page))?.status).toBe('failed')
 })
 
-async function narrativeAndStudio(page: Page) {
-  const requests = await prepare(page)
+async function narrativeAndStudio(page: Page, seed: { contextWindow?: number } = {}) {
+  const requests = await prepare(page, undefined, seed)
   await enableChannel(page)
   await enter(page)
   await page.getByRole('textbox', { name: '聊天输入' }).fill('一起阅读。')
@@ -709,13 +709,151 @@ test('工作台档案、独立手机、日记日历、自然语言搜索和来�
     studio.getByText(narrativeFixture.effects.events[0].title, { exact: true }),
   ).toBeVisible()
   await studio.getByRole('button', { name: '查看来源' }).first().click()
-  await expect(page).toHaveURL(/message=.*&block=b1/)
   await expect(page.getByRole('dialog', { name: '剧情工作台' })).toHaveCount(0)
   await expect
     .poll(() => page.evaluate(() => document.activeElement?.id))
     .toContain('source-block-')
+  await expect(page).not.toHaveURL(/[?&](message|block)=/)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('继续阅读。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  )
+  await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeFocused()
   await page.reload()
-  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+})
+
+test('续写发送被拒绝后可以重选，完整剧情提交前保持未应用', async ({ page }) => {
+  await narrativeAndStudio(page)
+  const studio = await creationTask(page, '续写分支', '提供三个行动')
+  const saved = (await readOpfs(page))!
+  const task = saved.tasks.find((t) => t.kind === 'continuation')!
+  const channel = saved.channels.find((c) => c.id === 'channel-1')!
+  await page.evaluate(async () => {
+    const modulePath = '/YanJu/src/lib/db.ts'
+    const { db } = await import(modulePath)
+    await db.channels.delete('channel-1')
+    await db.persistence.flush()
+  })
+  await studio.getByRole('button', { name: '选择这个分支' }).first().click()
+  await expect(page.getByRole('dialog', { name: '剧情工作台' })).toHaveCount(0)
+  await expect(page.getByText('请先配置渠道，并通过严格结构化和浏览器连接测试。')).toBeVisible()
+  expect((await readOpfs(page))!.tasks.find((t) => t.id === task.id)?.applied).not.toBe(true)
+  await page.evaluate(async (channel) => {
+    const modulePath = '/YanJu/src/lib/db.ts'
+    const { db } = await import(modulePath)
+    await db.channels.put(channel)
+    await db.persistence.flush()
+  }, channel)
+  await expect(page.getByRole('combobox', { name: '当前渠道' })).toContainText('测试渠道')
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+    const body = route.request().postDataJSON() as Body
+    if (body.response_format.json_schema.name === 'NarrativeReply') await gate
+    await route.fallback()
+  })
+  await page.getByRole('button', { name: '剧情工作台', exact: true }).click()
+  await expect(studio.getByRole('button', { name: '选择这个分支' }).first()).toBeEnabled()
+  await studio.getByRole('button', { name: '选择这个分支' }).first().click()
+  await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
+  expect(
+    await page.evaluate(async (id) => {
+      const modulePath = '/YanJu/src/lib/db.ts'
+      const { db } = await import(modulePath)
+      return (await db.tasks.get(id))?.applied
+    }, task.id),
+  ).not.toBe(true)
+  release()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+  await expect
+    .poll(async () => (await readOpfs(page))?.tasks.find((t) => t.id === task.id)?.applied)
+    .toBe(true)
+  await expectArchiveAvailable(page)
+})
+
+test('续写模型请求失败不标为已应用，重新生成分支后可推进', async ({ page }) => {
+  await narrativeAndStudio(page, { contextWindow: 262144 })
+  const studio = await creationTask(page, '续写分支', '提供三个行动')
+  const task = (await readOpfs(page))!.tasks.find((t) => t.kind === 'continuation')!
+  let fail = true
+  await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+    const body = route.request().postDataJSON() as Body
+    if (body.response_format.json_schema.name === 'NarrativeReply' && fail) {
+      fail = false
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { message: '模拟分支生成失败' } }),
+      })
+    } else await route.fallback()
+  })
+  await studio.getByRole('button', { name: '选择这个分支' }).first().click()
+  await expect(page.getByRole('dialog', { name: '剧情工作台' })).toHaveCount(0)
+  await expect.poll(async () => lastSavedMessage(await readOpfs(page))?.status).toBe('failed')
+  await expectArchiveAvailable(page)
+  expect((await readOpfs(page))!.tasks.find((t) => t.id === task.id)?.applied).not.toBe(true)
+  await page.getByRole('button', { name: '剧情工作台', exact: true }).click()
+  await expect(studio.getByRole('button', { name: '选择这个分支' }).first()).toBeEnabled()
+  await creationTask(page, '续写分支', '重试推进剧情')
+  await studio.getByRole('button', { name: '选择这个分支' }).first().click()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+  await expect
+    .poll(async () =>
+      (await readOpfs(page))?.tasks.some((t) => t.kind === 'continuation' && t.applied),
+    )
+    .toBe(true)
+  expect((await readOpfs(page))!.tasks.find((t) => t.id === task.id)?.applied).not.toBe(true)
+})
+
+test('关闭运行中的工作台后聊天仍锁定，手机提交完成后可继续聊天', async ({ page }) => {
+  const requests = await narrativeAndStudio(page)
+  const studio = page.getByRole('dialog', { name: '剧情工作台' })
+  const revision = (await readOpfs(page))!.archives.find((a) => a.id === 'archive-1')!.revision
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
+    const body = route.request().postDataJSON() as Body
+    if (body.response_format.json_schema.name === 'PhoneReply') await gate
+    await route.fallback()
+  })
+  await studio.getByRole('tab', { name: '交互', exact: true }).click()
+  await studio.getByRole('textbox', { name: '手机消息' }).fill('确认明天的安排')
+  await studio.getByRole('button', { name: '发送手机消息' }).click()
+  await expect(studio.getByRole('button', { name: '停止任务' })).toBeVisible()
+  await studio.getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('等手机回复后继续阅读。')
+  await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: '聊天模式' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '清空当前聊天' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.getByRole('textbox', { name: '聊天输入' }).press('Enter')
+  expect((await readOpfs(page))!.archives.find((a) => a.id === 'archive-1')!.revision).toBe(
+    revision,
+  )
+  release()
+  await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled()
+  await expect
+    .poll(async () =>
+      (await readOpfs(page))?.tasks.some((t) => t.kind === 'phoneReply' && t.applied),
+    )
+    .toBe(true)
+  expect(
+    requests.filter((r) => r.response_format.json_schema.name === 'NarrativeReply'),
+  ).toHaveLength(1)
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
+  await expectArchiveAvailable(page)
 })
 
 test('人设草稿可编辑保存，续写分支选择后才推进', async ({ page }) => {

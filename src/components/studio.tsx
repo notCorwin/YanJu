@@ -4,6 +4,7 @@ import { archiveMessages, db } from '@/lib/db'
 import type { Archive, TaskRun } from '@/lib/types'
 import {
   applyTask,
+  chooseContinuation,
   currentStory,
   executeAuxiliary,
   saveMediaDraft,
@@ -74,7 +75,7 @@ export function Studio({
   archive: Archive
   disabled: boolean
   onBusy: (busy: boolean) => void
-  onSend: (text: string, kind: RequestKind) => void
+  onSend: (text: string, kind: RequestKind, expectedRevision?: number) => Promise<boolean>
   onSource: (source: SourceRef) => void
   onCommand: (value: TaskOutput<'command'>) => void
   notify: Notify
@@ -182,8 +183,9 @@ export function Studio({
     lock.current = true
     setApplying(true)
     try {
-      await applyTask(task.id)
-      onSend(action, 'narrative')
+      await chooseContinuation(task.id, action, (text, revision) =>
+        onSend(text, 'narrative', revision),
+      )
     } catch (error) {
       notify(friendlyError(error), true)
     } finally {

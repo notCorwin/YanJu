@@ -49,6 +49,21 @@ export function messageText(message: StoredMessage) {
     ].join('\n\n')
   return message.content
 }
+function validateChapters(value: TaskOutput<'chapters'>, history: StoredMessage[]) {
+  const seen = new Set<string>()
+  let previous = -1
+  for (const chapter of value.chapters) {
+    if (!chapter.messageIds.length) invalid('章节至少引用一条消息')
+    for (const id of chapter.messageIds) {
+      const message = history.find((m) => m.id === id)
+      if (!message || seen.has(id)) invalid('章节引用未知或重复消息')
+      if (message!.sequence < previous) invalid('章节须按原始消息顺序整理')
+      previous = message!.sequence
+      seen.add(id)
+    }
+  }
+  if (seen.size !== history.length) invalid('章节须覆盖全部有效消息，不能遗漏原文')
+}
 function validateAuxiliary<K extends AuxiliaryKind>(
   kind: K,
   value: TaskOutput<K>,
@@ -111,6 +126,8 @@ function validateAuxiliary<K extends AuxiliaryKind>(
       v.changedBlockIds.some((id) => !changed.includes(id))
     )
       invalid('改写段落清单与实际修改不匹配')
+    if (JSON.stringify(validateNarrative(target!.reply!.value)) === JSON.stringify(v.replacement))
+      invalid('改写没有修改任何内容，请按要求修改正文或相关模块')
     const prefix = history.filter((m) => m.sequence < target!.sequence)
     applyMessage(
       rebuildStory({ id: story.archiveId, revision: story.revision } as Archive, prefix).story,
@@ -136,18 +153,7 @@ function validateAuxiliary<K extends AuxiliaryKind>(
     }
   }
   if (kind === 'chapters') {
-    const seen = new Set<string>()
-    let previous = -1
-    for (const chapter of (value as TaskOutput<'chapters'>).chapters) {
-      if (!chapter.messageIds.length) invalid('章节至少引用一条消息')
-      for (const id of chapter.messageIds) {
-        if (!history.some((m) => m.id === id) || seen.has(id)) invalid('章节引用未知或重复消息')
-        const sequence = history.find((m) => m.id === id)!.sequence
-        if (sequence < previous) invalid('章节须按原始消息顺序整理')
-        previous = sequence
-        seen.add(id)
-      }
-    }
+    validateChapters(value as TaskOutput<'chapters'>, history)
   }
   if (kind === 'media') {
     const v = value as TaskOutput<'media'>
@@ -405,6 +411,13 @@ export async function applyTask(id: string, editedOutput?: unknown) {
         story,
         all.filter((m) => !m.stale && m.status === 'complete'),
       )
+      if (task.kind === 'persona') {
+        const persona = value as TaskOutput<'persona'>
+        await db.personas.put({ ...persona, id: crypto.randomUUID(), createdAt: Date.now() })
+        await db.tasks.update(id, { output: value, applied: true })
+        return
+      }
+      if (task.kind === 'continuation') throw new Error('请选择一个分支，推进成功后才会保存选择。')
       const base: StoredMessage = {
         id: `task:${task.id}`,
         archiveId: archive.id,
@@ -463,9 +476,6 @@ export async function applyTask(id: string, editedOutput?: unknown) {
           all.filter((m) => m.sequence > target.sequence).map((m) => ({ ...m, stale: true })),
         )
         updated.summary = undefined
-      } else if (task.kind === 'persona') {
-        const persona = value as TaskOutput<'persona'>
-        await db.personas.put({ ...persona, id: crypto.randomUUID(), createdAt: Date.now() })
       } else if (task.kind === 'archiveMetadata') {
         const metadata = value as TaskOutput<'archiveMetadata'>
         updated.name = metadata.name
@@ -474,8 +484,7 @@ export async function applyTask(id: string, editedOutput?: unknown) {
       } else if (
         taskDefinitions[task.kind].commit === 'query' ||
         task.kind === 'media' ||
-        task.kind === 'chapters' ||
-        task.kind === 'continuation'
+        task.kind === 'chapters'
       ) {
         await db.tasks.update(id, { output: value, applied: true })
         return
@@ -486,6 +495,41 @@ export async function applyTask(id: string, editedOutput?: unknown) {
     },
   )
   await db.persistence.flush()
+}
+
+export async function chooseContinuation(
+  id: string,
+  action: string,
+  send: (text: string, expectedRevision: number) => Promise<boolean>,
+) {
+  const task = await db.transaction('r', [db.archives, db.tasks], async () => {
+    const task = await db.tasks.get(id)
+    if (!task || task.kind !== 'continuation' || task.status !== 'complete')
+      throw new Error('分支任务尚未完成。')
+    if (task.applied) return undefined
+    const archive = await db.archives.get(task.archiveId)
+    if (!archive || archive.revision !== task.revision)
+      throw new Error('篇章已变更，请重新生成后选择分支。')
+    const value = validateTask('continuation', task.output)
+    if (!value.options.some((option) => option.action === action))
+      throw new Error('分支选项不存在。')
+    return task
+  })
+  if (!task || !(await send(action, task.revision))) return false
+  await db.transaction('rw', [db.archives, db.tasks], async () => {
+    const current = await db.tasks.get(id)
+    if (
+      !(await db.archives.get(task.archiveId)) ||
+      !current ||
+      current.status !== 'complete' ||
+      current.archiveId !== task.archiveId ||
+      JSON.stringify(current.output) !== JSON.stringify(task.output)
+    )
+      throw new Error('分支任务已变更，推进的剧情仍已保存。')
+    await db.tasks.update(id, { applied: true })
+  })
+  await db.persistence.flush()
+  return true
 }
 
 export async function saveMediaDraft(id: string, editedOutput: unknown) {
@@ -607,6 +651,7 @@ export function storyMarkdown(
   chapters?: TaskOutput<'chapters'>,
 ) {
   const valid = history.filter((m) => m.status === 'complete' && !m.stale)
+  if (chapters) validateChapters(chapters, valid)
   const groups = chapters?.chapters ?? [
     { title: archive.name, summary: archive.description ?? '', messageIds: valid.map((m) => m.id) },
   ]

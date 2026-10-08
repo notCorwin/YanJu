@@ -8,7 +8,13 @@ import {
   editMessage,
   exportSave,
 } from '../../src/lib/db'
-import { applyTask, executeAuxiliary, saveMediaDraft, storyMarkdown } from '../../src/lib/workflows'
+import {
+  applyTask,
+  chooseContinuation,
+  executeAuxiliary,
+  saveMediaDraft,
+  storyMarkdown,
+} from '../../src/lib/workflows'
 import { taskSchemas, validateTask, type AuxiliaryKind, type TaskInput } from '../../src/lib/tasks'
 import { channelFingerprint } from '../../src/lib/provider'
 import { defaults, type StoredMessage } from '../../src/lib/types'
@@ -17,6 +23,7 @@ import {
   messageFixture,
   narrativeFixture,
   forumFixture,
+  compressionFixture,
   sse,
   responseSse,
 } from '../fixtures'
@@ -95,6 +102,124 @@ function fake(
   })
 }
 describe('辅助任务完整链路', () => {
+  it('保存未启用的人设不改变篇章或投影，同轮其他任务仍可应用', async () => {
+    const persona = await executeAuxiliary(archive.id, 'persona', '创建读者', null, {
+      fetcher: fake('persona'),
+    })
+    const metadata = await executeAuxiliary(archive.id, 'archiveMetadata', '整理简介', null, {
+      fetcher: fake('archiveMetadata'),
+    })
+    const before = await db.archives.get(archive.id)
+    const projection = await db.storyStates.get(archive.id)
+    const events = await db.storyEvents.toArray()
+    await applyTask(persona.id)
+    expect(await db.archives.get(archive.id)).toEqual(before)
+    expect(await db.storyStates.get(archive.id)).toEqual(projection)
+    expect(await db.storyEvents.toArray()).toEqual(events)
+    expect((await db.tasks.get(persona.id))?.applied).toBe(true)
+    await applyTask(metadata.id)
+    expect((await db.archives.get(archive.id))?.name).toBe('书房里的午后')
+  })
+  it('章节遗漏有效原文时纠正一次并拒绝保存完整结果', async () => {
+    const fetcher = fake('chapters', (output) => {
+      const value = output as { chapters: { messageIds: string[] }[] }
+      value.chapters[0].messageIds = ['n']
+      return value
+    })
+    const task = await executeAuxiliary(archive.id, 'chapters', '整理全部剧情', null, { fetcher })
+    expect(task.status).toBe('failed')
+    expect(task.error).toContain('全部有效消息')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect((await db.tasks.get(task.id))?.output).toBeUndefined()
+    expect(() =>
+      storyMarkdown(archive, messages, {
+        title: '不完整章节',
+        chapters: [{ title: '第一章', summary: '只列出了一条', messageIds: ['n'] }],
+      }),
+    ).toThrow(/全部有效消息/)
+  })
+  it('无变化的改写在生成和应用时均被拒绝，不使后续剧情失效', async () => {
+    await db.archives.update(archive.id, {
+      summary: {
+        value: compressionFixture,
+        coveredThroughId: 'f',
+        coveredCount: 3,
+        revision: 0,
+        createdAt: 0,
+      },
+    })
+    const before = await exportSave()
+    const noop = { replacement: structuredClone(narrativeFixture), changedBlockIds: [] }
+    const fetcher = fake('rewrite', () => noop)
+    const failed = await executeAuxiliary(archive.id, 'rewrite', '修改第一段', 'n', { fetcher })
+    expect(failed.status).toBe('failed')
+    expect(failed.error).toContain('没有修改')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    const valid = await executeAuxiliary(archive.id, 'rewrite', '修改第一段', 'n', {
+      fetcher: fake('rewrite'),
+    })
+    await db.tasks.update(valid.id, { output: noop })
+    await expect(applyTask(valid.id)).rejects.toThrow(/没有修改/)
+    const after = await exportSave()
+    expect(after.archives).toEqual(before.archives)
+    expect(after.messages).toEqual(before.messages)
+    expect(after.storyStates).toEqual(before.storyStates)
+    expect(after.storyEvents).toEqual(before.storyEvents)
+  })
+  it('仅修改关联模块的改写仍可生成与应用', async () => {
+    const task = await executeAuxiliary(archive.id, 'rewrite', '只调整角色状态', 'n', {
+      fetcher: fake('rewrite', () => {
+        const replacement = structuredClone(narrativeFixture)
+        replacement.effects.states[0].value = '更加平静'
+        return { replacement, changedBlockIds: [] }
+      }),
+    })
+    expect(task.status, task.error).toBe('complete')
+    await applyTask(task.id)
+    expect((await db.storyStates.get(archive.id))!.states[0].value).toBe('更加平静')
+  })
+  it('分支发送失败保留未应用状态，之后仍可重新选择', async () => {
+    const task = await executeAuxiliary(archive.id, 'continuation', '提供分支', null, {
+      fetcher: fake('continuation'),
+    })
+    const action = validateTask('continuation', task.output).options[0].action
+    const failed = vi.fn(async () => false)
+    expect(await chooseContinuation(task.id, action, failed)).toBe(false)
+    expect((await db.tasks.get(task.id))?.applied).not.toBe(true)
+    expect(await db.archives.get(archive.id)).toEqual(archive)
+    const success = vi.fn(async () => true)
+    expect(await chooseContinuation(task.id, action, success)).toBe(true)
+    expect((await db.tasks.get(task.id))?.applied).toBe(true)
+    expect(await chooseContinuation(task.id, action, success)).toBe(false)
+    expect(success).toHaveBeenCalledTimes(1)
+  })
+  it('分支在完整剧情提交前不标为已应用，并拒绝失效版本或未知选项', async () => {
+    const task = await executeAuxiliary(archive.id, 'continuation', '提供分支', null, {
+      fetcher: fake('continuation'),
+    })
+    const action = validateTask('continuation', task.output).options[0].action
+    const send = vi.fn(async (text: string, revision: number) => {
+      await appendMessage(messageFixture('branch-user', 'user', text, 3), revision)
+      expect((await db.tasks.get(task.id))?.applied).not.toBe(true)
+      await appendMessage(
+        {
+          ...messageFixture('branch-reply', 'assistant', '', 4),
+          reply: { kind: 'narrative', value: narrativeFixture },
+        },
+        revision + 1,
+      )
+      return true
+    })
+    await expect(chooseContinuation(task.id, '不存在的行动', send)).rejects.toThrow(/不存在/)
+    expect(send).not.toHaveBeenCalled()
+    await expect(applyTask(task.id)).rejects.toThrow(/请选择一个分支/)
+    expect(await chooseContinuation(task.id, action, send)).toBe(true)
+    expect((await db.tasks.get(task.id))?.applied).toBe(true)
+    const stale = { ...task, id: 'stale-branch', applied: false }
+    await db.tasks.put(stale)
+    await expect(chooseContinuation(stale.id, action, send)).rejects.toThrow(/篇章已变更/)
+    expect(send).toHaveBeenCalledTimes(1)
+  })
   it('生成期间删除篇章不会重建任务或产生无法导入的孤立请求', async () => {
     const fetcher = fake('phoneReply')
     const task = await executeAuxiliary(
