@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, initializeStorage } from '@/lib/db'
+import { db, initializeStorage, importSave, normalizeImport } from '@/lib/db'
+import { useStorageQuery } from '@/lib/use-storage-query'
 import { applyAppearance } from '@/lib/appearance'
+import { useBackground } from '@/lib/use-background'
 import { channelIsReady, friendlyError } from '@/lib/provider'
 import { ChatSession } from '@/components/chat'
 import {
@@ -21,7 +23,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
-import { IconButton, Eyebrow } from '@/components/shared'
+import { IconButton, Eyebrow, ConfirmDialog } from '@/components/shared'
+import { Input } from '@/components/ui/input'
+import { Field, FieldLabel } from '@/components/ui/field'
 import {
   ArrowRight,
   BookOpen,
@@ -39,10 +43,15 @@ const subscribeRoute = (notify: () => void) => {
   return () => window.removeEventListener('hashchange', notify)
 }
 const currentRoute = () => window.location.hash
+const readSettings = () => db.settings.get('app')
+const readArchives = () => db.archives.orderBy('updatedAt').reverse().toArray()
+const readChannels = () => db.channels.toArray()
+const readPersonas = () => db.personas.toArray()
 
 export default function App() {
   const [ready, setReady] = useState(false)
   const [failure, setFailure] = useState('')
+  const [recovery, setRecovery] = useState<unknown>(null)
   useEffect(() => {
     void initializeStorage()
       .then(() => setReady(true))
@@ -53,10 +62,47 @@ export default function App() {
       <main className="mx-auto flex page-width flex-col gap-6 p-8">
         <h1 className="text-xl">本地资料尚未打开</h1>
         <p role="alert">{failure}</p>
-        <p>请确认浏览器允许 IndexedDB，或重新载入后导入存档。</p>
+        <p>请确认浏览器支持 OPFS 本地文件存储，或导入完整 JSON 存档恢复资料。</p>
         <Button className="w-fit" onClick={() => location.reload()}>
           重新载入
         </Button>
+        <Field>
+          <FieldLabel htmlFor="recovery-file">导入存档恢复资料</FieldLabel>
+          <Input
+            id="recovery-file"
+            type="file"
+            accept="application/json,.json"
+            aria-label="恢复存档文件"
+            onChange={async (event) => {
+              const file = event.target.files?.[0]
+              event.target.value = ''
+              if (!file) return
+              try {
+                const data: unknown = JSON.parse(await file.text())
+                normalizeImport(data)
+                setRecovery(data)
+              } catch (error) {
+                setFailure(friendlyError(error))
+              }
+            }}
+          />
+        </Field>
+        <ConfirmDialog
+          open={recovery !== null}
+          onClose={() => setRecovery(null)}
+          title="导入并替换当前资料？"
+          detail="导入会替换当前浏览器的全部资料。"
+          onConfirm={async () => {
+            try {
+              await importSave(recovery)
+              await initializeStorage()
+              setFailure('')
+              setReady(true)
+            } catch (error) {
+              setFailure(friendlyError(error))
+            }
+          }}
+        />
       </main>
     )
   if (!ready)
@@ -65,13 +111,16 @@ export default function App() {
         盐焗 · 正在打开篇章…
       </main>
     )
-  return <Workspace />
+  return <Workspace onFailure={setFailure} />
 }
-function Workspace() {
-  const settings = useLiveQuery(() => db.settings.get('app'))
-  const archives = useLiveQuery(() => db.archives.orderBy('updatedAt').reverse().toArray()) ?? []
-  const channels = useLiveQuery(() => db.channels.toArray()) ?? []
-  const personas = useLiveQuery(() => db.personas.toArray()) ?? []
+function Workspace({ onFailure }: { onFailure: (message: string) => void }) {
+  const archivesQuery = useStorageQuery(readArchives)
+  const settings = useLiveQuery(readSettings)
+  const background = useBackground(settings?.bgImage, settings?.bgImageRef)
+  const archives = archivesQuery.data ?? []
+  const channels = useLiveQuery(readChannels) ?? []
+  const personas = useLiveQuery(readPersonas) ?? []
+  const readError = archivesQuery.error
   const route = useSyncExternalStore(subscribeRoute, currentRoute)
   const [dialog, setDialog] = useState<
     'channels' | 'personas' | 'appearance' | 'archives' | 'world' | null
@@ -88,8 +137,14 @@ function Workspace() {
   const onBusy = useCallback((value: boolean) => setBusy(value), [])
   const onInserted = useCallback(() => setInsert(''), [])
   useEffect(() => {
-    if (settings) applyAppearance(settings)
-  }, [settings])
+    if (readError) onFailure(friendlyError(readError))
+  }, [readError, onFailure])
+  useEffect(() => {
+    if (settings) applyAppearance({ ...settings, bgImage: background.url })
+  }, [settings, background.url])
+  useEffect(() => {
+    if (background.error) notify(background.error.message, true)
+  }, [background.error, notify])
   const routeId = route.startsWith('#/chat/') ? decodeURIComponent(route.slice(7)) : ''
   const archive = archives.find((a) => a.id === (routeId || settings?.activeArchiveId))
   const channel = channels.find((c) => c.id === settings?.activeChannelId)

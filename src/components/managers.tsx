@@ -7,6 +7,7 @@ import {
   initializeStorage,
   normalizeImport,
 } from '@/lib/db'
+import { replaceBackground } from '@/lib/background-storage'
 import { channelIsReady, friendlyError, testChannel, validateChannel } from '@/lib/provider'
 import {
   newChannel,
@@ -506,20 +507,22 @@ export function AppearanceDialog({
   settings: Settings
   notify: Notify
 }) {
+  const [savingBackground, setSavingBackground] = useState(false)
+  const saving = useRef(false)
   const update = (key: keyof Settings, value: string | number) =>
     void db.settings.update('app', { [key]: value })
-  const upload = async (file: File | undefined) => {
-    if (!file) return
-    if (!file.type.startsWith('image/')) {
-      notify('请选择图片文件。', true)
-      return
+  const saveBackground = async (file?: File) => {
+    if (saving.current) return
+    saving.current = true
+    setSavingBackground(true)
+    try {
+      await replaceBackground(db, file)
+    } catch (error) {
+      notify(friendlyError(error), true)
+    } finally {
+      saving.current = false
+      setSavingBackground(false)
     }
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result === 'string') update('bgImage', reader.result)
-    }
-    reader.onerror = () => notify('图片读取失败，请重试。', true)
-    reader.readAsDataURL(file)
   }
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -567,15 +570,23 @@ export function AppearanceDialog({
               </SelectContent>
             </Select>
           </Field>
-          <Field>
+          <Field data-disabled={savingBackground}>
             <FieldLabel htmlFor="background-file">背景图片</FieldLabel>
             <Input
               id="background-file"
               type="file"
               accept="image/*"
-              onChange={(e) => void upload(e.target.files?.[0])}
+              disabled={savingBackground}
+              aria-busy={savingBackground}
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                e.target.value = ''
+                if (file) void saveBackground(file)
+              }}
             />
-            <FieldDescription>保存到当前浏览器，导出存档时一并保存。</FieldDescription>
+            <FieldDescription role={savingBackground ? 'status' : undefined}>
+              {savingBackground ? '正在保存背景图片…' : '保存到当前浏览器，导出存档时一并保存。'}
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel htmlFor="background-opacity">背景透明度 · {settings.bgOpacity}%</FieldLabel>
@@ -589,7 +600,13 @@ export function AppearanceDialog({
             />
           </Field>
         </FieldGroup>
-        <Button variant="outline" onClick={() => update('bgImage', '')}>
+        <Button
+          variant="outline"
+          disabled={savingBackground}
+          aria-busy={savingBackground}
+          onClick={() => void saveBackground()}
+        >
+          {savingBackground && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
           移除背景
         </Button>
       </DialogContent>
@@ -618,8 +635,12 @@ export function ArchivesSheet({
   const [renameId, setRenameId] = useState('')
   const [name, setName] = useState('')
   const [pendingImport, setPendingImport] = useState<unknown>(null)
+  const [saving, setSaving] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const importRef = useRef<HTMLInputElement>(null)
   const download = async () => {
+    if (exporting) return
+    setExporting(true)
     try {
       const data = await exportSave()
       const url = URL.createObjectURL(
@@ -633,6 +654,8 @@ export function ArchivesSheet({
       notify('全部存档、人设、渠道和外观已导出。')
     } catch (e) {
       notify(friendlyError(e), true)
+    } finally {
+      setExporting(false)
     }
   }
   return (
@@ -644,18 +667,31 @@ export function ArchivesSheet({
         </SheetHeader>
         <div className="flex flex-wrap gap-2 px-4">
           <Button
-            disabled={disabled}
+            disabled={disabled || saving}
             onClick={() =>
-              void createArchive().then((a) => {
-                onSelect(a.id)
-                onClose()
-              })
+              void (async () => {
+                setSaving(true)
+                try {
+                  const a = await createArchive()
+                  onSelect(a.id)
+                  onClose()
+                } catch (error) {
+                  notify(friendlyError(error), true)
+                } finally {
+                  setSaving(false)
+                }
+              })()
             }
           >
             <Plus />
             新建
           </Button>
-          <Button variant="outline" onClick={() => void download()}>
+          <Button
+            variant="outline"
+            disabled={exporting}
+            aria-busy={exporting}
+            onClick={() => void download()}
+          >
             <Download />
             导出全部
           </Button>
@@ -734,9 +770,9 @@ export function ArchivesSheet({
           title="删除存档？"
           detail="将删除这个篇章的全部消息和摘要。建议先导出。"
           onConfirm={async () => {
-            await db.transaction('rw', db.messages, db.archives, async () => {
-              await db.messages.where('archiveId').equals(removeId).delete()
-              await db.archives.delete(removeId)
+            await db.mutate(async (tx) => {
+              await tx.messages.where('archiveId').equals(removeId).delete()
+              await tx.archives.delete(removeId)
             })
             const next = await db.archives.toCollection().first()
             if (removeId === activeId) onSelect(next?.id || (await createArchive()).id)
@@ -750,10 +786,18 @@ export function ArchivesSheet({
             </DialogHeader>
             <FormField label="存档名称" value={name} onChange={setName} />
             <Button
-              disabled={!name.trim()}
-              onClick={() => {
-                void db.archives.update(renameId, { name: name.trim() })
-                setRenameId('')
+              disabled={!name.trim() || saving}
+              aria-busy={saving}
+              onClick={async () => {
+                setSaving(true)
+                try {
+                  await db.archives.update(renameId, { name: name.trim() })
+                  setRenameId('')
+                } catch (error) {
+                  notify(friendlyError(error), true)
+                } finally {
+                  setSaving(false)
+                }
               }}
             >
               保存名称

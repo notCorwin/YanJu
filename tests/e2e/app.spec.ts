@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { channelFixture, completion, forumFixture, narrativeFixture, sse } from '../fixtures'
+import { channelFixture, completion, forumFixture, narrativeFixture, saveFixture, sse } from '../fixtures'
 
 type Body = {
   model: string
@@ -12,82 +12,6 @@ async function prepare(
   respond?: (body: Body) => { value: unknown; finish?: string; status?: number },
 ) {
   const requests: Body[] = []
-  await page.addInitScript(() => {
-    if (localStorage.getItem('test-seeded')) return
-    localStorage.setItem('test-seeded', 'true')
-    localStorage.setItem(
-      'yanju_archives',
-      JSON.stringify([
-        {
-          id: 'archive-1',
-          name: '阅读篇章',
-          createdAt: 1,
-          updatedAt: 2,
-          messages: [
-            {
-              id: 'opening',
-              role: 'assistant',
-              content: '午后的书房很安静，今天想读哪一本书？',
-              timestamp: 1,
-            },
-          ],
-        },
-        {
-          id: 'archive-2',
-          name: '第二篇章',
-          createdAt: 1,
-          updatedAt: 1,
-          messages: [
-            { id: 'opening-2', role: 'assistant', content: '第二篇章的开场。', timestamp: 1 },
-          ],
-        },
-      ]),
-    )
-    localStorage.setItem(
-      'yanju_masks',
-      JSON.stringify([
-        {
-          id: 'persona-1',
-          name: '测试读者',
-          gender: '其他',
-          identity: '读者',
-          prefer: '阅读',
-          force: '不允许代替我说话。',
-          createdAt: 1,
-        },
-      ]),
-    )
-    localStorage.setItem('yanju_archive_cur', JSON.stringify('archive-1'))
-    localStorage.setItem('yanju_channel_cur', JSON.stringify('channel-1'))
-    localStorage.setItem('yanju_mask_cur', JSON.stringify('persona-1'))
-    localStorage.setItem(
-      'yanju_channels',
-      JSON.stringify([
-        {
-          id: 'channel-1',
-          name: '测试渠道',
-          baseUrl: 'https://mock.example/v1',
-          apiKey: 'test-key-not-real',
-          model: 'test-model',
-          maxTokens: 4096,
-          temperature: 0.9,
-          contextWindow: 131072,
-          createdAt: 1,
-        },
-        {
-          id: 'channel-2',
-          name: '第二渠道',
-          baseUrl: 'https://mock.example/v1',
-          apiKey: 'test-key-not-real',
-          model: 'second-model',
-          maxTokens: 4096,
-          temperature: 0.9,
-          contextWindow: 131072,
-          createdAt: 1,
-        },
-      ]),
-    )
-  })
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
     requests.push(body)
@@ -112,6 +36,12 @@ async function prepare(
   })
   await page.goto('./')
   await expect(page.getByRole('button', { name: '进入聊天' })).toBeVisible()
+  await page.evaluate(async (data) => {
+    const path = '/YanJu/src/lib/db.ts'
+    const { importSave } = await import(path)
+    await importSave(data)
+  }, saveFixture)
+  await expect(page.getByText('测试读者', { exact: true })).toBeVisible()
   return requests
 }
 async function enableChannel(page: Page, name = '测试渠道') {

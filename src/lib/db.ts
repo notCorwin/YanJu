@@ -1,4 +1,6 @@
-import Dexie, { type Table } from 'dexie'
+import { YanJuDatabase } from './opfs-database'
+import { blobToDataUrl } from './file-storage'
+import { prepareBackground, readBackground } from './background-storage'
 import opening from '@/content/opening.txt?raw'
 import { convertLegacy } from './legacy'
 import {
@@ -15,23 +17,7 @@ import {
 import { validateNarrative, validateForum, compressionSchema } from './schemas'
 import { z } from 'zod'
 
-export class YanJuDatabase extends Dexie {
-  archives!: Table<Archive, string>
-  messages!: Table<StoredMessage, string>
-  channels!: Table<Channel, string>
-  personas!: Table<Persona, string>
-  settings!: Table<Settings, string>
-  constructor(name = 'yanju-v2') {
-    super(name)
-    this.version(1).stores({
-      archives: 'id,updatedAt',
-      messages: 'id,archiveId,[archiveId+sequence]',
-      channels: 'id,createdAt',
-      personas: 'id,createdAt',
-      settings: 'id',
-    })
-  }
-}
+export { YanJuDatabase }
 export const db = new YanJuDatabase()
 export const archiveMessages = (id: string, database = db) =>
   database.messages.where('archiveId').equals(id).sortBy('sequence')
@@ -55,10 +41,10 @@ export function createArchiveData(name = '新的篇章'): { archive: Archive; op
 }
 export async function createArchive(name?: string) {
   const data = createArchiveData(name)
-  await db.transaction('rw', db.archives, db.messages, db.settings, async () => {
-    await db.archives.add(data.archive)
-    await db.messages.add(data.opening)
-    await db.settings.update('app', { activeArchiveId: data.archive.id })
+  await db.mutate(async (tx) => {
+    await tx.archives.add(data.archive)
+    await tx.messages.add(data.opening)
+    await tx.settings.update('app', { activeArchiveId: data.archive.id })
   })
   return data.archive
 }
@@ -76,21 +62,21 @@ export function revise(archive: Archive, invalidate = false): Archive {
   }
 }
 export async function appendMessage(message: StoredMessage, expectedRevision?: number) {
-  await db.transaction('rw', db.archives, db.messages, async () => {
-    const archive = await db.archives.get(message.archiveId)
+  await db.mutate(async (tx) => {
+    const archive = await tx.archives.get(message.archiveId)
     if (!archive || (expectedRevision !== undefined && archive.revision !== expectedRevision))
       throw new Error('存档已在其他窗口修改，请重新载入后重试。')
-    await db.messages.put(message)
+    await tx.messages.put(message)
     const updated = revise(archive)
     if (message.usage) updated.lastUsage = message.usage
-    await db.archives.put(updated)
+    await tx.archives.put(updated)
   })
 }
 export async function editMessage(id: string, content: string) {
-  await db.transaction('rw', db.archives, db.messages, async () => {
-    const message = await db.messages.get(id)
+  await db.mutate(async (tx) => {
+    const message = await tx.messages.get(id)
     if (!message) throw new Error('消息不存在')
-    const archive = await db.archives.get(message.archiveId)
+    const archive = await tx.archives.get(message.archiveId)
     if (!archive) throw new Error('存档不存在')
     let next: StoredMessage = {
       ...message,
@@ -111,21 +97,21 @@ export async function editMessage(id: string, content: string) {
       }
     } else if (message.role === 'assistant')
       next = { ...next, kind: 'legacy', legacy: convertLegacy(content) }
-    await db.messages.put(next)
-    const all = await archiveMessages(archive.id)
+    await tx.messages.put(next)
+    const all = await tx.messages.where('archiveId').equals(archive.id).sortBy('sequence')
     const coveredIndex = all.findIndex((m) => m.id === archive.summary?.coveredThroughId)
-    await db.archives.put(
+    await tx.archives.put(
       revise(archive, !!archive.summary && all.findIndex((m) => m.id === id) <= coveredIndex),
     )
   })
 }
 
 export async function commitSummary(archiveId: string, revision: number, summary: Summary) {
-  await db.transaction('rw', db.archives, async () => {
-    const archive = await db.archives.get(archiveId)
+  await db.mutate(async (tx) => {
+    const archive = await tx.archives.get(archiveId)
     if (!archive || archive.revision !== revision)
       throw new Error('压缩期间存档有变更，摘要未提交。')
-    await db.archives.update(archiveId, { summary, compactionError: undefined })
+    await tx.archives.update(archiveId, { summary, compactionError: undefined })
   })
 }
 
@@ -137,8 +123,7 @@ const list = (v: unknown) => z.array(z.unknown()).parse(v ?? [])
 
 export function normalizeImport(input: unknown): SaveFile {
   const raw = record(input)
-  if (raw.version !== 1 && raw.version !== 2)
-    throw new Error('仅支持版本 1 和版本 2 的盐焗 JSON 存档。')
+  if (raw.version !== 2) throw new Error('仅支持版本 2 的盐焗 JSON 存档。')
   const channels: Channel[] = list(raw.channels).map((value) => {
     const c = record(value)
     return {
@@ -148,10 +133,10 @@ export function normalizeImport(input: unknown): SaveFile {
       apiKey: str(c.apiKey),
       model: str(c.model),
       temperature: numeric(c.temperature, 0.9),
-      maxOutputTokens: numeric(c.maxOutputTokens ?? c.maxTokens, 4096),
+      maxOutputTokens: numeric(c.maxOutputTokens, 4096),
       contextWindow: numeric(c.contextWindow, 32768),
       createdAt: numeric(c.createdAt, Date.now()),
-      calibration: raw.version === 2 ? (c.calibration as Channel['calibration']) : undefined,
+      calibration: c.calibration as Channel['calibration'],
     }
   })
   const masks: Persona[] = list(raw.masks).map((value) => {
@@ -170,35 +155,8 @@ export function normalizeImport(input: unknown): SaveFile {
   const archives: Archive[] = list(raw.archives).map((value) => {
     const a = record(value)
     const id = str(a.id) || crypto.randomUUID()
-    if (raw.version === 1) {
-      list(a.messages).forEach((value, sequence) => {
-        const m = record(value)
-        const content = str(m.content)
-        const original = str(m.rawContent, content)
-        messages.push({
-          id: str(m.id) || crypto.randomUUID(),
-          archiveId: id,
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content,
-          rawContent: original,
-          kind:
-            m.role === 'user'
-              ? /^(\$发送帖子|新帖[：:]|回复.+[：:])/.test(content)
-                ? 'forum'
-                : 'narrative'
-              : 'legacy',
-          legacy: m.role === 'user' ? undefined : convertLegacy(original),
-          createdAt: numeric(
-            m.createdAt ?? m.timestamp,
-            numeric(a.createdAt, Date.now()) + sequence,
-          ),
-          sequence,
-          status: 'complete',
-        })
-      })
-    }
     let summary: Summary | undefined
-    if (raw.version === 2 && a.summary) {
+    if (a.summary) {
       const s = record(a.summary)
       summary = {
         value: compressionSchema.parse(s.value),
@@ -219,30 +177,28 @@ export function normalizeImport(input: unknown): SaveFile {
       lastUsage: a.lastUsage as Archive['lastUsage'],
     }
   })
-  if (raw.version === 2) {
-    list(raw.messages).forEach((value) => {
-      const m = record(value)
-      if (!archives.some((a) => a.id === m.archiveId))
-        throw new Error('存档中存在没有所属篇章的消息。')
-      if (m.reply) {
-        const r = record(m.reply)
-        if (r.kind === 'narrative') validateNarrative(r.value)
-        else if (r.kind === 'forum') validateForum(r.value)
-        else throw new Error('未知回复类型')
-      }
-      if (!['user', 'assistant'].includes(str(m.role)) || !str(m.id))
-        throw new Error('消息字段不完整')
-      messages.push({
-        ...m,
-        content: str(m.content),
-        createdAt: numeric(m.createdAt, Date.now()),
-        sequence: numeric(m.sequence, messages.length),
-        status: ['complete', 'partial', 'failed', 'cancelled'].includes(str(m.status))
-          ? m.status
-          : 'complete',
-      } as unknown as StoredMessage)
-    })
-  }
+  list(raw.messages).forEach((value) => {
+    const m = record(value)
+    if (!archives.some((a) => a.id === m.archiveId))
+      throw new Error('存档中存在没有所属篇章的消息。')
+    if (m.reply) {
+      const r = record(m.reply)
+      if (r.kind === 'narrative') validateNarrative(r.value)
+      else if (r.kind === 'forum') validateForum(r.value)
+      else throw new Error('未知回复类型')
+    }
+    if (!['user', 'assistant'].includes(str(m.role)) || !str(m.id))
+      throw new Error('消息字段不完整')
+    messages.push({
+      ...m,
+      content: str(m.content),
+      createdAt: numeric(m.createdAt, Date.now()),
+      sequence: numeric(m.sequence, messages.length),
+      status: ['complete', 'partial', 'failed', 'cancelled'].includes(str(m.status))
+        ? m.status
+        : 'complete',
+    } as unknown as StoredMessage)
+  })
   for (const [name, values] of Object.entries({ archives, messages, channels, masks })) {
     if (new Set(values.map((v) => v.id)).size !== values.length)
       throw new Error(`${name} 存在重复 ID，导入未执行。`)
@@ -267,7 +223,6 @@ export function normalizeImport(input: unknown): SaveFile {
     activeChannelId: str(s.activeChannelId, channels[0]?.id ?? ''),
     activePersonaId: str(s.activePersonaId, masks[0]?.id ?? ''),
     activeArchiveId: str(s.activeArchiveId, archives[0]?.id ?? ''),
-    migrated: true,
   }
   if (!channels.some((c) => c.id === settings.activeChannelId))
     settings.activeChannelId = channels[0]?.id ?? ''
@@ -288,47 +243,47 @@ export function normalizeImport(input: unknown): SaveFile {
 
 export async function importSave(input: unknown, database = db) {
   const data = normalizeImport(input)
-  await database.transaction(
-    'rw',
-    database.archives,
-    database.messages,
-    database.channels,
-    database.personas,
-    database.settings,
-    async () => {
-      await Promise.all([
-        database.archives.clear(),
-        database.messages.clear(),
-        database.channels.clear(),
-        database.personas.clear(),
-      ])
-      await database.archives.bulkPut(data.archives)
-      await database.messages.bulkPut(data.messages)
-      await database.channels.bulkPut(data.channels)
-      await database.personas.bulkPut(data.masks)
-      await database.settings.put(data.settings)
-    },
-  )
+  await database.replace(async (tx) => {
+    const background = await prepareBackground(
+      data.settings.bgImage,
+      database.storage,
+      database.root,
+    )
+    if (background.bgImageRef)
+      tx.trackFile(`${database.root}/backgrounds/${background.bgImageRef.id}`)
+    await tx.archives.clear()
+    await tx.messages.clear()
+    await tx.channels.clear()
+    await tx.personas.clear()
+    await tx.settings.clear()
+    await tx.archives.bulkPut(data.archives)
+    await tx.messages.bulkPut(data.messages)
+    await tx.channels.bulkPut(data.channels)
+    await tx.personas.bulkPut(data.masks)
+    await tx.settings.put({ ...data.settings, ...background })
+  })
   return data
 }
 export async function exportSave(database = db): Promise<SaveFile> {
-  return database.transaction(
-    'r',
-    database.archives,
-    database.messages,
-    database.channels,
-    database.personas,
-    database.settings,
-    async () => ({
+  return database.read(async (tx) => {
+    const storedSettings = (await tx.settings.get('app')) ?? defaults
+    const settings = { ...storedSettings }
+    delete settings.bgImageRef
+    delete settings.archiveCatalogId
+    if (storedSettings.bgImageRef)
+      settings.bgImage = await blobToDataUrl(
+        await readBackground(storedSettings.bgImageRef, database.storage, database.root),
+      )
+    return {
       version: 2,
       exportedAt: new Date().toISOString(),
-      archives: await database.archives.toArray(),
-      messages: await database.messages.toArray(),
-      channels: await database.channels.toArray(),
-      masks: await database.personas.toArray(),
-      settings: (await database.settings.get('app')) ?? defaults,
-    }),
-  )
+      archives: await tx.archives.toArray(),
+      messages: await tx.messages.toArray(),
+      channels: await tx.channels.toArray(),
+      masks: await tx.personas.toArray(),
+      settings,
+    }
+  })
 }
 
 let initializing: Promise<void> | undefined
@@ -336,42 +291,26 @@ export function initializeStorage() {
   if (initializing) return initializing
   initializing = (async () => {
     await db.open()
-    if (!(await db.settings.get('app'))) {
-      const get = (key: string, fallback: unknown) => {
-        const value = localStorage.getItem(`yanju_${key}`)
-        if (!value) return fallback
-        try {
-          return JSON.parse(value) as unknown
-        } catch {
-          return value
-        }
+    await db.mutate(async (tx) => {
+      if (!(await tx.settings.get('app'))) await tx.settings.put({ ...defaults })
+      if (!(await tx.personas.count())) {
+        const persona = newPersona()
+        await tx.personas.add(persona)
+        await tx.settings.update('app', { activePersonaId: persona.id })
       }
-      if (['archives', 'channels', 'masks'].some((k) => localStorage.getItem(`yanju_${k}`))) {
-        const data = normalizeImport({
-          version: 1,
-          archives: get('archives', []),
-          channels: get('channels', []),
-          masks: get('masks', []),
-          settings: get('settings', {}),
-        })
-        data.settings.activeArchiveId = str(get('archive_cur', data.settings.activeArchiveId))
-        data.settings.activeChannelId = str(get('channel_cur', data.settings.activeChannelId))
-        data.settings.activePersonaId = str(get('mask_cur', data.settings.activePersonaId))
-        await importSave(data)
-      } else await db.settings.put({ ...defaults, migrated: true })
-    }
-    if (!(await db.personas.count())) {
-      const persona = newPersona()
-      await db.personas.add(persona)
-      await db.settings.update('app', { activePersonaId: persona.id })
-    }
-    if (!(await db.archives.count())) await createArchive()
-    await db.messages
-      .filter((m) => m.status === 'partial')
-      .modify({ status: 'cancelled', error: '上次生成已中断，已保留收到的内容，可重试。' })
-  })().catch((error) => {
+      if (!(await tx.archives.count())) {
+        const data = createArchiveData()
+        await tx.archives.add(data.archive)
+        await tx.messages.add(data.opening)
+        await tx.settings.update('app', { activeArchiveId: data.archive.id })
+      }
+      await tx.messages
+        .filter((m) => m.status === 'partial')
+        .modify({ status: 'cancelled', error: '上次生成已中断，已保留收到的内容，可重试。' })
+    })
+    await db.cleanup()
+  })().finally(() => {
     initializing = undefined
-    throw error
   })
   return initializing
 }

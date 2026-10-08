@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
-import { useLiveQuery } from 'dexie-react-hooks'
+import { useStorageQuery } from '@/lib/use-storage-query'
 import {
   archiveMessages,
   db,
@@ -69,7 +69,15 @@ export function ChatSession(props: {
   insert: string
   onInserted: () => void
 }) {
-  const stored = useLiveQuery(() => archiveMessages(props.archive.id), [props.archive.id])
+  const readMessages = useCallback(() => archiveMessages(props.archive.id), [props.archive.id])
+  const query = useStorageQuery(readMessages)
+  const stored = query.data
+  if (query.error)
+    return (
+      <p role="alert" className="p-6 text-destructive">
+        {friendlyError(query.error)}
+      </p>
+    )
   if (!stored)
     return (
       <p role="status" className="p-6 text-muted-foreground">
@@ -144,7 +152,9 @@ function ChatRunner({
   }, [insert, onInserted])
   const draft = (text: string) => {
     setInput(text)
-    void db.archives.update(archive.id, { draft: text })
+    void db.archives
+      .update(archive.id, { draft: text })
+      .catch((error) => notify(`草稿未保存：${friendlyError(error)}`, true))
   }
 
   const send = async (text = input, explicitKind?: RequestKind) => {
@@ -199,14 +209,8 @@ function ChatRunner({
     onBusy(true)
     clearError()
     try {
-      const current = await db.archives.get(archive.id)
       const all = await archiveMessages(archive.id)
       const target = all.findIndex((m) => m.id === id)
-      if (
-        current?.summary &&
-        target <= all.findIndex((m) => m.id === current.summary?.coveredThroughId)
-      )
-        await db.archives.put(revise(current, true))
       await regenerate({
         messageId: id,
         body: { regenerateFromId: id, kind: all[target]?.kind === 'forum' ? 'forum' : 'narrative' },
@@ -602,10 +606,13 @@ function ChatRunner({
         detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
         onConfirm={async () => {
           const data = createArchiveData()
-          await db.transaction('rw', db.messages, db.archives, async () => {
-            await db.messages.where('archiveId').equals(archive.id).delete()
-            await db.messages.put({ ...data.opening, archiveId: archive.id })
-            await db.archives.put({ ...revise(archive, true), draft: '' })
+          await db.mutate(async (tx) => {
+            const current = await tx.archives.get(archive.id)
+            if (!current || current.revision !== archive.revision)
+              throw new Error('存档已在其他窗口变更，请重新载入后重试。')
+            await tx.messages.where('archiveId').equals(archive.id).delete()
+            await tx.messages.put({ ...data.opening, archiveId: archive.id })
+            await tx.archives.put({ ...revise(current, true), draft: '' })
           })
           draft('')
           notify('当前聊天已清空。')

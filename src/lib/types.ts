@@ -30,13 +30,20 @@ export interface Appearance {
   bgImage: string
   bgOpacity: number
 }
+export interface BackgroundImageRef {
+  id: string
+  mimeType: string
+  size: number
+}
 export interface Settings extends Appearance {
   id: 'app'
   activeChannelId: string
   activePersonaId: string
   activeArchiveId: string
-  migrated: boolean
+  bgImageRef?: BackgroundImageRef
+  archiveCatalogId?: string
 }
+export type SaveSettings = Omit<Settings, 'bgImageRef' | 'archiveCatalogId'>
 export interface Usage {
   input: number
   output: number
@@ -126,7 +133,7 @@ export interface SaveFile {
   messages: StoredMessage[]
   channels: Channel[]
   masks: Persona[]
-  settings: Settings
+  settings: SaveSettings
 }
 
 export const defaults: Settings = {
@@ -134,7 +141,6 @@ export const defaults: Settings = {
   activeChannelId: '',
   activePersonaId: '',
   activeArchiveId: '',
-  migrated: false,
   fontChat: 16,
   fontUi: 14,
   fontFamily: 'Noto Serif SC',

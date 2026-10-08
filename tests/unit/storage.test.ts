@@ -7,6 +7,7 @@ import {
   editMessage,
   exportSave,
   importSave,
+  initializeStorage,
   normalizeImport,
 } from '../../src/lib/db'
 import { convertLegacy } from '../../src/lib/legacy'
@@ -21,71 +22,30 @@ const archive: Archive = {
   revision: 0,
   draft: '',
 }
-describe('IndexedDB 与存档迁移', () => {
-  it('v1 保留消息、渠道、人设、时间与外观，升级为 v2', async () => {
-    const v1 = {
-      version: 1,
-      archives: [
-        {
-          id: archive.id,
-          name: '旧存档',
-          createdAt: 1,
-          updatedAt: 2,
-          messages: [
-            {
-              id: 'old-msg',
-              role: 'assistant',
-              content: '纯文本',
-              rawContent:
-                '<div class="censy-lux-header"><div class="censy-meta-val">2019年</div><div class="censy-meta-val">书房</div><div class="censy-meta-val">宴雎</div></div><p>旧正文</p><div class="lux_wrap"><details><div class="lux_lab">STATE / INTERNAL</div><div class="lux_sec"><div class="lux_h">心声</div><div class="lux_ph">旧心声</div></div></details><details><div class="lux_lab">ARCHIVE / PROTOCOL</div><div>短中长记忆</div></details></div><script>window.legacyExecuted=true</script>',
-              timestamp: 123,
-            },
-          ],
-        },
-      ],
-      channels: [
-        {
-          ...channelFixture,
-          maxTokens: 2048,
-          maxOutputTokens: undefined,
-          contextWindow: undefined,
-        },
-      ],
-      masks: [
-        {
-          id: 'mask',
-          name: '旧人设',
-          gender: '其他',
-          identity: '读者',
-          prefer: '阅读',
-          force: '不要替我说话',
-          createdAt: 3,
-        },
-      ],
-      settings: {
-        fontChat: 18,
-        fontUi: 14,
-        fontFamily: 'KaiTi',
-        bgImage: 'data:image/png;base64,test',
-        bgOpacity: 25,
-      },
-    }
-    const result = await importSave(v1)
-    expect(result.channels[0].maxOutputTokens).toBe(2048)
-    expect(result.channels[0].contextWindow).toBe(32768)
-    expect(result.messages[0].createdAt).toBe(123)
-    expect(result.messages[0].legacy?.panels).toHaveLength(1)
-    expect(result.messages[0].legacy?.scene?.location).toBe('书房')
-    expect(result.messages[0].legacy?.body).toContain('旧正文')
-    expect(result.messages[0].legacy?.body).not.toContain('legacyExecuted')
-    const exported = await exportSave()
-    expect(exported.version).toBe(2)
-    expect(exported.channels[0].apiKey).toBe(channelFixture.apiKey)
-    expect(exported.settings.bgOpacity).toBe(25)
-    expect(exported.masks[0].force).toBe(v1.masks[0].force)
-    await importSave(JSON.parse(JSON.stringify(exported)))
-    expect((await exportSave()).messages).toEqual(exported.messages)
-    expect((await exportSave()).settings).toEqual(exported.settings)
+describe('OPFS 存档与 IndexedDB 配置', () => {
+  it('重复启动保留存档和草稿，仅将未完成回复标记为可恢复', async () => {
+    await initializeStorage()
+    const saved = (await db.settings.get('app'))!
+    const archive = (await db.archives.toArray())[0]
+    await initializeStorage()
+    expect((await db.settings.get('app'))?.archiveCatalogId).toBe(saved.archiveCatalogId)
+    expect(await db.archives.count()).toBe(1)
+    expect(await db.personas.count()).toBe(1)
+    await db.archives.update(archive.id, { draft: '保留草稿' })
+    await db.messages.put({
+      ...messageFixture('partial', 'assistant', '收到的内容', 1),
+      archiveId: archive.id,
+      status: 'partial',
+    })
+    await initializeStorage()
+    expect((await db.archives.get(archive.id))?.draft).toBe('保留草稿')
+    expect(await db.messages.get('partial')).toMatchObject({
+      content: '收到的内容',
+      status: 'cancelled',
+    })
+  })
+  it('仅接受 v2 JSON，不再转换旧版存档', () => {
+    expect(() => normalizeImport({ version: 1 })).toThrow(/版本 2/)
   })
   it('旧论坛 XML 转换为帖子与全部回答', () => {
     const xml = `<zf><g5>旧标题</g5><g6>旧时间</g6><g7>旧帖子正文</g7>${Array.from({ length: 50 }, (_, i) => `<r>${i}|作者${i}|今天|回答${i}|${i}|回复</r>`).join('')}</zf>`

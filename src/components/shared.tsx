@@ -1,4 +1,6 @@
-import { useId, type ComponentProps, type ReactNode } from 'react'
+import { useId, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { LoaderCircle } from 'lucide-react'
+import { friendlyError } from '@/lib/provider'
 import { Button } from './ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import { Field, FieldLabel, FieldDescription } from './ui/field'
@@ -71,21 +73,52 @@ export function ConfirmDialog({
   onConfirm: () => Promise<void> | void
   destructive?: boolean
 }) {
+  const pending = useRef(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const close = () => {
+    if (pending.current) return
+    setError('')
+    onClose()
+  }
+  const confirm = async () => {
+    if (pending.current) return
+    pending.current = true
+    setSaving(true)
+    setError('')
+    try {
+      await onConfirm()
+      onClose()
+    } catch (cause) {
+      setError(friendlyError(cause))
+    } finally {
+      pending.current = false
+      setSaving(false)
+    }
+  }
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+    <Dialog open={open} onOpenChange={(v) => !v && close()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{detail}</DialogDescription>
         </DialogHeader>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={saving} onClick={close}>
             取消
           </Button>
           <Button
             variant={destructive ? 'destructive' : 'default'}
-            onClick={() => void Promise.resolve(onConfirm()).then(onClose)}
+            disabled={saving}
+            aria-busy={saving}
+            onClick={() => void confirm()}
           >
+            {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
             确认
           </Button>
         </DialogFooter>

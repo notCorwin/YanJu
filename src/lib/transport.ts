@@ -40,10 +40,10 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
 }
 
 export async function persistCancelledMessage(archiveId: string, message: ChatMessage | undefined) {
-  await db.transaction('rw', db.archives, db.messages, async () => {
-    const archive = await db.archives.get(archiveId)
+  await db.mutate(async (tx) => {
+    const archive = await tx.archives.get(archiveId)
     if (!archive) return
-    const all = await archiveMessages(archiveId)
+    const all = await tx.messages.where('archiveId').equals(archiveId).sortBy('sequence')
     const previous =
       message?.role === 'assistant' ? all.find((m) => m.id === message.id) : undefined
     if (previous?.status === 'complete') return
@@ -55,7 +55,7 @@ export async function persistCancelledMessage(archiveId: string, message: ChatMe
         : forum?.type === 'data-forum'
           ? { kind: 'forum', value: forum.data }
           : undefined
-    await db.messages.put({
+    await tx.messages.put({
       ...previous,
       id: previous?.id || (message?.role === 'assistant' ? message.id : crypto.randomUUID()),
       archiveId,
@@ -68,25 +68,25 @@ export async function persistCancelledMessage(archiveId: string, message: ChatMe
       partial,
       error: '已停止生成，已保留收到的内容，可重试。',
     })
-    await db.archives.put(revise(archive))
+    await tx.archives.put(revise(archive))
   })
 }
 
 async function saveGenerated(message: StoredMessage, revision: number, regenerateFromId?: string) {
   if (!regenerateFromId) return appendMessage(message, revision)
-  await db.transaction('rw', db.archives, db.messages, async () => {
-    const archive = await db.archives.get(message.archiveId)
+  await db.mutate(async (tx) => {
+    const archive = await tx.archives.get(message.archiveId)
     if (!archive || archive.revision !== revision)
       throw new Error('存档已变更，重说结果未覆盖原记录。')
-    const all = await archiveMessages(archive.id)
+    const all = await tx.messages.where('archiveId').equals(archive.id).sortBy('sequence')
     const start = all.findIndex((m) => m.id === regenerateFromId)
     if (start < 0) throw new Error('找不到重说的消息')
     message.sequence = all[start].sequence
-    await db.messages.bulkDelete(all.slice(start).map((m) => m.id))
-    await db.messages.put(message)
+    await tx.messages.bulkDelete(all.slice(start).map((m) => m.id))
+    await tx.messages.put(message)
     const next = revise(archive)
     next.lastUsage = message.usage
-    await db.archives.put(next)
+    await tx.archives.put(next)
   })
 }
 
@@ -142,11 +142,11 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
       regenIndex <= all.findIndex((m) => m.id === archive!.summary?.coveredThroughId)
     ) {
       const next = revise(archive, true)
-      await db.transaction('rw', db.archives, async () => {
-        const current = await db.archives.get(next.id)
+      await db.mutate(async (tx) => {
+        const current = await tx.archives.get(next.id)
         if (current?.revision !== archive!.revision)
           throw new Error('存档已变更，请重新载入后重说。')
-        await db.archives.put(next)
+        await tx.archives.put(next)
       })
       archive = next
     }
@@ -230,10 +230,10 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
                   checkpointAt = Date.now()
                   pendingCheckpoint = pendingCheckpoint
                     .then(() =>
-                      db.transaction('rw', db.archives, db.messages, async () => {
-                        const current = await db.archives.get(snapshot.id)
+                      db.mutate(async (tx) => {
+                        const current = await tx.archives.get(snapshot.id)
                         if (current?.revision === snapshot.revision)
-                          await db.messages.put({
+                          await tx.messages.put({
                             ...base,
                             partial,
                             content: partial ? JSON.stringify(partial.value) : '',

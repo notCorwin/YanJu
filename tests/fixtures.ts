@@ -1,5 +1,5 @@
 import type { NarrativeReply, ForumReply, CompressionResult } from '../src/lib/schemas'
-import type { Channel, StoredMessage } from '../src/lib/types'
+import { defaults, type Channel, type SaveFile, type StoredMessage } from '../src/lib/types'
 
 const sentence = '午后书房的窗边很安静，他把今天要读的书放好，又记下明天的安排。'
 export const narrativeFixture: NarrativeReply = {
@@ -128,4 +128,51 @@ export function sse(value: unknown, finishReason = 'stop', step = 150) {
     `data: ${JSON.stringify({ id: 'mock', object: 'chat.completion.chunk', created: 1, model: 'test-model', choices: [{ index: 0, delta: {}, finish_reason: finishReason }], usage: { prompt_tokens: 12000, completion_tokens: 2048, total_tokens: 14048 } })}\n\ndata: [DONE]\n\n`,
   )
   return chunks
+}
+
+// A valid, lossless 1x1 PNG used for byte-level background round trips.
+export const pngBase64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+export const pngDataUrl = `data:image/png;base64,${pngBase64}`
+export const saveFixture: SaveFile = {
+  version: 2,
+  exportedAt: '2026-10-08T00:00:00Z',
+  archives: [
+    { id: 'archive-1', name: '阅读篇章', createdAt: 1, updatedAt: 2, revision: 0, draft: '' },
+    { id: 'archive-2', name: '第二篇章', createdAt: 1, updatedAt: 1, revision: 0, draft: '' },
+  ],
+  messages: [
+    {
+      ...messageFixture('opening', 'assistant', '午后的书房很安静，今天想读哪一本书？', 0),
+      kind: 'legacy',
+      legacy: { body: '午后的书房很安静，今天想读哪一本书？', panels: [] },
+    },
+    {
+      ...messageFixture('opening-2', 'assistant', '第二篇章的开场。', 0),
+      archiveId: 'archive-2',
+      kind: 'legacy',
+      legacy: { body: '第二篇章的开场。', panels: [] },
+    },
+  ],
+  channels: [
+    channelFixture,
+    { ...channelFixture, id: 'channel-2', name: '第二渠道', model: 'second-model' },
+  ],
+  masks: [
+    {
+      id: 'persona-1',
+      name: '测试读者',
+      gender: '其他',
+      identity: '读者',
+      prefer: '阅读',
+      force: '不允许代替我说话。',
+      createdAt: 1,
+    },
+  ],
+  settings: {
+    ...defaults,
+    activeArchiveId: 'archive-1',
+    activeChannelId: 'channel-1',
+    activePersonaId: 'persona-1',
+  },
 }
