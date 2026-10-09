@@ -38,13 +38,13 @@ function streaming(value: unknown, finishReason = 'stop'): Response {
   })
 }
 describe('OpenAI-compatible 严格协议', () => {
-  it('请求始终采用 Models.dev 的模型和 API，不接受存档中的自定义地址', async () => {
+  it('模型来自 Models.dev，允许 Base URL 覆盖目录默认地址', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(streaming(narrativeFixture))
     await generateReply({
       ...request(fetcher),
-      channel: { ...channelFixture, baseUrl: 'https://custom.invalid/v1', sdk: 'custom-sdk' },
+      channel: { ...channelFixture, baseUrl: 'https://custom.invalid/v1' },
     })
-    expect(String(fetcher.mock.calls[0][0])).toBe('https://mock.example/v1/chat/completions')
+    expect(String(fetcher.mock.calls[0][0])).toBe('https://custom.invalid/v1/chat/completions')
     await expect(channelRequest({ ...channelFixture, model: 'custom-model' })).rejects.toThrow(
       'Models.dev',
     )
@@ -216,19 +216,20 @@ describe('OpenAI-compatible 严格协议', () => {
     await expect(generateReply(options)).rejects.toThrow()
     expect(fetcher).toHaveBeenCalledOnce()
   })
-  it('不支持结构化的渠道直接拒绝，不降级请求', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json(
-        {
-          error: {
-            message: 'response_format json_schema unsupported',
-            type: 'invalid_request_error',
-          },
-        },
-        { status: 400 },
-      ),
-    )
-    await expect(generateReply(request(fetcher))).rejects.toThrow()
-    expect(fetcher).toHaveBeenCalledOnce()
+  it('结构化和 JSON mode 都被拒绝时回退到提示词 JSON', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body))
+      if (body.response_format)
+        return Response.json(
+          { error: { message: 'response_format unsupported', type: 'invalid_request_error' } },
+          { status: 400 },
+        )
+      expect(body.messages[0].content).toContain('JSON Schema')
+      return streaming(narrativeFixture)
+    })
+    const result = await generateReply(request(fetcher))
+    expect(result.reply.value).toEqual(narrativeFixture)
+    expect(result.diagnostics).toMatchObject({ outputMode: 'prompt', fallbacks: 2 })
+    expect(fetcher).toHaveBeenCalledTimes(3)
   })
 })

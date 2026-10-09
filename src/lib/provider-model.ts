@@ -1,77 +1,36 @@
 import { wrapLanguageModel, type LanguageModel } from 'ai'
-import type { LanguageModelV4 } from '@ai-sdk/provider'
+import {
+  UnsupportedFunctionalityError,
+  type LanguageModelV4,
+  type JSONObject,
+} from '@ai-sdk/provider'
 import { catalogSelection, type ModelCatalog } from './model-catalog'
 import { createBrowserFetch } from './browser-fetch'
-import type { ApiProtocol } from './types'
+import {
+  catalogSdk,
+  providerFactories,
+  providerModules,
+  type ProviderSdk,
+} from './provider-registry'
+import type { ApiProtocol, OutputMode } from './types'
+export { supportedSdks } from './provider-registry'
 
+type Model = Exclude<LanguageModel, string>
 type Provider = {
-  languageModel: (id: string) => Exclude<LanguageModel, string>
-  chat?: (id: string) => Exclude<LanguageModel, string>
-  responses?: (id: string) => Exclude<LanguageModel, string>
+  languageModel: (id: string) => Model
+  chat?: (id: string) => Model
+  chatModel?: (id: string) => Model
+  completionModel?: (id: string) => Model
+  responses?: (id: string) => Model
+  interactions?: (id: string) => Model
 }
 type Factory = (options: Record<string, unknown>) => Provider
-// Use native browser SDKs, Vertex Edge modules, and HTTP adapters for Node-only packages.
-const modules = {
-  '@ai-sdk/openai': () => import('@ai-sdk/openai'),
-  '@ai-sdk/openai-compatible': () => import('@ai-sdk/openai-compatible'),
-  '@ai-sdk/anthropic': () => import('@ai-sdk/anthropic'),
-  '@ai-sdk/azure': () => import('@ai-sdk/azure'),
-  '@ai-sdk/google': () => import('@ai-sdk/google'),
-  '@ai-sdk/google-vertex': () => import('@ai-sdk/google-vertex/edge'),
-  '@ai-sdk/google-vertex/anthropic': () => import('@ai-sdk/google-vertex/anthropic/edge'),
-  '@ai-sdk/amazon-bedrock': () => import('@ai-sdk/amazon-bedrock'),
-  '@ai-sdk/amazon-bedrock/mantle': () => import('@ai-sdk/amazon-bedrock/mantle'),
-  '@ai-sdk/groq': () => import('@ai-sdk/groq'),
-  '@ai-sdk/deepinfra': () => import('@ai-sdk/deepinfra'),
-  '@ai-sdk/cerebras': () => import('@ai-sdk/cerebras'),
-  '@ai-sdk/cohere': () => import('@ai-sdk/cohere'),
-  '@ai-sdk/mistral': () => import('@ai-sdk/mistral'),
-  '@ai-sdk/togetherai': () => import('@ai-sdk/togetherai'),
-  '@ai-sdk/perplexity': () => import('@ai-sdk/perplexity'),
-  '@ai-sdk/xai': () => import('@ai-sdk/xai'),
-  '@ai-sdk/gateway': () => import('@ai-sdk/gateway'),
-  '@ai-sdk/vercel': () => import('@ai-sdk/vercel'),
-  '@openrouter/ai-sdk-provider': () => import('@openrouter/ai-sdk-provider'),
-  '@aihubmix/ai-sdk-provider': () => import('@aihubmix/ai-sdk-provider'),
-  'venice-ai-sdk-provider': () => import('venice-ai-sdk-provider'),
-  'gitlab-ai-provider': () => import('./browser-providers'),
-  '@saladtechnologies-oss/ai-sdk-provider': () => import('@saladtechnologies-oss/ai-sdk-provider'),
-  'merge-gateway-ai-sdk-provider': () => import('merge-gateway-ai-sdk-provider'),
-  'watsonx-ai-provider': () => import('watsonx-ai-provider'),
-  '@jerome-benoit/sap-ai-provider-v2': () => import('./browser-providers'),
-  '@qvac/ai-sdk-provider': () => import('./browser-providers'),
-  'ai-gateway-provider': () => import('ai-gateway-provider'),
-} as const
-export const supportedSdks = Object.keys(modules)
-const factories: Record<string, string> = {
-  '@ai-sdk/openai': 'createOpenAI',
-  '@ai-sdk/openai-compatible': 'createOpenAICompatible',
-  '@ai-sdk/anthropic': 'createAnthropic',
-  '@ai-sdk/azure': 'createAzure',
-  '@ai-sdk/google': 'createGoogleGenerativeAI',
-  '@ai-sdk/google-vertex': 'createGoogleVertex',
-  '@ai-sdk/google-vertex/anthropic': 'createGoogleVertexAnthropic',
-  '@ai-sdk/amazon-bedrock': 'createAmazonBedrock',
-  '@ai-sdk/amazon-bedrock/mantle': 'createBedrockMantle',
-  '@ai-sdk/groq': 'createGroq',
-  '@ai-sdk/deepinfra': 'createDeepInfra',
-  '@ai-sdk/cerebras': 'createCerebras',
-  '@ai-sdk/cohere': 'createCohere',
-  '@ai-sdk/mistral': 'createMistral',
-  '@ai-sdk/togetherai': 'createTogetherAI',
-  '@ai-sdk/perplexity': 'createPerplexity',
-  '@ai-sdk/xai': 'createXai',
-  '@ai-sdk/gateway': 'createGateway',
-  '@ai-sdk/vercel': 'createVercel',
-  '@openrouter/ai-sdk-provider': 'createOpenRouter',
-  '@aihubmix/ai-sdk-provider': 'createAihubmix',
-  'venice-ai-sdk-provider': 'createVenice',
-  'gitlab-ai-provider': 'createBrowserGitLab',
-  '@saladtechnologies-oss/ai-sdk-provider': 'createSaladCloud',
-  'merge-gateway-ai-sdk-provider': 'createMergeGateway',
-  'watsonx-ai-provider': 'createWatsonx',
-  '@jerome-benoit/sap-ai-provider-v2': 'createBrowserSAP',
-  '@qvac/ai-sdk-provider': 'createBrowserQvac',
+export interface ModelSettings {
+  baseUrl?: string
+  sdk?: string
+  outputMode?: OutputMode
+  schema?: JSONObject
+  schemaName?: string
 }
 
 export function readCredential(value: string): Record<string, unknown> {
@@ -93,11 +52,47 @@ export function credentialApiKey(env: string[], credential: Record<string, unkno
 }
 export function resolveCatalogApi(api: string | undefined, credential: Record<string, unknown>) {
   return api?.replace(/\$\{([A-Z0-9_]+)\}/g, (_match, key: string) => {
-    const value = credential[key] ?? undefined
+    const value = credential[key]
     if (typeof value !== 'string' || !value)
-      throw new Error(`此 Provider 的 API Key 凭据 JSON 缺少 ${key}。`)
+      throw new Error(`此 Provider 的 API Key 凭据 JSON 缺少 ${key}，也可填写 Base URL 覆盖地址。`)
     return encodeURIComponent(value)
   })
+}
+
+/** Accept an origin, API prefix, or one of the supported full endpoint URLs. */
+export function endpointBaseURL(value: string, protocol: ApiProtocol) {
+  const url = new URL(value)
+  let path = url.pathname
+    .replace(/\/+$/, '')
+    .replace(/\/(?:chat\/completions|completions|responses|messages|interactions)$/, '')
+    .replace(/\/models\/[^/]+:(?:streamGenerateContent|generateContent)$/, '')
+  if (['generate-content', 'interactions', 'google-chat-completions'].includes(protocol)) {
+    path = path.replace(/\/openai$/, '').replace(/\/v1$/, '/v1beta')
+    if (!path) path = '/v1beta'
+    if (protocol === 'google-chat-completions') path += '/openai'
+  } else if (!path) path = '/v1'
+  url.pathname = path
+  url.hash = ''
+  return url.toString().replace(/\/$/, '')
+}
+
+const protocolSdks: Partial<Record<ApiProtocol, ProviderSdk>> = {
+  'chat-completions': '@ai-sdk/openai-compatible',
+  completions: '@ai-sdk/openai-compatible',
+  'google-chat-completions': '@ai-sdk/openai-compatible',
+  responses: '@ai-sdk/openai',
+  messages: '@ai-sdk/anthropic',
+  'generate-content': '@ai-sdk/google',
+  interactions: '@ai-sdk/google',
+}
+
+function containsSchema(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(containsSchema)
+  const object = value as Record<string, unknown>
+  return Object.entries(object).some(
+    ([name, child]) => /schema/i.test(name) || containsSchema(child),
+  )
 }
 
 export async function createProviderModel(
@@ -107,79 +102,185 @@ export async function createProviderModel(
   key: string,
   fetcher?: typeof fetch,
   protocol?: ApiProtocol,
+  settings: ModelSettings = {},
 ): Promise<LanguageModelV4> {
   const selected = catalogSelection({ providerId, model: modelId }, catalog)
   const { provider, model } = selected
-  const vertexMaas =
-    provider.npm === '@ai-sdk/google-vertex' && selected.sdk === '@ai-sdk/openai-compatible'
-  let sdk = provider.npm === 'ai-gateway-provider' ? provider.npm : selected.sdk
+  const chosenSdk = catalogSdk(settings.sdk ?? selected.sdk)
+  let sdk = protocolSdks[protocol ?? 'native'] ?? chosenSdk
+  // These official SDKs retain cloud authentication while using the same wire protocol.
+  if (
+    protocol === 'responses' &&
+    [
+      '@ai-sdk/azure',
+      '@ai-sdk/amazon-bedrock/mantle',
+      '@ai-sdk/open-responses',
+      '@ai-sdk/huggingface',
+      '@ai-sdk/quiverai',
+    ].includes(chosenSdk)
+  )
+    sdk = chosenSdk
+  if (
+    protocol === 'messages' &&
+    ['@ai-sdk/anthropic-aws', '@ai-sdk/minimax', '@ai-sdk/google-vertex/anthropic'].includes(
+      chosenSdk,
+    )
+  )
+    sdk = chosenSdk
   if (sdk === '@ai-sdk/google-vertex' && modelId.startsWith('claude-'))
     sdk = '@ai-sdk/google-vertex/anthropic'
-  // OpenAI-compatible providers use the OpenAI Responses codec when that protocol is selected.
   if (
-    sdk === '@ai-sdk/openai-compatible' &&
-    (protocol === 'responses' || (!protocol && model.provider?.shape === 'responses'))
+    (!protocol || protocol === 'native') &&
+    model.provider?.shape === 'responses' &&
+    sdk === '@ai-sdk/openai-compatible'
   )
     sdk = '@ai-sdk/openai'
-  if (!Object.hasOwn(modules, sdk))
-    throw new Error(`Models.dev 新增的 SDK ${sdk} 尚未包含在此版本中，请更新应用。`)
+  const vertexMaas =
+    provider.npm === '@ai-sdk/google-vertex' &&
+    chosenSdk === '@ai-sdk/openai-compatible' &&
+    (!protocol || protocol === 'native')
   let credential = readCredential(key)
-  const service = credential.AICORE_SERVICE_KEY ?? credential.GOOGLE_APPLICATION_CREDENTIALS
+  const service = credential.GOOGLE_APPLICATION_CREDENTIALS
   if (service !== undefined) {
     if (typeof service === 'string' && service.trim().startsWith('{'))
       credential = { ...credential, ...readCredential(service) }
     else if (service && typeof service === 'object' && !Array.isArray(service))
       credential = { ...credential, ...service }
-    else
-      throw new Error(
-        '请在 API Key 中粘贴服务商导出的凭据 JSON 内容；浏览器无法读取本机凭据文件路径。',
-      )
+    else throw new Error('请在 API Key 中粘贴服务账户 JSON 内容；浏览器无法读取本机凭据文件路径。')
   }
-  if (sdk.startsWith('@ai-sdk/amazon-bedrock'))
-    credential.AWS_REGION ??= credential.region ?? 'us-east-1'
+  const auth = (name: string, env: string, fallback?: string) =>
+    credential[name] ?? credential[env] ?? fallback
+  if (sdk.startsWith('@ai-sdk/amazon-bedrock') || sdk === '@ai-sdk/anthropic-aws')
+    credential.AWS_REGION ??= auth('region', 'AWS_REGION', 'us-east-1')
   if (provider.npm === '@ai-sdk/azure')
     credential[
       providerId === 'azure-cognitive-services'
         ? 'AZURE_COGNITIVE_SERVICES_RESOURCE_NAME'
         : 'AZURE_RESOURCE_NAME'
     ] ??= credential.resourceName
-  if (vertexMaas) {
-    credential.GOOGLE_VERTEX_PROJECT ??= credential.project ?? credential.project_id
-    credential.GOOGLE_VERTEX_LOCATION ??= credential.location ?? 'global'
-    const location = credential.GOOGLE_VERTEX_LOCATION
+  if (sdk.startsWith('@ai-sdk/google-vertex') || vertexMaas) {
+    credential.GOOGLE_VERTEX_PROJECT ??=
+      auth('project', 'GOOGLE_VERTEX_PROJECT') ?? credential.project_id
+    credential.GOOGLE_VERTEX_LOCATION ??= auth('location', 'GOOGLE_VERTEX_LOCATION', 'global')
     credential.GOOGLE_VERTEX_ENDPOINT ??=
-      location === 'global'
+      credential.GOOGLE_VERTEX_LOCATION === 'global'
         ? 'aiplatform.googleapis.com'
-        : ['eu', 'us'].includes(String(location))
-          ? `aiplatform.${location}.rep.googleapis.com`
-          : `${location}-aiplatform.googleapis.com`
+        : `${credential.GOOGLE_VERTEX_LOCATION}-aiplatform.googleapis.com`
   }
   const apiKey =
     typeof credential.accessToken === 'string'
       ? credential.accessToken
       : credentialApiKey(provider.env, credential)
-  const api = resolveCatalogApi(selected.api, credential)
+  const override = settings.baseUrl?.trim()
+  let api = resolveCatalogApi(override || selected.api, credential)
+  if (protocol && protocol !== 'native') {
+    api ??=
+      chosenSdk === '@ai-sdk/google'
+        ? 'https://generativelanguage.googleapis.com/v1beta'
+        : chosenSdk === '@ai-sdk/anthropic'
+          ? 'https://api.anthropic.com/v1'
+          : chosenSdk === '@ai-sdk/openai'
+            ? 'https://api.openai.com/v1'
+            : undefined
+    if (api) api = endpointBaseURL(api, protocol)
+  } else if (api && override) {
+    const nativeProtocol: ApiProtocol | undefined =
+      sdk === '@ai-sdk/google'
+        ? 'generate-content'
+        : ['@ai-sdk/anthropic', '@ai-sdk/minimax', '@ai-sdk/anthropic-aws'].includes(sdk)
+          ? 'messages'
+          : [
+                '@ai-sdk/openai',
+                '@ai-sdk/azure',
+                '@ai-sdk/amazon-bedrock/mantle',
+                '@ai-sdk/open-responses',
+                '@ai-sdk/huggingface',
+                '@ai-sdk/quiverai',
+                '@ai-sdk/xai',
+              ].includes(sdk)
+            ? 'responses'
+            : sdk === '@ai-sdk/openai-compatible'
+              ? 'chat-completions'
+              : undefined
+    if (nativeProtocol) api = endpointBaseURL(api, nativeProtocol)
+  }
+  const outputMode = settings.outputMode ?? 'structured'
   const browserFetch = createBrowserFetch(fetcher)
+  const requestFetch: typeof fetch = (input, init) => {
+    if (typeof init?.body !== 'string' || !init.body.trim().startsWith('{'))
+      return browserFetch(input, init)
+    const body = JSON.parse(init.body)
+    const requiredCapacity =
+      native.provider.endsWith('.messages') || sdk === '@ai-sdk/google-vertex/anthropic'
+    // Optional ceilings inserted by SDK defaults must not limit generation.
+    for (const name of [
+      'max_tokens',
+      'max_completion_tokens',
+      'max_output_tokens',
+      'maxOutputTokens',
+    ])
+      if (!(requiredCapacity && name === 'max_tokens')) delete body[name]
+    for (const config of [body.generationConfig, body.generation_config, body.inferenceConfig])
+      if (config)
+        for (const name of ['maxTokens', 'maxOutputTokens', 'max_output_tokens'])
+          delete config[name]
+    // The Messages wire protocol requires a ceiling; only the catalog's full capacity is used.
+    if (requiredCapacity) {
+      if (!model.limit.output)
+        throw new Error('Models.dev 尚未提供此 Messages 模型必填的输出容量，请刷新模型目录。')
+      body.max_tokens = model.limit.output
+      if (outputMode === 'json' && settings.schema && sdk !== '@ai-sdk/anthropic-aws')
+        body.output_config = { format: { type: 'json_object' } }
+    }
+    // The SDK completion codec does not expose response_format. Compatible completion endpoints may accept it.
+    if (protocol === 'completions' && settings.schema && outputMode !== 'prompt')
+      body.response_format =
+        outputMode === 'structured'
+          ? {
+              type: 'json_schema',
+              json_schema: { name: settings.schemaName, schema: settings.schema, strict: true },
+            }
+          : { type: 'json_object' }
+    // Some native SDKs omit unsupported formats or silently choose JSON mode.
+    // Detect that before sending, so the shared runner can include the schema in its fallback prompt.
+    if (settings.schema && outputMode !== 'prompt') {
+      const formats = [
+        body.response_format,
+        body.responseFormat,
+        body.text?.format,
+        body.output_config?.format,
+        body.outputConfig,
+        body.toolConfig,
+        body.tools,
+        body.generationConfig?.responseMimeType ? body.generationConfig : undefined,
+        body.generation_config?.response_mime_type ? body.generation_config : undefined,
+      ].filter(Boolean)
+      if (!formats.length || (outputMode === 'structured' && !formats.some(containsSchema)))
+        throw new UnsupportedFunctionalityError({
+          functionality: `${outputMode} JSON response format`,
+        })
+    }
+    return browserFetch(input, { ...init, body: JSON.stringify(body) })
+  }
   const options: Record<string, unknown> = {
     apiKey,
     ...(api ? { baseURL: api } : {}),
-    fetch: browserFetch,
+    fetch: requestFetch,
   }
-  const auth = (key: string, env: string, fallback?: string) =>
-    credential[key] ?? credential[env] ?? fallback
-  if (sdk === '@ai-sdk/openai-compatible' || sdk === 'venice-ai-sdk-provider')
+  if (sdk === '@ai-sdk/openai-compatible') {
+    if (!api) throw new Error('Models.dev 未提供兼容 API 地址，请填写 Base URL。')
     Object.assign(options, {
       name: provider.id,
       supportsStructuredOutputs: true,
       includeUsage: true,
     })
-  if (sdk === '@ai-sdk/anthropic')
+  }
+  if (sdk === '@ai-sdk/anthropic' || sdk === '@ai-sdk/minimax')
     options.headers = { 'anthropic-dangerous-direct-browser-access': 'true' }
   if (provider.npm === '@ai-sdk/azure' && sdk !== '@ai-sdk/azure') {
     options.headers = { ...(options.headers as Record<string, string>), 'api-key': apiKey }
     if (sdk === '@ai-sdk/openai-compatible') {
       options.apiKey = undefined
-      // Azure Model Inference requires a version and forwards model-specific schema/stream options.
       options.queryParams = { 'api-version': '2025-04-01' }
       options.headers = {
         ...(options.headers as Record<string, string>),
@@ -194,12 +295,8 @@ export async function createProviderModel(
         ? 'AZURE_COGNITIVE_SERVICES_RESOURCE_NAME'
         : 'AZURE_RESOURCE_NAME',
     )
-    if (providerId === 'azure-cognitive-services' && options.resourceName)
+    if (providerId === 'azure-cognitive-services' && options.resourceName && !override)
       options.baseURL = `https://${options.resourceName}.services.ai.azure.com/openai/v1`
-    if (!api && !options.resourceName)
-      throw new Error(
-        'Azure 的 API Key 凭据 JSON 需要包含 resourceName 或 Models.dev 所列的资源名称字段。',
-      )
   }
   if (sdk.startsWith('@ai-sdk/google-vertex') || vertexMaas)
     Object.assign(options, {
@@ -218,123 +315,88 @@ export async function createProviderModel(
         ? { generateAuthToken: async () => credential.accessToken }
         : {}),
     })
-  if (sdk.startsWith('@ai-sdk/amazon-bedrock'))
+  if (sdk.startsWith('@ai-sdk/amazon-bedrock') || sdk === '@ai-sdk/anthropic-aws')
     Object.assign(options, {
       region: auth('region', 'AWS_REGION', 'us-east-1'),
       accessKeyId: auth('accessKeyId', 'AWS_ACCESS_KEY_ID'),
       secretAccessKey: auth('secretAccessKey', 'AWS_SECRET_ACCESS_KEY'),
       sessionToken: auth('sessionToken', 'AWS_SESSION_TOKEN'),
+      ...(sdk === '@ai-sdk/anthropic-aws'
+        ? { workspaceId: auth('workspaceId', 'ANTHROPIC_AWS_WORKSPACE_ID') }
+        : {}),
     })
-  if (sdk === 'watsonx-ai-provider') {
-    options.projectId = auth('projectId', 'WATSONX_AI_PROJECT_ID')
-    if (!options.projectId)
-      throw new Error('watsonx 的 API Key 凭据 JSON 需要包含 WATSONX_AI_PROJECT_ID。')
-  }
-  if (sdk === '@jerome-benoit/sap-ai-provider-v2') {
-    options.credential = credential
-    options.resourceGroup = auth('resourceGroup', 'AICORE_RESOURCE_GROUP', 'default')
-  }
-  const loaded = (await modules[sdk as keyof typeof modules]()) as unknown as Record<
-    string,
-    unknown
-  >
-  let native: Exclude<LanguageModel, string>
+  let native: Model
   if (vertexMaas && options.googleCredentials) {
     const { createGoogleVertexMaas } = await import('@ai-sdk/google-vertex/maas/edge')
-    native = createGoogleVertexMaas({
-      ...options,
-      fetch: async (input, init) => {
-        const body = JSON.parse(String(init?.body))
-        // The MaaS SDK inserts a hard-coded output cap for some models. The service owns capacity.
-        delete body.max_tokens
-        if (body.stream) body.stream_options = { include_usage: true }
-        return browserFetch(input, { ...init, body: JSON.stringify(body) })
-      },
-    }).languageModel(modelId)
-    Object.assign(native, { supportsStructuredOutputs: true })
-  } else if (sdk === 'ai-gateway-provider') {
-    const { createAiGateway } = await import('ai-gateway-provider')
-    const { createUnified } = await import('ai-gateway-provider/providers/unified')
-    const account = auth('accountId', 'CLOUDFLARE_ACCOUNT_ID')
-    const gateway = auth('gateway', 'CLOUDFLARE_GATEWAY_ID')
-    if (!account || !gateway)
-      throw new Error(
-        'Cloudflare 的 API Key 凭据 JSON 需要包含 CLOUDFLARE_ACCOUNT_ID 和 CLOUDFLARE_GATEWAY_ID。',
-      )
-    const upstream = createUnified({
-      supportsStructuredOutputs: true,
-      includeUsage: true,
-      apiKey: 'CF_TEMP_TOKEN',
-    }).languageModel(modelId)
-    // Use the SDK binding contract to inject browser fetch/diagnostics for its universal endpoint.
-    native = createAiGateway({
-      binding: {
-        run: (data, { signal } = {}) =>
-          browserFetch(
-            `https://gateway.ai.cloudflare.com/v1/${encodeURIComponent(String(account))}/${encodeURIComponent(String(gateway))}`,
-            {
-              method: 'POST',
-              signal,
-              headers: {
-                'Content-Type': 'application/json',
-                'cf-aig-authorization': `Bearer ${apiKey}`,
-              },
-              body: JSON.stringify(data),
-            },
-          ),
-      },
-    })(upstream)
+    native = createGoogleVertexMaas(options).languageModel(modelId)
   } else {
-    const factory = loaded[factories[sdk]] as Factory | undefined
-    if (typeof factory !== 'function') throw new Error(`SDK ${sdk} 没有可用的 Provider 工厂。`)
+    const loaded = (await providerModules[sdk]()) as unknown as Record<string, unknown>
+    const factory = loaded[providerFactories[sdk]] as Factory
     const instance = factory(options)
-    const deployment =
-      typeof credential.deployments === 'object' && credential.deployments !== null
-        ? (credential.deployments as Record<string, string>)[modelId]
-        : undefined
-    const id = deployment ?? modelId
-    const chatShape = ['completions', 'chat-completions'].includes(model.provider?.shape ?? '')
-    const responses =
-      protocol === 'responses' ||
-      (protocol !== 'chat-completions' &&
-        (model.provider?.shape === 'responses' ||
-          ((sdk === '@ai-sdk/openai' || sdk === '@ai-sdk/azure') && !chatShape)))
-    native =
-      responses && instance.responses
-        ? instance.responses(id)
-        : protocol === 'chat-completions' || chatShape
-          ? (instance.chat ?? instance.languageModel)(id)
-          : instance.languageModel(id)
-    // TogetherAI's SDK hard-codes one supported model. Models.dev is our capability source.
-    if (sdk === '@ai-sdk/togetherai') Object.assign(native, { supportsStructuredOutputs: true })
+    const deployments = credential.deployments
+    const id =
+      deployments && typeof deployments === 'object' && !Array.isArray(deployments)
+        ? ((deployments as Record<string, string>)[modelId] ?? modelId)
+        : modelId
+    if (protocol === 'completions') native = instance.completionModel!(id)
+    else if (protocol === 'interactions') native = instance.interactions!(id)
+    else if (
+      (protocol === 'responses' ||
+        ((!protocol || protocol === 'native') && model.provider?.shape === 'responses')) &&
+      instance.responses
+    )
+      native = instance.responses(id)
+    else if (['chat-completions', 'google-chat-completions'].includes(protocol ?? ''))
+      native = (instance.chatModel ?? instance.chat ?? instance.languageModel)(id)
+    else if (
+      (!protocol || protocol === 'native') &&
+      ['completions', 'chat-completions'].includes(model.provider?.shape ?? '')
+    )
+      native = (instance.chatModel ?? instance.chat ?? instance.languageModel)(id)
+    else native = instance.languageModel(id)
   }
-  // Mantle reuses OpenAI codecs, whose options are read from the openai namespace.
+  if (sdk === '@ai-sdk/togetherai' || vertexMaas)
+    Object.assign(native, { supportsStructuredOutputs: true })
   const namespace =
     sdk === '@ai-sdk/amazon-bedrock/mantle' ? 'openai' : native.provider.split('.')[0]
   return wrapLanguageModel({
     model: native,
     middleware: {
       specificationVersion: 'v4',
-      transformParams: async ({ params }) => ({
-        ...params,
-        // Anthropic requires this field. Use its published model capacity so SDK defaults cannot impose a smaller ceiling.
-        ...((sdk === '@ai-sdk/anthropic' || sdk === '@ai-sdk/google-vertex/anthropic') &&
-        model.limit.output
-          ? { maxOutputTokens: model.limit.output }
-          : {}),
-        providerOptions: {
-          ...params.providerOptions,
-          [namespace]: {
-            ...params.providerOptions?.[namespace],
-            strictJsonSchema: true,
-            ...(sdk === '@ai-sdk/anthropic' || sdk === '@ai-sdk/google-vertex/anthropic'
-              ? { structuredOutputMode: 'outputFormat' }
-              : {}),
-            ...(native.provider.endsWith('.responses') ? { store: false } : {}),
-            ...(sdk === '@ai-sdk/google' ? { structuredOutputs: true } : {}),
+      transformParams: async ({ params }) => {
+        const format = settings.schema
+          ? { type: 'json' as const, schema: settings.schema, name: settings.schemaName }
+          : params.responseFormat
+        return {
+          ...params,
+          maxOutputTokens:
+            native.provider.endsWith('.messages') || sdk === '@ai-sdk/google-vertex/anthropic'
+              ? model.limit.output
+              : undefined,
+          responseFormat:
+            outputMode === 'prompt'
+              ? undefined
+              : outputMode === 'json'
+                ? { type: 'json' as const }
+                : format,
+          providerOptions: {
+            ...params.providerOptions,
+            [namespace]: {
+              ...params.providerOptions?.[namespace],
+              strictJsonSchema: true,
+              ...(native.provider.endsWith('.messages') || sdk === '@ai-sdk/google-vertex/anthropic'
+                ? { structuredOutputMode: 'outputFormat' }
+                : {}),
+              ...(native.provider.endsWith('.responses') || protocol === 'interactions'
+                ? { store: false }
+                : {}),
+              ...(sdk === '@ai-sdk/google'
+                ? { structuredOutputs: outputMode === 'structured' }
+                : {}),
+            },
           },
-        },
-      }),
+        }
+      },
     },
   })
 }

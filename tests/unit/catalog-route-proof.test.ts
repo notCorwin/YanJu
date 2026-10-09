@@ -35,7 +35,7 @@ async function setup(apiMode: ApiMode = 'chat-completions') {
   vi.stubGlobal('fetch', catalogFetch)
   const catalog = await import('../../src/lib/model-catalog')
   const provider = await import('../../src/lib/provider')
-  const channel = { ...channelFixture, apiMode }
+  const channel = { ...channelFixture, baseUrl: '', apiMode }
   const capability = await provider.testChannel(channel, undefined, probeFetch())
   expect(capability.ok).toBe(true)
   const tested = { ...channel, capability }

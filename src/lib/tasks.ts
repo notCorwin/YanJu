@@ -127,7 +127,6 @@ export type TaskInputs = {
   compression: {
     previous?: TaskOutput<'compression'>
     messages: { role: string; content: string }[]
-    targetTokens: number
   }
   capability: { test: string }
 } & {

@@ -79,7 +79,11 @@ export const responsesLifecycle: LanguageModelMiddleware = {
       checkResponse(result.response?.body, true)
       return result
     } catch (error) {
-      if (APICallError.isInstance(error) && error.responseBody) checkResponse(error.responseBody)
+      if (APICallError.isInstance(error) && error.responseBody) {
+        const body = record(error.responseBody)
+        // HTTP request errors (including unsupported formats) are not response lifecycle events.
+        if (body.object === 'response' || typeof body.status === 'string') checkResponse(body)
+      }
       throw error
     }
   },

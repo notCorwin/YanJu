@@ -4,12 +4,26 @@ import type { TurnEffects } from './domain-schema'
 import type { StoryState, StoryEvent } from './story'
 import type { AuxiliaryKind, TaskInput, TaskKind } from './tasks'
 
-export type ApiProtocol = 'chat-completions' | 'responses' | 'native'
+export const apiProtocols = [
+  'chat-completions',
+  'completions',
+  'responses',
+  'messages',
+  'generate-content',
+  'interactions',
+  'google-chat-completions',
+  'native',
+] as const
+export type ApiProtocol = (typeof apiProtocols)[number]
 export type ApiMode = 'auto' | ApiProtocol
+export const outputModes = ['structured', 'json', 'prompt'] as const
+export type OutputMode = (typeof outputModes)[number]
 export interface ProtocolCapability {
   nonStreaming: 'passed' | 'failed' | 'untested'
   streaming: 'passed' | 'failed' | 'untested'
   error?: string
+  outputMode?: OutputMode
+  streamingOutputMode?: OutputMode
 }
 export interface ChannelCapability {
   fingerprint: string
@@ -197,6 +211,9 @@ export interface RequestDiagnostics {
   requestId?: string
   httpStatus?: number
   corrections: number
+  outputMode?: OutputMode
+  fallbacks?: number
+  repairs?: number
   model: string
   schema: string
   finishReason?: string
@@ -276,6 +293,7 @@ export interface RequestRecord {
     schema: unknown
     temperature: number | null
     streaming: boolean
+    outputMode?: OutputMode
   }
   estimatedInput: number
   status: MessageStatus

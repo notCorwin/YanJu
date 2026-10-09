@@ -20,7 +20,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { loadModelCatalog, selectCatalogModel, type ModelCatalog } from '@/lib/model-catalog'
-import { channelFingerprint, protocolLabels } from '@/lib/channels'
+import {
+  channelFingerprint,
+  protocolLabels,
+  endpointLabels,
+  outputModeLabels,
+} from '@/lib/channels'
+import { supportedSdks } from '@/lib/provider-registry'
 import { formatDate } from '@/lib/format-date'
 import type { Notify } from '@/lib/notify'
 import {
@@ -31,7 +37,7 @@ import {
   testChannelProtocols,
 } from '@/lib/provider'
 import { commitChannelCapability, db } from '@/lib/storage'
-import { type ApiMode, type ApiProtocol, type Channel, type ChannelCapability } from '@/lib/types'
+import { apiProtocols, type ApiMode, type Channel, type ChannelCapability } from '@/lib/types'
 import { Check, Eye, EyeOff, FlaskConical, LoaderCircle, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -126,6 +132,8 @@ export function ChannelEditor({
         ? {
             ...selectCatalogModel(next, provider, selectedModel),
             apiMode: next.apiMode,
+            sdk: next.sdk,
+            baseUrl: next.baseUrl,
             name: next.name,
           }
         : next
@@ -135,7 +143,7 @@ export function ChannelEditor({
     }
     const issues = channelValidationErrors(resolved)
     if (!provider) issues.providerId = '请选择 Models.dev 中的 Provider。'
-    if (!selectedModel) issues.model = '请选择支持 Structured Outputs 的模型。'
+    if (!selectedModel) issues.model = '请选择 Models.dev 中的文本模型。'
     setErrors(issues)
     if (Object.keys(issues).length) {
       requestAnimationFrame(() =>
@@ -284,9 +292,9 @@ export function ChannelEditor({
                   }}
                 />
                 <FieldDescription>
-                  仅列出支持 Structured Outputs 的文本模型。
+                  所有支持文本输入与输出的模型均可选择。
                   {selectedModel &&
-                    `上下文 ${selectedModel.limit.context.toLocaleString()} tokens · SDK ${selectedModel.provider?.npm ?? provider?.npm}`}
+                    `上下文 ${selectedModel.limit.context.toLocaleString()} tokens · ${selectedModel.structured_output ? '支持 Structured Outputs' : '自动选择 JSON 输出模式'}`}
                 </FieldDescription>
                 {errors.model && <FieldDescription role="alert">{errors.model}</FieldDescription>}
               </Field>
@@ -310,12 +318,7 @@ export function ChannelEditor({
                 label="API Key"
                 help={
                   provider &&
-                  (provider.env.length > 1 ||
-                    [
-                      '@ai-sdk/google-vertex',
-                      '@ai-sdk/google-vertex/anthropic',
-                      '@jerome-benoit/sap-ai-provider-v2',
-                    ].includes(provider.npm))
+                  (provider.env.length > 1 || provider.npm.startsWith('@ai-sdk/google-vertex'))
                     ? `云服务可在此粘贴完整凭据 JSON，包含 Models.dev 所列认证字段：${provider.env.join('、')}。详见服务商凭据文档。`
                     : undefined
                 }
@@ -336,35 +339,70 @@ export function ChannelEditor({
                 }
                 autoComplete="off"
               />
-              {!['ai-gateway-provider', '@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(
-                provider?.npm ?? '',
-              ) &&
-                ['@ai-sdk/openai', '@ai-sdk/openai-compatible'].includes(draft.sdk) &&
-                !selectedModel?.provider?.shape && (
-                  <Field>
-                    <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 协议</FieldLabel>
-                    <Select
-                      value={draft.apiMode}
-                      disabled={busy || saving || disabled}
-                      onValueChange={(v) => update('apiMode', v as ApiMode)}
-                    >
-                      <SelectTrigger id={`api-mode-${draft.id}`} className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          {draft.sdk === '@ai-sdk/openai' && (
-                            <SelectItem value="auto">自动探测（Responses 优先）</SelectItem>
-                          )}
-                          {draft.sdk === '@ai-sdk/openai' && (
-                            <SelectItem value="responses">Responses</SelectItem>
-                          )}
-                          <SelectItem value="chat-completions">Chat Completions</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
+              <FormField
+                label="Base URL（可选）"
+                name="baseUrl"
+                error={errors.baseUrl}
+                value={draft.baseUrl}
+                placeholder={
+                  selectedModel?.provider?.api ?? provider?.api ?? '使用 Provider 默认地址'
+                }
+                help="留空使用 Models.dev 或官方 SDK 的默认地址；可填写自定义 API 前缀或完整端点地址。"
+                onChange={(v) => update('baseUrl', v)}
+                autoComplete="off"
+              />
+              <Field data-invalid={!!errors.apiMode}>
+                <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 端点</FieldLabel>
+                <Select
+                  value={draft.apiMode}
+                  disabled={busy || saving || disabled}
+                  onValueChange={(v) => update('apiMode', v as ApiMode)}
+                >
+                  <SelectTrigger
+                    id={`api-mode-${draft.id}`}
+                    className="w-full"
+                    aria-invalid={!!errors.apiMode}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="auto">自动探测（Responses / Chat Completions）</SelectItem>
+                      {apiProtocols.map((protocol) => (
+                        <SelectItem key={protocol} value={protocol}>
+                          {endpointLabels[protocol]}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  自动依次尝试 Structured Outputs、JSON mode 和提示词 JSON；所有结果都在本地校验。
+                </FieldDescription>
+                {errors.apiMode && (
+                  <FieldDescription role="alert">{errors.apiMode}</FieldDescription>
                 )}
+              </Field>
+              {draft.apiMode === 'native' && (
+                <Field data-invalid={!!errors.sdk}>
+                  <FieldLabel htmlFor={`sdk-${draft.id}`}>Provider SDK</FieldLabel>
+                  <SearchableSelect
+                    id={`sdk-${draft.id}`}
+                    value={draft.sdk}
+                    aria-invalid={!!errors.sdk}
+                    options={supportedSdks.map((sdk) => ({ value: sdk, label: sdk }))}
+                    searchLabel="搜索官方 SDK"
+                    searchPlaceholder="搜索 @ai-sdk 提供商…"
+                    placeholder="选择官方 SDK"
+                    emptyMessage="未找到匹配的 SDK。"
+                    onValueChange={(sdk) => update('sdk', sdk)}
+                  />
+                  <FieldDescription>
+                    选择官方 SDK 的原生端点；兼容服务统一使用 @ai-sdk/openai-compatible。
+                  </FieldDescription>
+                  {errors.sdk && <FieldDescription role="alert">{errors.sdk}</FieldDescription>}
+                </Field>
+              )}
               <Field>
                 <FieldLabel htmlFor={`temperature-mode-${draft.id}`}>温度设置</FieldLabel>
                 <Select
@@ -438,7 +476,7 @@ export function ChannelEditor({
 
           {draft.capability && channelIsReady(value) && (
             <p className="mt-3 text-sm text-success">
-              测试通过 · {draft.capability.protocols ? '完整协议' : '连接、结构化与流式'} ·{' '}
+              测试通过 · {draft.capability.protocols ? '完整协议' : '连接、JSON 校验与流式'} ·{' '}
               {formatDate(draft.capability.testedAt)}
               {' · 当前协议：'}
               {draft.capability.protocol && protocolLabels[draft.capability.protocol]}
@@ -451,7 +489,7 @@ export function ChannelEditor({
           )}
           {draft.capability?.checks && (
             <div className="mt-3 flex flex-col gap-2" aria-label="协议测试结果">
-              {(['native', 'responses', 'chat-completions'] as ApiProtocol[]).map((protocol) => {
+              {apiProtocols.map((protocol) => {
                 const check = draft.capability?.checks?.[protocol]
                 if (!check) return null
                 const labels = { passed: '通过', failed: '失败', untested: '未测试' }
@@ -460,6 +498,9 @@ export function ChannelEditor({
                     <p>
                       {protocolLabels[protocol]} · 非流式：{labels[check.nonStreaming]} · 流式：
                       {labels[check.streaming]}
+                      {check.outputMode && ` · 非流式 ${outputModeLabels[check.outputMode]}`}
+                      {check.streamingOutputMode &&
+                        ` · 流式 ${outputModeLabels[check.streamingOutputMode]}`}
                     </p>
                     {check.error && (
                       <p className="wrap-break-word text-muted-foreground">{check.error}</p>

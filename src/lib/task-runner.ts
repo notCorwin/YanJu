@@ -1,14 +1,24 @@
-import { Output, generateText, streamText, type DeepPartial, type ModelMessage } from 'ai'
+import { generateText, parsePartialJson, streamText, type DeepPartial, type ModelMessage } from 'ai'
 import { z } from 'zod'
-import type { ModelCatalog } from './model-catalog'
-import { estimatedProtocol } from './channels'
+import type { JSONObject } from '@ai-sdk/provider'
+import { loadModelCatalog, catalogSelection, type ModelCatalog } from './model-catalog'
+import { estimatedProtocol, outputModeLabels } from './channels'
 import { estimateTokens, serializeRequest } from './context'
 import { channelRequest, friendlyError } from './provider'
 import { ChannelRequestError, requestTimeout, requestTrace } from './request-trace'
-import { ContentValidationError, sanitizeSchemaPartial } from './schemas'
+import { sanitizeSchemaPartial } from './schemas'
+import { repairJsonOutput, unsupportedOutputFormat, validationDetails } from './json-output'
 import { saveRequestRecord } from './storage'
 import { taskDefinitions, taskSchemas, validateTask, type TaskKind, type TaskOutput } from './tasks'
-import type { ApiProtocol, Channel, RequestDiagnostics, RequestRecord, Usage } from './types'
+import {
+  outputModes,
+  type OutputMode,
+  type ApiProtocol,
+  type Channel,
+  type RequestDiagnostics,
+  type RequestRecord,
+  type Usage,
+} from './types'
 
 export interface StructuredOptions<K extends TaskKind> {
   kind: K
@@ -31,12 +41,8 @@ export interface StructuredOptions<K extends TaskKind> {
   validate?: (value: TaskOutput<K>) => void
 }
 export function taskInstructions(kind: TaskKind) {
-  return `只返回 ${taskDefinitions[kind].name} 严格根对象，不输出 HTML、XML、脚本或代码块。未知值用 null，无变化列表用 []。\n${taskDefinitions[kind].instructions}`
+  return `只返回 ${taskDefinitions[kind].name} JSON 根对象，不输出 HTML、XML、脚本或代码块。未知值用 null，无变化列表用 []。\n${taskDefinitions[kind].instructions}`
 }
-const invalidOutput = (error: unknown) =>
-  error instanceof ContentValidationError ||
-  (error instanceof Error &&
-    /NoObjectGenerated|NoOutputGenerated|JSONParse|TypeValidation|ZodError/i.test(error.name))
 function measuredUsage(
   channel: Channel,
   estimated: number,
@@ -63,7 +69,8 @@ export async function runStructuredTask<K extends TaskKind>(
 }> {
   const { kind, channel, signal } = options
   const schema = taskSchemas[kind] as unknown as z.ZodType<TaskOutput<K>>
-  const instructions = options.instructions ?? taskInstructions(kind)
+  const jsonSchema = z.toJSONSchema(schema)
+  const baseInstructions = options.instructions ?? taskInstructions(kind)
   const messages = options.messages ?? [
     { role: 'user' as const, content: JSON.stringify(options.input ?? {}) },
   ]
@@ -72,15 +79,59 @@ export async function runStructuredTask<K extends TaskKind>(
   const streaming = options.streaming !== false
   const executionId = crypto.randomUUID()
   const trace = requestTrace(channel, taskDefinitions[kind].name, options.fetcher)
+  let catalog: ModelCatalog
+  const catalogController = new AbortController()
+  const catalogSignal = signal
+    ? AbortSignal.any([signal, catalogController.signal])
+    : catalogController.signal
+  const catalogWait = channel.requestTimeoutMs ?? 300_000
+  const catalogTimer = catalogWait
+    ? setTimeout(
+        () => catalogController.abort(new DOMException('等待内容超时', 'TimeoutError')),
+        catalogWait,
+      )
+    : undefined
+  try {
+    catalog = options.catalog ?? (await loadModelCatalog(false, catalogSignal))
+    catalogSignal.throwIfAborted()
+  } catch (error) {
+    throw new ChannelRequestError(
+      error,
+      trace.finish(catalogSignal.aborted ? 'cancelled' : 'error'),
+    )
+  } finally {
+    clearTimeout(catalogTimer)
+  }
+  const selected = catalogSelection(channel, catalog)
+  const checked = channel.capability?.checks?.[protocol]
+  const provenMode =
+    kind === 'capability'
+      ? undefined
+      : streaming
+        ? checked?.streamingOutputMode
+        : checked?.outputMode
+  let mode: OutputMode =
+    provenMode ?? (selected.model.structured_output === false ? 'json' : 'structured')
   let correction: string | undefined
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-    trace.data.corrections = attempt
+  let corrections = 0
+  let attempt = 0
+  const validate = (input: unknown) => {
+    const value = validateTask(kind, input)
+    options.validate?.(value)
+    return value
+  }
+  for (;;) {
+    signal?.throwIfAborted()
+    trace.data.corrections = corrections
+    trace.data.outputMode = mode
+    const instructions =
+      mode === 'structured'
+        ? baseInstructions
+        : `${baseInstructions}\n只回复一个 JSON 根对象，必须符合以下 JSON Schema，所有 required 字段都必须填写，不要省略任何模块：\n${JSON.stringify(jsonSchema)}`
     const requestMessages: ModelMessage[] = [
       ...messages,
       ...(correction ? [{ role: 'user' as const, content: correction }] : []),
     ]
-    const jsonSchema = z.toJSONSchema(schema)
     const estimated = estimateTokens(
       serializeRequest(
         channel,
@@ -93,18 +144,21 @@ export async function runStructuredTask<K extends TaskKind>(
       channel.calibration?.ratio,
     )
     if (estimated > (channel.inputLimit ?? channel.contextWindow))
-      throw new Error('任务超出渠道上下文预算，请增加容量、缩短输入或先压缩剧情。')
+      throw new ChannelRequestError(
+        new Error('任务超出渠道上下文预算，请选择容量更大的模型、缩短输入或先压缩剧情。'),
+        trace.finish('error'),
+      )
     const record: RequestRecord = {
       id: `${executionId}:${attempt}`,
       archiveId: options.archiveId ?? null,
       ownerId: options.ownerId ?? null,
       kind,
-      attempt,
+      attempt: attempt++,
       createdAt: Date.now(),
       channel: {
         id: channel.id,
         name: channel.name,
-        baseUrl: channel.baseUrl,
+        baseUrl: channel.baseUrl || selected.api || '',
         model: channel.model,
         protocol,
       },
@@ -116,6 +170,7 @@ export async function runStructuredTask<K extends TaskKind>(
         schema: jsonSchema,
         temperature,
         streaming,
+        outputMode: mode,
       },
     }
     await saveRequestRecord(record)
@@ -123,6 +178,8 @@ export async function runStructuredTask<K extends TaskKind>(
     let lastCheckpoint = 0
     let streamError: unknown
     let usage: Usage | undefined
+    let raw = ''
+    let validationError: unknown
     const requestController = new AbortController()
     const requestSignal = signal
       ? AbortSignal.any([signal, requestController.signal])
@@ -138,7 +195,6 @@ export async function runStructuredTask<K extends TaskKind>(
         )
     }
     try {
-      // Some SDKs await the first event inside doStream, before AI SDK's firstChunkMs timer starts.
       resetWait()
       const request = {
         ...(await channelRequest(
@@ -146,26 +202,28 @@ export async function runStructuredTask<K extends TaskKind>(
           trace.fetch,
           protocol,
           requestSignal,
-          kind === 'capability' ? options.catalog : undefined,
+          kind === 'capability' ? catalog : undefined,
+          {
+            outputMode: mode,
+            schema: jsonSchema as JSONObject,
+            schemaName: taskDefinitions[kind].name,
+          },
         )),
         instructions,
         allowSystemInMessages: true,
         messages: requestMessages,
-        output: Output.object({ schema, name: taskDefinitions[kind].name }),
         ...(temperature === null ? {} : { temperature }),
         abortSignal: requestSignal,
         maxRetries: 0,
         timeout: requestTimeout(channel, streaming),
       }
-      let generated: unknown
-      let finishReason: string | undefined
+      let finishReason: string
       if (!streaming) {
         const result = await generateText(request)
         trace.chunk()
+        raw = result.text
         finishReason = result.finishReason
         usage = measuredUsage(channel, options.estimatedInput ?? estimated, result.usage)
-        if (result.finishReason === 'length') throw new Error('truncated: token limit')
-        generated = result.output
       } else {
         const stream = streamText({
           ...request,
@@ -179,36 +237,47 @@ export async function runStructuredTask<K extends TaskKind>(
             streamError = error
           },
         })
-        const outcome = Promise.resolve(stream.output).then(
-          (value) => ({ value }),
-          (error: unknown) => ({ error }),
-        )
-        for await (const partial of stream.partialOutputStream) {
-          if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-          const safe = sanitizeSchemaPartial(schema, partial) as DeepPartial<TaskOutput<K>>
-          const raw = JSON.stringify(partial)
-          record.partial = safe
-          record.raw = raw
-          options.onPartial?.(safe, raw)
-          if (Date.now() - lastCheckpoint >= 500) {
-            lastCheckpoint = Date.now()
-            const snapshot = structuredClone(record)
-            checkpoint = checkpoint.then(() => saveRequestRecord(snapshot))
+        for await (const delta of stream.textStream) {
+          requestSignal.throwIfAborted()
+          raw += delta
+          const parsed = await parsePartialJson(raw)
+          if (parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value)) {
+            const safe = sanitizeSchemaPartial(schema, parsed.value) as DeepPartial<TaskOutput<K>>
+            record.partial = safe
+            record.raw = raw
+            options.onPartial?.(safe, raw)
+            if (Date.now() - lastCheckpoint >= 500) {
+              lastCheckpoint = Date.now()
+              const snapshot = structuredClone(record)
+              checkpoint = checkpoint.then(() => saveRequestRecord(snapshot))
+            }
           }
         }
-        const finish = await stream.finishReason
-        finishReason = finish
+        finishReason = await stream.finishReason
         usage = measuredUsage(channel, options.estimatedInput ?? estimated, await stream.usage)
-        if (finish === 'length') throw new Error('truncated: token limit')
-        if (finish === 'content-filter') throw new Error('渠道未完成本次输出。')
         if (streamError) throw streamError
-        const resolved = await outcome
-        if ('error' in resolved) throw resolved.error
-        generated = resolved.value
       }
-      if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-      const value = validateTask(kind, generated)
-      options.validate?.(value)
+      clearTimeout(waitTimer)
+      requestSignal.throwIfAborted()
+      record.raw = raw
+      if (finishReason === 'length') throw new Error('truncated: token limit')
+      if (finishReason === 'content-filter') throw new Error('渠道未完成本次输出。')
+      let value: TaskOutput<K>
+      try {
+        value = validate(JSON.parse(raw))
+      } catch (error) {
+        validationError = error
+        try {
+          value = validate(repairJsonOutput(raw, jsonSchema))
+          trace.data.repairs = (trace.data.repairs ?? 0) + 1
+          options.onCorrection?.('JSON 已在本地修复并通过完整校验。', correction ?? '')
+        } catch (repairError) {
+          // Prefer the repaired object's field paths when syntax repair succeeds but content is incomplete.
+          if (!(repairError instanceof SyntaxError)) validationError = repairError
+          throw validationError
+        }
+      }
+      signal?.throwIfAborted()
       await checkpoint
       const diagnostics = trace.finish(finishReason)
       await saveRequestRecord({ ...record, status: 'complete', output: value, usage, diagnostics })
@@ -218,26 +287,39 @@ export async function runStructuredTask<K extends TaskKind>(
       await checkpoint.catch(() => undefined)
       await saveRequestRecord({
         ...record,
-        status: signal?.aborted ? 'cancelled' : 'failed',
+        raw: raw || record.raw,
+        status: requestSignal.aborted ? 'cancelled' : 'failed',
         usage,
         error: friendlyError(failure),
-        diagnostics: trace.finish(signal?.aborted ? 'cancelled' : 'error'),
+        diagnostics: trace.finish(requestSignal.aborted ? 'cancelled' : 'error'),
       })
-      if (
-        signal?.aborted ||
-        attempt ||
-        options.allowCorrection === false ||
-        !invalidOutput(failure)
-      )
-        throw new ChannelRequestError(
-          failure,
-          trace.finish(signal?.aborted ? 'cancelled' : 'error'),
+      if (!requestSignal.aborted && mode !== 'prompt' && unsupportedOutputFormat(failure)) {
+        mode = outputModes[outputModes.indexOf(mode) + 1]
+        trace.data.fallbacks = (trace.data.fallbacks ?? 0) + 1
+        options.onCorrection?.(
+          `端点不支持当前输出格式，正在回退到 ${outputModeLabels[mode]}。`,
+          correction ?? '',
         )
-      correction = `上次回复校验失败：${friendlyError(failure)}。请纠正并重新输出同一 schema 的完整对象，保留本轮意图，不省略必填模块。`
-      options.onCorrection?.('回复未通过完整校验，正在使用相同 schema 纠正一次。', correction)
+        continue
+      }
+      if (
+        !requestSignal.aborted &&
+        validationError &&
+        options.allowCorrection !== false &&
+        corrections < 1
+      ) {
+        corrections++
+        const detail = validationDetails(validationError)
+        correction = `${correction ? `${correction}\n` : ''}上次回复校验失败：${detail}。请重新生成本轮完整 JSON 对象，不要遗漏上述字段，纠正类型、条数与内容约束。保持本轮意图，必须符合相同 JSON Schema。`
+        options.onCorrection?.('本地修复后仍未通过校验，正在加入具体约束重新生成。', correction)
+        continue
+      }
+      throw new ChannelRequestError(
+        failure,
+        trace.finish(requestSignal.aborted ? 'cancelled' : 'error'),
+      )
     } finally {
       clearTimeout(waitTimer)
     }
   }
-  throw new Error('结构化结果校验失败')
 }

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { Channel } from './types.ts'
+import { catalogSdk } from './provider-registry'
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json'
 
@@ -49,7 +50,6 @@ export function parseModelCatalog(input: unknown): ModelCatalog {
       if (!result.success) continue
       const model = result.data
       if (
-        model.structured_output === true &&
         model.modalities.input.includes('text') &&
         model.modalities.output.includes('text') &&
         model.limit.context > 0
@@ -58,8 +58,7 @@ export function parseModelCatalog(input: unknown): ModelCatalog {
     }
     if (Object.keys(models).length) catalog[parsed.data.id] = { ...parsed.data, models }
   }
-  if (!Object.keys(catalog).length)
-    throw new Error('Models.dev 未返回可用的 Structured Outputs 模型。')
+  if (!Object.keys(catalog).length) throw new Error('Models.dev 未返回可用的文本模型。')
   return catalog
 }
 
@@ -69,8 +68,7 @@ export function catalogSelection(
 ) {
   const provider = catalog[channel.providerId]
   const model = provider?.models[channel.model]
-  if (!provider || !model)
-    throw new Error('请从 Models.dev 选择支持 Structured Outputs 的 Provider 和模型。')
+  if (!provider || !model) throw new Error('请从 Models.dev 选择 Provider 和文本模型。')
   return {
     provider,
     model,
@@ -93,6 +91,10 @@ export function catalogRouteFingerprint(
     sdk,
     api,
     model.provider?.shape,
+    model.structured_output,
+    model.temperature,
+    model.limit.context,
+    model.limit.input,
     model.limit.output,
   ])
 }
@@ -102,16 +104,16 @@ export function selectCatalogModel(
   provider: CatalogProvider,
   model: CatalogModel,
 ): Channel {
-  const sdk = model.provider?.npm ?? provider.npm
+  const sdk = catalogSdk(model.provider?.npm ?? provider.npm)
   return {
     ...channel,
     providerId: provider.id,
     sdk,
     model: model.id,
     name: `${provider.name} · ${model.name}`,
-    baseUrl: model.provider?.api ?? provider.api ?? '',
+    baseUrl: channel.providerId === provider.id ? channel.baseUrl : '',
     apiMode:
-      ['ai-gateway-provider', '@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(provider.npm) ||
+      ['@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(provider.npm) ||
       !['@ai-sdk/openai', '@ai-sdk/openai-compatible'].includes(sdk)
         ? 'native'
         : model.provider?.shape === 'responses'

@@ -272,7 +272,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     const channel = channelId ? await db.channels.get(channelId) : undefined
     if (!archive) throw new Error('存档不存在，请创建或选择存档。')
     if (!channel || !channelIsReady(channel))
-      throw new Error('请先配置渠道并通过严格结构化与浏览器连接测试。')
+      throw new Error('请先配置渠道并通过JSON 校验与浏览器连接测试。')
     const all = await archiveMessages(archive.id)
     const regen = typeof body?.regenerateFromId === 'string' ? body.regenerateFromId : undefined
     const regenIndex = regen ? all.findIndex((m) => m.id === regen) : -1
@@ -397,7 +397,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
             )
             if (estimate.mustCompress)
               throw new Error('压缩后仍没有足够上下文，请选择上下文容量更大的模型或缩短输入。')
-            status(writer, 'generating', '正在生成严格结构化回复…')
+            status(writer, 'generating', '正在生成 JSON 回复…')
             const result = await generateReply({
               archiveId: snapshot.id,
               ownerId: base.id,

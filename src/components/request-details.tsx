@@ -1,3 +1,4 @@
+import { outputModeLabels } from '@/lib/channels'
 import type { RequestDiagnostics } from '@/lib/types'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion'
 
@@ -15,6 +16,24 @@ export function RequestDetails({ value }: { value?: RequestDiagnostics }) {
             <dd>{value.model}</dd>
             <dt>回复协议</dt>
             <dd>{value.schema}</dd>
+            {value.outputMode && (
+              <>
+                <dt>输出模式</dt>
+                <dd>{outputModeLabels[value.outputMode]}</dd>
+              </>
+            )}
+            {!!value.fallbacks && (
+              <>
+                <dt>格式回退</dt>
+                <dd>{value.fallbacks} 次</dd>
+              </>
+            )}
+            {!!value.repairs && (
+              <>
+                <dt>本地修复</dt>
+                <dd>{value.repairs} 次</dd>
+              </>
+            )}
             <dt>首个内容</dt>
             <dd>{value.firstTokenMs === undefined ? '尚未返回' : time(value.firstTokenMs)}</dd>
             <dt>总耗时</dt>

@@ -76,8 +76,14 @@ async function expectArchiveAvailable(page: Page) {
   await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
 }
 
+const requestName = (body: Body) =>
+  body.response_format?.json_schema?.name ??
+  Object.values(taskDefinitions).find((definition) =>
+    body.messages[0]?.content.includes(definition.name),
+  )?.name
+
 const isReply = (body: Body) =>
-  ['NarrativeReply', 'ForumReply', 'ForumAppend'].includes(body.response_format.json_schema.name)
+  ['NarrativeReply', 'ForumReply', 'ForumAppend'].includes(requestName(body))
 
 const businessRequests = (requests: Body[]) => requests.filter(isReply)
 
@@ -109,16 +115,16 @@ async function prepare(
     const body = route.request().postDataJSON() as Body
     requests.push(body)
     const fallback =
-      body.response_format.json_schema.name === 'ChannelCapability'
+      requestName(body) === 'ChannelCapability'
         ? capabilityFixture
-        : body.response_format.json_schema.name === 'ForumReply'
+        : requestName(body) === 'ForumReply'
           ? forumFixture
-          : body.response_format.json_schema.name === 'CompressionResult'
+          : requestName(body) === 'CompressionResult'
             ? compressionFixture
             : narrativeFixture
     const auxiliary = Object.entries(taskDefinitions).find(
       ([kind, definition]) =>
-        definition.name === body.response_format.json_schema.name &&
+        definition.name === requestName(body) &&
         !['narrative', 'forum', 'compression', 'capability'].includes(kind),
     )
     const value = auxiliary
@@ -255,11 +261,11 @@ async function enableChannel(
     .getByRole('button', { name, exact: true })
     .click()
   if (options?.mode) {
-    await page.getByRole('combobox', { name: 'API 协议' }).click()
+    await page.getByRole('combobox', { name: 'API 端点' }).click()
     const label = {
-      auto: '自动探测（Responses 优先）',
-      responses: 'Responses',
-      'chat-completions': 'Chat Completions',
+      auto: '自动探测（Responses / Chat Completions）',
+      responses: '/v1/responses',
+      'chat-completions': '/v1/chat/completions',
     }[options.mode]
     await page.getByRole('option', { name: label, exact: true }).click()
   }
@@ -469,8 +475,7 @@ for (const mode of ['手动', '自动'] as const) {
 test('纠正成功后刷新续聊，纠正请求仍保留在上下文前缀', async ({ page }) => {
   let narrativeRequests = 0
   const requests = await prepare(page, (body) => {
-    if (body.response_format.json_schema.name === 'ChannelCapability')
-      return { value: capabilityFixture }
+    if (requestName(body) === 'ChannelCapability') return { value: capabilityFixture }
     narrativeRequests++
     return {
       value:
@@ -583,8 +588,7 @@ test('中文输入法、换行、移动端宽度和触控尺寸', async ({ page 
 test('截断保留收到的内容，并可重试', async ({ page }) => {
   let narrativeRequests = 0
   const requests = await prepare(page, (body) => {
-    if (body.response_format.json_schema.name === 'ChannelCapability')
-      return { value: capabilityFixture }
+    if (requestName(body) === 'ChannelCapability') return { value: capabilityFixture }
     narrativeRequests++
     return narrativeRequests === 1
       ? {
@@ -660,17 +664,34 @@ test('取消保存部分内容，停止后可继续聊天', async ({ page }) => 
   await expect(page.getByRole('button', { name: '重试回复', exact: true })).toBeVisible()
 })
 
-test('不支持严格结构化的渠道不能用于聊天', async ({ page }) => {
-  const requests = await prepare(page, () => ({
-    status: 400,
-    value: { error: { message: 'json_schema strict unsupported', type: 'invalid_request_error' } },
-  }))
-  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
-  await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
-  await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
-  await expect(page.getByText(/渠道未能完成严格结构化请求/).first()).toBeVisible()
-  expect(requests).toHaveLength(1)
-  expect(requests[0].response_format.type).toBe('json_schema')
+test('不支持 Structured Outputs 和 JSON mode 的渠道回退后仍可聊天', async ({ page }) => {
+  const requests = await prepare(page, (body) =>
+    body.response_format
+      ? {
+          status: 400,
+          value: {
+            error: { message: 'response_format unsupported', type: 'invalid_request_error' },
+          },
+        }
+      : { value: requestName(body) === 'ChannelCapability' ? capabilityFixture : narrativeFixture },
+  )
+  await enableChannel(page)
+  expect(requests).toHaveLength(6)
+  expect(requests.map((body) => body.response_format?.type)).toEqual([
+    'json_schema',
+    'json_object',
+    undefined,
+    'json_schema',
+    'json_object',
+    undefined,
+  ])
+  await enter(page)
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('回退模式继续剧情。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expectArchiveAvailable(page)
+  expect(businessRequests(requests)).toHaveLength(1)
+  expect(businessRequests(requests)[0].response_format).toBeUndefined()
+  expect(businessRequests(requests)[0].messages[0].content).toContain('JSON Schema')
 })
 
 test('只保留 OPFS 文件时仍恢复完整聊天、草稿、人设与已测试渠道', async ({ page, context }) => {
@@ -757,7 +778,7 @@ test('OPFS 写入失败后存档仍可载入和导出，并可重试同步', asy
 
 test('没有部分内容的模型错误结束后仍可管理和导出存档', async ({ page }) => {
   await prepare(page, (body) =>
-    body.response_format.json_schema.name === 'ChannelCapability'
+    requestName(body) === 'ChannelCapability'
       ? { value: capabilityFixture }
       : { status: 401, value: { error: { message: '模型凭据无效', type: 'invalid_api_key' } } },
   )
@@ -866,7 +887,7 @@ test('续写发送被拒绝后可以重选，完整剧情提交前保持未应�
   await page.getByRole('button', { name: '打开剧情工作台', exact: true }).click()
   await studio.getByRole('button', { name: '选择这个分支' }).first().click()
   await expect(page.getByRole('dialog', { name: '剧情工作台' })).toHaveCount(0)
-  await expect(page.getByText('请先配置渠道，并通过严格结构化和浏览器连接测试。')).toBeVisible()
+  await expect(page.getByText('请先配置渠道，并通过JSON 校验和浏览器连接测试。')).toBeVisible()
   expect((await readOpfs(page))!.tasks.find((t) => t.id === task.id)?.applied).not.toBe(true)
   await enableChannel(page, '第二渠道')
   let release!: () => void
@@ -875,7 +896,7 @@ test('续写发送被拒绝后可以重选，完整剧情提交前保持未应�
   })
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
-    if (body.response_format.json_schema.name === 'NarrativeReply') await gate
+    if (requestName(body) === 'NarrativeReply') await gate
     await route.fallback()
   })
   await page.getByRole('button', { name: '打开剧情工作台', exact: true }).click()
@@ -915,7 +936,7 @@ test('续写模型请求失败不标为已应用，重新生成分支后可推�
   let fail = true
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
-    if (body.response_format.json_schema.name === 'NarrativeReply' && fail) {
+    if (requestName(body) === 'NarrativeReply' && fail) {
       fail = false
       await route.fulfill({
         status: 500,
@@ -952,7 +973,7 @@ test('关闭运行中的工作台后聊天仍锁定，手机提交完成后可�
   })
   await page.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as Body
-    if (body.response_format.json_schema.name === 'PhoneReply') await gate
+    if (requestName(body) === 'PhoneReply') await gate
     await route.fallback()
   })
   await studio.getByRole('tab', { name: '交互', exact: true }).click()
@@ -1171,7 +1192,7 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v4 存档往返
   expect(chatRequests).toHaveLength(2)
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
   await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
-  await expect(page.getByRole('combobox', { name: 'API 协议' })).toContainText('自动探测')
+  await expect(page.getByRole('combobox', { name: 'API 端点' })).toContainText('自动探测')
   await expect(page.getByRole('combobox', { name: '温度设置' })).toContainText('模型默认')
   await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
   await page.getByRole('button', { name: '存档管理' }).click()
@@ -1192,7 +1213,7 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v4 存档往返
   await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
-  await expect(page.getByRole('combobox', { name: 'API 协议' })).toContainText('自动探测')
+  await expect(page.getByRole('combobox', { name: 'API 端点' })).toContainText('自动探测')
   await expect(page.getByRole('combobox', { name: '温度设置' })).toContainText('模型默认')
 })
 
@@ -1219,8 +1240,8 @@ test('手动协议、取消重测保留结果，配置修改使缓存失效', as
   release()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeEnabled()
   await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
-  await page.getByRole('combobox', { name: 'API 协议' }).click()
-  await page.getByRole('option', { name: 'Chat Completions', exact: true }).click()
+  await page.getByRole('combobox', { name: 'API 端点' }).click()
+  await page.getByRole('option', { name: '/v1/chat/completions', exact: true }).click()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
   await expect(page.getByText(/当前协议：Responses/)).toHaveCount(0)
   await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
@@ -1400,7 +1421,7 @@ test('完整协议能力测试覆盖真实流式结构，不写入聊天存档',
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
   await page.getByRole('button', { name: '完整协议测试', exact: true }).click()
   await expect(page.getByText(/测试通过 · 完整协议/)).toBeVisible()
-  expect(requests.map((body) => body.response_format.json_schema.name)).toEqual([
+  expect(requests.map((body) => requestName(body))).toEqual([
     'ChannelCapability',
     'ChannelCapability',
     'NarrativeReply',
@@ -1417,8 +1438,10 @@ test('完整协议能力测试覆盖真实流式结构，不写入聊天存档',
 test('自动选定 Responses 后完整协议测试仍覆盖叙事论坛摘要并保留诊断', async ({ page }) => {
   const { requests, chatRequests } = await prepareResponses(page)
   await page.getByRole('button', { name: '渠道管理', exact: true }).click()
-  await page.getByRole('combobox', { name: 'API 协议' }).click()
-  await page.getByRole('option', { name: '自动探测（Responses 优先）', exact: true }).click()
+  await page.getByRole('combobox', { name: 'API 端点' }).click()
+  await page
+    .getByRole('option', { name: '自动探测（Responses / Chat Completions）', exact: true })
+    .click()
   await page.getByRole('button', { name: '完整协议测试', exact: true }).click()
   await expect(page.getByText(/测试通过 · 完整协议/)).toBeVisible()
   await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
@@ -1688,10 +1711,7 @@ test('导入持有全局锁时另一窗口不能排队发送到恢复后的同�
   await second.route(`${channelFixture.baseUrl}/chat/completions`, async (route) => {
     secondRequests++
     const body = route.request().postDataJSON() as Body
-    const value =
-      body.response_format.json_schema.name === 'ChannelCapability'
-        ? capabilityFixture
-        : narrativeFixture
+    const value = requestName(body) === 'ChannelCapability' ? capabilityFixture : narrativeFixture
     await route.fulfill({
       contentType: body.stream ? 'text/event-stream' : 'application/json',
       body: body.stream ? sse(value).join('') : JSON.stringify(completion(value)),

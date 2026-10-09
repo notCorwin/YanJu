@@ -56,34 +56,6 @@ const providers = [
     }),
   },
   {
-    id: 'sap',
-    npm: '@jerome-benoit/sap-ai-provider-v2',
-    model: 'gpt-5.4',
-    key: JSON.stringify({
-      clientid: 'client',
-      clientsecret: 'test-secret',
-      url: 'https://sap-auth.example',
-      serviceurls: { AI_API_URL: 'https://sap.example/v2' },
-    }),
-  },
-  { id: 'gitlab', npm: 'gitlab-ai-provider', model: 'duo-chat-gpt-5-4', key: 'test-key' },
-  {
-    id: 'cloudflare',
-    npm: 'ai-gateway-provider',
-    model: 'anthropic/claude-opus-4.5',
-    key: JSON.stringify({
-      apiKey: 'test-key',
-      CLOUDFLARE_ACCOUNT_ID: 'account',
-      CLOUDFLARE_GATEWAY_ID: 'gateway',
-    }),
-  },
-  {
-    id: 'watsonx',
-    npm: 'watsonx-ai-provider',
-    model: 'ibm/granite-4-h-small',
-    key: JSON.stringify({ apiKey: 'test-key', WATSONX_AI_PROJECT_ID: 'project' }),
-  },
-  {
     id: 'azure',
     npm: '@ai-sdk/azure',
     model: 'gpt-5.4',
@@ -235,17 +207,15 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
                           api: `https://\${AZURE_RESOURCE_NAME}.services.ai.azure.com/${provider.id === 'azure-anthropic' ? 'anthropic/v1' : 'models'}`,
                         },
                       }
-                    : provider.id === 'cloudflare'
-                      ? { provider: { npm: '@ai-sdk/anthropic' } }
-                      : provider.id.startsWith('bedrock-mantle')
-                        ? {
-                            provider: {
-                              npm: '@ai-sdk/amazon-bedrock/mantle',
-                              api: 'https://bedrock-mantle.${AWS_REGION}.api.aws/openai/v1',
-                              shape: 'responses',
-                            },
-                          }
-                        : {}),
+                    : provider.id.startsWith('bedrock-mantle')
+                      ? {
+                          provider: {
+                            npm: '@ai-sdk/amazon-bedrock/mantle',
+                            api: 'https://bedrock-mantle.${AWS_REGION}.api.aws/openai/v1',
+                            shape: 'responses',
+                          },
+                        }
+                      : {}),
               },
             },
           },
@@ -258,13 +228,6 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
     'generativelanguage.googleapis.com',
     'aiplatform.googleapis.com',
     'oauth2.googleapis.com',
-    'sap-auth.example',
-    'sap.example',
-    'gitlab.com',
-    'cloud.gitlab.com',
-    'gateway.ai.cloudflare.com',
-    'iam.cloud.ibm.com',
-    'us-south.ml.cloud.ibm.com',
     'test-resource.openai.azure.com',
     'test-resource.services.ai.azure.com',
   ]
@@ -285,23 +248,6 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
         expect(form.get('assertion')?.split('.')).toHaveLength(3)
         return route.fulfill({ json: { access_token: 'test-token' }, headers: cors })
       }
-      if (url.endsWith('/oauth/token'))
-        return route.fulfill({
-          json: { access_token: 'test-token', expires_in: 3600 },
-          headers: cors,
-        })
-      if (url.includes('/lm/deployments'))
-        return route.fulfill({
-          json: { resources: [{ id: 'deployment', status: 'RUNNING' }] },
-          headers: cors,
-        })
-      if (url.endsWith('/direct_access'))
-        return route.fulfill({ json: { token: 'test-token', headers: {} }, headers: cors })
-      if (url.includes('iam.cloud.ibm.com'))
-        return route.fulfill({
-          json: { access_token: 'test-token', expiration: Math.floor(Date.now() / 1000) + 3600 },
-          headers: cors,
-        })
       const body = route.request().postDataJSON()
       const headers = route.request().headers()
       if (url.includes('/endpoints/openapi'))
@@ -326,7 +272,6 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
         url.includes('streamRawPredict')
       const isGoogle = url.includes('generativelanguage') || url.includes('publishers/google')
       const isBedrock = url.includes('bedrock-runtime')
-      const isSAP = url.includes('sap.example')
       const isResponses = url.includes('/responses')
       const data = isAnthropic
         ? anthropic
@@ -334,27 +279,18 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
           ? google
           : isBedrock
             ? bedrock
-            : isSAP
-              ? { final_result: completion(capabilityFixture) }
-              : isResponses
-                ? response(capabilityFixture)
-                : completion(capabilityFixture)
+            : isResponses
+              ? response(capabilityFixture)
+              : completion(capabilityFixture)
       const stream = isAnthropic
         ? anthropicStream
         : isGoogle
           ? event(google)
           : isBedrock
             ? bedrockStream
-            : isSAP
-              ? sse(capabilityFixture)
-                  .join('')
-                  .split('\n\n')
-                  .filter((item) => item && !item.includes('[DONE]'))
-                  .map((item) => event({ final_result: JSON.parse(item.slice(6)) }))
-                  .join('')
-              : isResponses
-                ? responseSse(capabilityFixture).join('')
-                : sse(capabilityFixture).join('')
+            : isResponses
+              ? responseSse(capabilityFixture).join('')
+              : sse(capabilityFixture).join('')
       await route.fulfill({
         headers: {
           ...cors,
@@ -378,7 +314,7 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
     await page.getByLabel('API Key', { exact: true }).fill(provider.key)
     await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
     await expect(
-      page.getByText('测试通过 · 连接、结构化与流式', { exact: false }),
+      page.getByText('测试通过 · 连接、JSON 校验与流式', { exact: false }),
       provider.id,
     ).toBeVisible()
     const calls = requests.slice(start)

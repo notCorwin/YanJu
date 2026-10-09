@@ -111,7 +111,6 @@ export function calibrate(channel: Channel, actual: number | undefined, estimate
 export interface CompressionInput {
   previous?: CompressionResult
   messages: { role: string; content: string }[]
-  targetTokens: number
 }
 export type Summarizer = (
   input: CompressionInput,
@@ -171,7 +170,6 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     Math.floor((channel.inputLimit ?? channel.contextWindow) * COMPRESSION_TARGET) - overhead
   if (batchBudget < 256)
     throw new Error('渠道上下文容量不足以执行压缩，请选择上下文容量更大的模型。')
-  const targetTokens = Math.max(256, Math.min(2048, Math.floor(channel.contextWindow * 0.08)))
 
   for (let keep = Math.max(1, Math.min(RETAIN_TURNS, completeStarts.length)); keep >= 1; keep--) {
     const retainedStart = completeStarts.length
@@ -188,7 +186,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
       if (!batch.length) return
       checkAbort(signal)
       onProgress?.(`压缩第 ${++batchNumber} 批历史，保留最近 ${keep} 轮完整对话`)
-      value = await summarize({ previous: value, messages: batch, targetTokens }, signal)
+      value = await summarize({ previous: value, messages: batch }, signal)
       checkAbort(signal)
       batch = []
       changed = true

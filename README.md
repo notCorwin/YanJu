@@ -9,7 +9,7 @@
 ## 主要功能
 
 - **结构化叙事**：流式展示正文、场景、中英引语、方言翻译、角色状态、手机和日记；支持分区编辑与原始 JSON 编辑。
-- **多模型渠道**：从 Models.dev 搜索 Provider 和模型，使用官方或社区 SDK 调用服务商，通过严格结构化输出测试后启用。
+- **多模型渠道**：从 Models.dev 搜索 Provider 和模型，以官方 OpenAI Compatible SDK 为主，支持全部官方语言模型 Provider，通过 JSON 校验与连接测试后启用。
 - **持续的剧情状态**：记录人物、地点、关系、知情范围、事件、事实、偏好和目标，来源可以定位到原消息与段落。
 - **创作与交互**：生成人设和开场、选择续写方向、局部改写、检查一致性；支持独立手机聊天和持续追加的论坛回复。
 - **存档与恢复**：自动保存、手动与快速存档、任意节点回退和路线分支；可分享开局、当前路线或整个篇章，支持个人全量备份。
@@ -19,8 +19,8 @@
 
 打开[在线应用](https://notcorwin.github.io/YanJu/)，或按下文启动本地开发服务。
 
-1. 点击首页「进入聊天」。还没有渠道时，自动进入渠道引导；添加渠道，搜索并选择 Provider 和模型，填写 API Key。模型支持时可设置 Temperature。
-2. 点击「测试渠道」。非流式和流式结构化测试均通过后，点击「使用此渠道」，再继续设置人设。需要进一步验证时，可运行「完整协议测试」。
+1. 点击首页「进入聊天」。还没有渠道时，自动进入渠道引导；添加渠道，搜索并选择 Provider 和模型，填写 API Key，可选填写 Base URL；模型支持时可设置 Temperature。
+2. 点击「测试渠道」。非流式和流式 JSON 测试均通过后，点击「使用此渠道」，再继续设置人设。需要进一步验证时，可运行「完整协议测试」。
 3. 创建或选择人设，点击「使用此人设」，进入当前篇章。已有渠道时，首页直接继续当前篇章；可从「存档管理 → 新建」创建其他篇章。
 4. 阅读开场并发送回应。输入区工具栏可切换渠道和论坛模式、查看上下文、打开剧情工作台；右上角浮窗提供世界、指令与音乐，收起浮窗后音乐继续播放。
 
@@ -30,9 +30,23 @@
 
 ### 渠道配置
 
-Provider、模型、API 地址、上下文容量与温度能力来自 Models.dev。目录只收录该 Provider 明确标记 `structured_output: true`、支持文本输入与输出的模型，不提供自定义 Provider、模型或地址。可手动刷新目录；网络不可用时可使用上次成功加载的浏览器缓存。测试结果绑定当时的目录请求路由；SDK、API 地址或认证路由变更后须重新测试，正式请求不会沿用旧路由的测试结果。
+Provider、模型、默认 API 地址、上下文容量与温度能力来自 [Models.dev](https://models.dev)。目录包含所有支持文本输入与输出的模型。仅 Base URL（可选）、API Key 和 Temperature 手动填写，其余渠道配置使用下拉列表。可手动刷新目录；网络不可用时使用上次成功加载的浏览器缓存。测试结果绑定目录路由与配置，发生变更后须重新测试。
 
-OpenAI SDK 渠道支持自动探测、Responses 和 Chat Completions；自动探测优先 Responses。其他 SDK 使用服务商原生协议。正式请求使用测试通过的协议，结构化输出失败不会降级为 JSON Mode。Responses 请求设置 `store: false`，应用在本地管理上下文。
+兼容服务统一使用 `@ai-sdk/openai-compatible`，并支持所有提供语言模型入口的官方 `@ai-sdk/*` 包。社区 SDK 与自建兼容适配器已移除。API 端点下拉列表支持：
+
+- `/v1/chat/completions`
+- `/v1/completions`
+- `/v1/responses`
+- `/v1/messages`
+- `/v1beta/models/{model}:generateContent`
+- `/v1beta/interactions`
+- `/v1beta/openai/chat/completions`
+
+也可选择官方 Provider SDK 的默认端点；OpenAI 自动探测优先 Responses，再尝试 Chat Completions。Base URL 可填写 origin、API 前缀或完整端点地址。Responses 与 Interactions 请求设置 `store: false`，应用在本地管理上下文。
+
+输出依次尝试 Structured Outputs、JSON mode 和提示词 JSON；模型明确不支持 Structured Outputs 时直接从 JSON mode 开始。所有模式都经过本地 Schema 与业务校验。格式或字段问题先尝试语法修复、类型转换与可空字段补全；必要正文缺失等问题会携带具体字段路径与新约束重新生成。非流式与流式测试分别记录有效输出模式，正式任务复用相应模式。
+
+应用和界面均不设置可选输出上限。仅当协议强制要求容量字段（如 Messages 的 `max_tokens`）时，自动发送 Models.dev 公布的模型最大输出容量，不设更低上限。
 
 服务商必须允许当前站点来源及认证、内容请求头的 CORS 请求，浏览器也需要能够访问目标网络。SDK 支持和模型目录标记不等于实际账户可用，请以应用内渠道测试结果为准。
 
@@ -47,14 +61,12 @@ OpenAI SDK 渠道支持自动探测、Responses 和 Chat Completions；自动探
 | Azure Cognitive Services | `AZURE_COGNITIVE_SERVICES_API_KEY`、`AZURE_COGNITIVE_SERVICES_RESOURCE_NAME`。                                                                                                            |
 | Vertex                   | Gemini Express 可使用 API Key；标准模式、Claude 和 MaaS 可粘贴完整 service-account JSON，包含 `project_id`、`client_email`、`private_key`。可带 `GOOGLE_VERTEX_LOCATION`，默认 `global`。 |
 | Bedrock（含 Mantle）     | Bedrock API Key，或 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选的 `AWS_SESSION_TOKEN`；`AWS_REGION` 默认 `us-east-1`。                                                             |
-| SAP AI Core              | 导出的 service-key JSON：`clientid`、`clientsecret`、`url`、`serviceurls.AI_API_URL`；资源组默认 `default`。                                                                              |
-| watsonx                  | `WATSONX_AI_APIKEY`、`WATSONX_AI_PROJECT_ID`。                                                                                                                                            |
-| Cloudflare AI Gateway    | `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_GATEWAY_ID`；在 Gateway 中配置上游认证。                                                                                     |
+| Anthropic AWS            | `ANTHROPIC_AWS_WORKSPACE_ID`，加 `ANTHROPIC_AWS_API_KEY` 或 AWS SigV4 凭据；`AWS_REGION` 默认 `us-east-1`。                                                                               |
 | 地址含资源占位符的服务商 | 包含目录所列认证字段与资源字段，例如 `SNOWFLAKE_ACCOUNT`、`SNOWFLAKE_CORTEX_PAT`。                                                                                                        |
 
-QVAC 使用本机 external HTTP 服务 `http://127.0.0.1:11435/v1`，需先启动该服务并允许应用来源访问。浏览器不会启动 Node.js CLI，也不能读取凭据文件路径；服务账户请粘贴 JSON 内容。
+本机模型和自定义网关可填写 Base URL，并选择匹配的 API 端点；仍从 Models.dev 选择 Provider 与模型。浏览器不能读取本机凭据文件路径，服务账户请粘贴 JSON 内容。
 
-认证与路由的实现见 [provider-model.ts](src/lib/provider-model.ts) 和 [browser-providers.ts](src/lib/browser-providers.ts)。
+认证与路由的实现见 [provider-model.ts](src/lib/provider-model.ts) 和 [provider-registry.ts](src/lib/provider-registry.ts)。
 
 </details>
 
@@ -164,7 +176,7 @@ scripts/              # 本地检查脚本
 ### 开发约定
 
 - **统一视觉规范**：优先复用 [shadcn/ui 组件](src/components/ui)。[tokens.css](src/styles/tokens.css) 是颜色、字体、间距、圆角、边框、阴影和动效的唯一来源；样式主要通过 Tailwind 语义类实现，外观设置只修改根 Token。
-- **严格任务协议**：[tasks.ts](src/lib/tasks.ts) 注册 16 类任务，核心回复 schema 位于 [schemas.ts](src/lib/schemas.ts)。共用执行器、预算、请求记录和恢复流程；结构或内容校验失败最多纠正一次，取消、截断和网络错误不自动重发。
+- **严格任务协议**：[tasks.ts](src/lib/tasks.ts) 注册 16 类任务，核心回复 schema 位于 [schemas.ts](src/lib/schemas.ts)。共用执行器、预算、请求记录和恢复流程；所有输出先本地校验与修复，仍不合格时最多重新生成一次并追加具体约束；不支持的输出格式自动回退，取消、截断和网络错误不自动重发。
 - **完整提交与来源**：完整回复通过校验后，与剧情事件和状态在同一个 IndexedDB 事务中提交。实体使用稳定 ID，事实携带消息及段落来源；历史编辑会使后续剧情失效并重建状态。
 - **本地上下文管理**：估算计入设定、人设、schema、摘要和有效历史，并用实际 usage 校正。输入预算达到 85% 时自动压缩，目标为 70% 以下；保留最近完整对话及全部原文，压缩失败保留原摘要。应用不提供可选输出上限设置。
 - **技术选型**：使用最新稳定技术栈，依赖以锁文件为准；不要求旧版迁移或向后兼容。新增能力同步维护[覆盖矩阵](docs/structured-outputs-coverage.md)及相应测试。
@@ -191,7 +203,7 @@ YANJU_E2E_PORT=5174 pnpm verify
 
 ## 部署
 
-本地验收通过后，提交并推送到主分支 **`master`**。[部署工作流](.github/workflows/deploy.yml)会安装锁定依赖、构建并发布到 GitHub Pages，也支持手动触发。
+本地验收通过后，提交并推送到主分支 **`master`**。[部署工作流](.github/workflows/deploy.yml)会安装锁定依赖，通过 `pnpm build:pages` 构建并发布静态产物到 GitHub Pages；检查和测试只在本地执行，也支持手动触发。
 
 仓库的 Pages 设置中，将 **Build and deployment → Source** 设为 **GitHub Actions**。[vite.config.ts](vite.config.ts) 的 `base` 为 `/YanJu/`，产物位于 `dist/`；部署到其他路径时须相应调整 `base`。
 

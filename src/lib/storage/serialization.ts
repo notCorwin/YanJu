@@ -6,6 +6,8 @@ import {
 } from '@/lib/game-history-schema'
 import { effectsSchema } from '@/lib/domain-schema'
 import {
+  apiProtocolSchema,
+  outputModeSchema,
   calibrationSchema,
   capabilitySchema,
   diagnosticsSchema,
@@ -57,7 +59,7 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       baseUrl: z.string().parse(c.baseUrl),
       apiKey: z.string().parse(c.apiKey),
       model: z.string().parse(c.model),
-      apiMode: z.enum(['auto', 'chat-completions', 'responses', 'native']).parse(c.apiMode),
+      apiMode: z.union([z.literal('auto'), apiProtocolSchema]).parse(c.apiMode),
       temperature: z.number().min(0).max(2).nullable().parse(c.temperature),
       contextWindow: z.number().int().nonnegative().parse(c.contextWindow),
       inputLimit: z.number().int().positive().optional().parse(c.inputLimit),
@@ -191,19 +193,20 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     ).parse(request.messages)
     z.number().min(0).max(2).nullable().parse(request.temperature)
     z.boolean().parse(request.streaming)
+    outputModeSchema.optional().parse(request.outputMode)
     z.object({
       id: z.string(),
       name: z.string(),
       baseUrl: z.string(),
       model: z.string(),
-      protocol: z.enum(['responses', 'chat-completions', 'native']),
+      protocol: apiProtocolSchema,
     }).parse(r.channel)
     return {
       ...r,
       id: z.string().min(1).parse(r.id),
       createdAt: z.number().int().min(0).max(8_640_000_000_000_000).parse(r.createdAt),
       estimatedInput: z.number().nonnegative().parse(r.estimatedInput),
-      attempt: z.number().int().min(0).max(1).parse(r.attempt),
+      attempt: z.number().int().nonnegative().parse(r.attempt),
       usage: parseSave(usageSchema.optional(), r.usage),
       diagnostics: parseSave(diagnosticsSchema.optional(), r.diagnostics),
       status: z.enum(['complete', 'partial', 'failed', 'cancelled']).parse(r.status),

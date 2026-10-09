@@ -1,4 +1,5 @@
-import { createProviderModel } from './provider-model'
+import { createProviderModel, type ModelSettings } from './provider-model'
+import { isProviderSdk } from './provider-registry'
 import { catalogRouteFingerprint, loadModelCatalog, type ModelCatalog } from './model-catalog'
 import { APICallError, wrapLanguageModel, type DeepPartial, type ModelMessage } from 'ai'
 import type { Reply, RequestKind, NarrativeReply, ForumReply } from './schemas'
@@ -16,6 +17,7 @@ import {
   channelIsReady,
   protocolLabels,
 } from './channels'
+import { apiProtocols } from './types'
 import { responsesLifecycle, ResponseLifecycleError } from './responses'
 export { channelFingerprint, channelIsReady } from './channels'
 import { compressionInstructions } from './prompts'
@@ -27,18 +29,19 @@ import { runStructuredTask } from './task-runner'
 export function channelValidationErrors(channel: Channel) {
   const errors: Partial<Record<keyof Channel, string>> = {}
   if (!channel.providerId || !channel.sdk) errors.providerId = '请选择 Models.dev 中的 Provider。'
+  if (channel.sdk && !isProviderSdk(channel.sdk)) errors.sdk = '请选择官方 @ai-sdk Provider SDK。'
   if (!channel.apiKey.trim()) errors.apiKey = '请输入渠道提供的 API Key。'
-  if (!channel.model.trim()) errors.model = '请选择支持 Structured Outputs 的模型。'
+  if (!channel.model.trim()) errors.model = '请选择 Models.dev 中的文本模型。'
   try {
     if (channel.baseUrl && !channel.baseUrl.includes('${')) {
-      const url = new URL(channel.baseUrl, 'http://localhost')
+      const url = new URL(channel.baseUrl)
       if (!['https:', 'http:'].includes(url.protocol)) throw new Error()
     }
   } catch {
     errors.baseUrl = '请输入完整的 HTTP(S) 地址，例如 https://example.com/v1。'
   }
-  if (!['auto', 'chat-completions', 'responses', 'native'].includes(channel.apiMode))
-    errors.apiMode = '请选择自动探测、Chat Completions 或 Responses。'
+  if (channel.apiMode !== 'auto' && !apiProtocols.includes(channel.apiMode))
+    errors.apiMode = '请选择 API 端点。'
   if (
     channel.temperature !== null &&
     (!Number.isFinite(channel.temperature) || channel.temperature < 0 || channel.temperature > 2)
@@ -63,6 +66,7 @@ export async function channelRequest(
   protocol?: ApiProtocol,
   signal?: AbortSignal,
   probeCatalog?: ModelCatalog,
+  settings?: ModelSettings,
 ) {
   validateChannel(channel)
   if (!protocol && channel.apiMode === 'auto' && !channelIsReady(channel))
@@ -79,6 +83,7 @@ export async function channelRequest(
     channel.apiKey,
     fetcher,
     selected,
+    { ...settings, baseUrl: channel.baseUrl, sdk: channel.sdk },
   )
   signal?.throwIfAborted()
   return {
@@ -133,7 +138,7 @@ export function friendlyError(error: unknown) {
   if (/temperature/i.test(message))
     return `渠道不接受当前温度配置，请选择「模型默认」后重新测试。${message}`
   if (/json_schema|response_format|text\.format|structured|strict/i.test(message))
-    return `渠道未能完成严格结构化请求。请使用支持 json_schema / strict:true 的模型。${message}`
+    return `渠道未能完成 JSON 请求。${message}`
   if (/length|truncat|token limit/i.test(message))
     return '回复达到模型自身容量而被截断，已保留收到的内容。可选择容量更大的模型后重试。'
   if (APICallError.isInstance(error)) return `${message} 请重新测试渠道后重试。`
@@ -185,7 +190,7 @@ export async function testChannel(
     for (const streaming of [false, true]) {
       const stage = streaming ? 'streaming' : 'nonStreaming'
       onProgress?.(
-        `正在测试 ${protocolLabels[protocol]} · ${streaming ? '流式' : '非流式'}严格输出…`,
+        `正在测试 ${protocolLabels[protocol]} · ${streaming ? '流式' : '非流式'} JSON 输出…`,
       )
       try {
         await timedProbe(async (abortSignal) => {
@@ -197,7 +202,6 @@ export async function testChannel(
             catalog,
             protocol,
             streaming,
-            allowCorrection: false,
             input: { test: 'nested strict schema' },
             signal: abortSignal,
             fetcher,
@@ -205,6 +209,8 @@ export async function testChannel(
               channel.temperature === null ? null : streaming ? channel.temperature : 0.3,
           })
           if (streaming) firstTokenMs ??= result.diagnostics.firstTokenMs
+          if (streaming) check.streamingOutputMode = result.diagnostics.outputMode
+          else check.outputMode = result.diagnostics.outputMode
         }, signal)
         check[stage] = 'passed'
       } catch (error) {
@@ -312,7 +318,7 @@ export async function testChannelProtocols(
   onProgress: (detail: string) => void,
   fetcher?: typeof fetch,
 ) {
-  onProgress('正在检查连接、严格结构化与流式传输…')
+  onProgress('正在检查连接、JSON 校验与流式传输…')
   const capability = await testChannel(channel, signal, fetcher, onProgress)
   if (!capability.ok) return { ...capability, protocols: false }
   const tested = { ...channel, capability }
@@ -341,7 +347,6 @@ export async function testChannelProtocols(
     tested,
     {
       messages: [{ role: 'user', content: '两人在书房约定明天整理阅读笔记。' }],
-      targetTokens: 256,
     },
     signal,
     fetcher,

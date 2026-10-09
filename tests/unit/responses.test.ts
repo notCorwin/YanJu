@@ -46,7 +46,7 @@ function probes(enabled: ApiProtocol[], noStream: ApiProtocol[] = []) {
     const body = JSON.parse(String(init?.body))
     if (!enabled.includes(protocol) || (body.stream && noStream.includes(protocol)))
       return Response.json(
-        { error: { message: 'json_schema unsupported', type: 'invalid_request_error' } },
+        { error: { message: 'endpoint unavailable', type: 'invalid_request_error' } },
         { status: 400 },
       )
     return protocol === 'responses'
@@ -234,12 +234,7 @@ describe('原生 Responses 结构化业务协议', () => {
       .fn<typeof fetch>()
       .mockImplementation(async () => Response.json(response(compressionFixture)))
     expect(
-      await summarize(
-        responsesChannel,
-        { messages: [], targetTokens: 256 },
-        new AbortController().signal,
-        fetcher,
-      ),
+      await summarize(responsesChannel, { messages: [] }, new AbortController().signal, fetcher),
     ).toEqual(compressionFixture)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.text.format.name).toBe('CompressionResult')
@@ -268,12 +263,7 @@ describe('原生 Responses 结构化业务协议', () => {
       })
       expect((await testChannel(channel, undefined, fetcher)).ok).toBe(true)
       await generateReply(request(fetcher, channel))
-      await summarize(
-        channel,
-        { messages: [], targetTokens: 256 },
-        new AbortController().signal,
-        fetcher,
-      )
+      await summarize(channel, { messages: [] }, new AbortController().signal, fetcher)
       expect(fetcher).toHaveBeenCalledTimes(4)
     },
   )
@@ -394,12 +384,7 @@ describe('原生 Responses 结构化业务协议', () => {
       .fn<typeof fetch>()
       .mockResolvedValue(Response.json(response(compressionFixture, status, reason)))
     await expect(
-      summarize(
-        responsesChannel,
-        { messages: [], targetTokens: 256 },
-        new AbortController().signal,
-        fetcher,
-      ),
+      summarize(responsesChannel, { messages: [] }, new AbortController().signal, fetcher),
     ).rejects.toThrow(message)
     expect(fetcher).toHaveBeenCalledOnce()
   })
@@ -416,7 +401,6 @@ describe('原生 Responses 结构化业务协议', () => {
         {
           previous: compressionFixture,
           messages: [{ role: 'user', content: '继续记录' }],
-          targetTokens: 256,
         },
         new AbortController().signal,
         fetcher,
@@ -456,12 +440,7 @@ describe('原生 Responses 结构化业务协议', () => {
     }
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(rejected))
     await expect(
-      summarize(
-        responsesChannel,
-        { messages: [], targetTokens: 256 },
-        new AbortController().signal,
-        fetcher,
-      ),
+      summarize(responsesChannel, { messages: [] }, new AbortController().signal, fetcher),
     ).rejects.toThrow('拒绝')
     expect(fetcher).toHaveBeenCalledOnce()
   })

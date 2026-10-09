@@ -5,6 +5,28 @@ export const protocolLabels: Record<ApiProtocol, string> = {
   native: 'Provider SDK',
   responses: 'Responses',
   'chat-completions': 'Chat Completions',
+  completions: 'Completions',
+  messages: 'Messages',
+  'generate-content': 'Generate Content',
+  interactions: 'Interactions',
+  'google-chat-completions': 'Google Chat Completions',
+}
+
+export const endpointLabels: Record<ApiProtocol, string> = {
+  native: 'Provider SDK 默认端点',
+  'chat-completions': '/v1/chat/completions',
+  completions: '/v1/completions',
+  responses: '/v1/responses',
+  messages: '/v1/messages',
+  'generate-content': '/v1beta/models/{model}:generateContent',
+  interactions: '/v1beta/interactions',
+  'google-chat-completions': '/v1beta/openai/chat/completions',
+}
+
+export const outputModeLabels = {
+  structured: 'Structured Outputs',
+  json: 'JSON mode',
+  prompt: '提示词 JSON',
 }
 
 function hash(value: string) {

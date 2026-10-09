@@ -14,7 +14,7 @@ export default defineConfig({
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     {
       name: 'firefox',
-      testMatch: ['**/provider-cors.spec.ts', '**/providers.spec.ts'],
+      testMatch: ['**/provider-cors.spec.ts', '**/providers.spec.ts', '**/output-fallback.spec.ts'],
       use: { ...devices['Desktop Firefox'] },
     },
     { name: 'mobile', use: { ...devices['iPhone 13'], defaultBrowserType: 'chromium' } },

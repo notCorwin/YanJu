@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { generateText, streamText, Output } from 'ai'
+import { generateText, Output } from 'ai'
 import { z } from 'zod'
 import {
   createProviderModel,
@@ -7,7 +7,7 @@ import {
   resolveCatalogApi,
 } from '../../src/lib/provider-model'
 import { parseModelCatalog } from '../../src/lib/model-catalog'
-import { completion, response, responseSse, sse } from '../fixtures'
+import { completion, response } from '../fixtures'
 
 const schema = z.object({ ready: z.boolean() })
 const value = { ready: true }
@@ -85,7 +85,6 @@ describe('原生 SDK 与浏览器连接', () => {
         usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
       },
     ],
-    ['venice-ai-sdk-provider', 'test-model', completion(value)],
   ])('%s 使用真实 SDK 和原生结构化格式生成', async (sdk, id, response) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(response))
     const model = await createProviderModel(
@@ -122,12 +121,14 @@ describe('原生 SDK 与浏览器连接', () => {
     '@ai-sdk/deepinfra',
     '@ai-sdk/cerebras',
     '@ai-sdk/togetherai',
-    '@openrouter/ai-sdk-provider',
-    '@aihubmix/ai-sdk-provider',
-    '@saladtechnologies-oss/ai-sdk-provider',
-    'merge-gateway-ai-sdk-provider',
-    '@qvac/ai-sdk-provider',
-  ])('%s 发送严格 JSON schema，省略可选输出限制', async (sdk) => {
+    '@ai-sdk/deepseek',
+    '@ai-sdk/fireworks',
+    '@ai-sdk/baseten',
+    '@ai-sdk/alibaba',
+    '@ai-sdk/gmicloud',
+    '@ai-sdk/moonshotai',
+    '@ai-sdk/zai',
+  ])('%s 使用官方 JSON 格式，省略可选输出限制', async (sdk) => {
     const catalog = makeCatalog(sdk, 'test-model')
     catalog.test.api = 'https://mock.example/v1'
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(completion(value)))
@@ -143,10 +144,17 @@ describe('原生 SDK 与浏览器连接', () => {
       ).output,
     ).toEqual(value)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
-    expect(body.response_format).toMatchObject({
-      type: 'json_schema',
-      json_schema: { schema: { type: 'object' } },
-    })
+    expect(body.response_format).toMatchObject(
+      [
+        '@ai-sdk/deepseek',
+        '@ai-sdk/alibaba',
+        '@ai-sdk/gmicloud',
+        '@ai-sdk/moonshotai',
+        '@ai-sdk/zai',
+      ].includes(sdk)
+        ? { type: 'json_object' }
+        : { type: 'json_schema', json_schema: { schema: { type: 'object' } } },
+    )
     expect(body.max_tokens).toBeUndefined()
     expect(body.max_completion_tokens).toBeUndefined()
     expect(new Headers(fetcher.mock.calls[0][1]?.headers).has('user-agent')).toBe(false)
@@ -363,160 +371,5 @@ describe('原生 SDK 与浏览器连接', () => {
     expect(body.model).toBeUndefined()
     expect(body.output_config.format.type).toBe('json_schema')
     expect(String(fetcher.mock.calls[0][0])).toContain('claude-sonnet-5-5:rawPredict')
-  })
-
-  it('watsonx 社区 V3 SDK 经过 Vercel V4 兼容层，完成 IAM 和严格 schema 生成', async () => {
-    const iam = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({
-        access_token: 'test-token',
-        expiration: Math.floor(Date.now() / 1000) + 3600,
-      }),
-    )
-    vi.stubGlobal('fetch', iam)
-    try {
-      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(completion(value)))
-      const catalog = makeCatalog('watsonx-ai-provider', 'ibm/granite-4-h-small')
-      catalog.test.env = ['WATSONX_AI_APIKEY', 'WATSONX_AI_PROJECT_ID']
-      const model = await createProviderModel(
-        catalog,
-        'test',
-        'ibm/granite-4-h-small',
-        JSON.stringify({ WATSONX_AI_APIKEY: 'test-watson-key', WATSONX_AI_PROJECT_ID: 'project' }),
-        fetcher,
-      )
-      expect(
-        (
-          await generateText({
-            model,
-            prompt: 'Ready?',
-            output: Output.object({ schema }),
-            maxRetries: 0,
-          })
-        ).output,
-      ).toEqual(value)
-      expect(String(iam.mock.calls[0][0])).toContain('iam.cloud.ibm.com')
-      expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toMatchObject({
-        project_id: 'project',
-        response_format: { type: 'json_schema' },
-      })
-    } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
-  it.each([false, true])(
-    'SAP 浏览器适配完整认证、部署查询、严格 schema 和流式=%s',
-    async (streaming) => {
-      const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
-        const url = String(input)
-        if (url.endsWith('/oauth/token'))
-          return Response.json({ access_token: 'test-access', expires_in: 3600 })
-        if (url.includes('/lm/deployments'))
-          return Response.json({ resources: [{ id: 'deployment', status: 'RUNNING' }] })
-        return streaming
-          ? new Response(
-              sse(value)
-                .join('')
-                .split('\n\n')
-                .filter((part) => part && !part.includes('[DONE]'))
-                .map(
-                  (part) =>
-                    `data: ${JSON.stringify({ final_result: JSON.parse(part.slice(6).trim()) })}\n\n`,
-                )
-                .join(''),
-              { headers: { 'content-type': 'text/event-stream' } },
-            )
-          : Response.json({ final_result: completion(value) })
-      })
-      const key = {
-        clientid: 'client',
-        clientsecret: 'test-secret',
-        url: 'https://sap-auth.example',
-        serviceurls: { AI_API_URL: 'https://sap.example/v2' },
-      }
-      const model = await createProviderModel(
-        makeCatalog('@jerome-benoit/sap-ai-provider-v2', 'gpt-5.4'),
-        'test',
-        'gpt-5.4',
-        JSON.stringify(key),
-        fetcher,
-      )
-      const request = { model, prompt: 'Ready?', output: Output.object({ schema }), maxRetries: 0 }
-      const result = streaming
-        ? await streamText(request).output
-        : (await generateText(request)).output
-      expect(result).toEqual(value)
-      const body = JSON.parse(String(fetcher.mock.calls[2][1]?.body))
-      expect(body.config.modules.prompt_templating.prompt.response_format.json_schema.strict).toBe(
-        true,
-      )
-      expect(body.config.modules.prompt_templating.model.params?.max_tokens).toBeUndefined()
-    },
-  )
-
-  it.each([false, true])(
-    'GitLab 浏览器直连完成 token 交换和 Responses，流式=%s',
-    async (streaming) => {
-      const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) =>
-        String(input).includes('/direct_access')
-          ? Response.json({
-              token: 'test-duo-token',
-              headers: { 'x-gitlab-feature-enabled': 'true' },
-            })
-          : streaming
-            ? new Response(responseSse(value).join(''), {
-                headers: { 'content-type': 'text/event-stream' },
-              })
-            : Response.json(response(value)),
-      )
-      const model = await createProviderModel(
-        makeCatalog('gitlab-ai-provider', 'duo-chat-gpt-5-4'),
-        'test',
-        'duo-chat-gpt-5-4',
-        'test-key',
-        fetcher,
-      )
-      const request = { model, prompt: 'Ready?', output: Output.object({ schema }), maxRetries: 0 }
-      expect(
-        streaming ? await streamText(request).output : (await generateText(request)).output,
-      ).toEqual(value)
-      const body = JSON.parse(String(fetcher.mock.calls[1][1]?.body))
-      expect(body.model).toBe('gpt-5.4')
-      expect(body.text.format.strict).toBe(true)
-      expect(body.max_output_tokens).toBeUndefined()
-    },
-  )
-
-  it('Cloudflare 保留完整 Gateway model ID，模型 SDK override 仍经由 Gateway 路由', async () => {
-    const catalog = makeCatalog('ai-gateway-provider', 'anthropic/claude-opus-4.5')
-    catalog.test.models['anthropic/claude-opus-4.5'].provider = { npm: '@ai-sdk/anthropic' }
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(completion(value)))
-    const model = await createProviderModel(
-      catalog,
-      'test',
-      'anthropic/claude-opus-4.5',
-      JSON.stringify({
-        apiKey: 'test-key',
-        CLOUDFLARE_ACCOUNT_ID: 'account',
-        CLOUDFLARE_GATEWAY_ID: 'gateway',
-      }),
-      fetcher,
-    )
-    expect(
-      (
-        await generateText({
-          model,
-          prompt: 'Ready?',
-          output: Output.object({ schema }),
-          maxRetries: 0,
-        })
-      ).output,
-    ).toEqual(value)
-    expect(String(fetcher.mock.calls[0][0])).toBe(
-      'https://gateway.ai.cloudflare.com/v1/account/gateway',
-    )
-    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))[0].query.model).toBe(
-      'anthropic/claude-opus-4.5',
-    )
   })
 })

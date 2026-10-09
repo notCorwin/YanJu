@@ -210,7 +210,7 @@ export function ChatRunner({
   ) => {
     if (!text.trim() || chatBusy || (!fromStudio && disabled) || lock.current) return false
     if (!channel || !channelIsReady(channel)) {
-      notify('请先配置渠道，并通过严格结构化和浏览器连接测试。', true)
+      notify('请先配置渠道，并通过JSON 校验和浏览器连接测试。', true)
       return false
     }
     const kind = explicitKind ?? (/^(\$发送帖子|新帖[：:]|回复.+[：:])/.test(text) ? 'forum' : mode)

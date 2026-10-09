@@ -136,7 +136,7 @@ test('严格 CORS 服务商通过非流式与流式测试，浏览器负责 User
       await page.getByLabel('API Key', { exact: true }).fill('test-key-not-real')
       await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
       await expect(
-        page.getByText('测试通过 · 连接、结构化与流式', { exact: false }),
+        page.getByText('测试通过 · 连接、JSON 校验与流式', { exact: false }),
         provider.name,
       ).toBeVisible()
       const requests = calls.slice(start)
