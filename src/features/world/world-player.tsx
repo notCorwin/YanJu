@@ -10,12 +10,14 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import commands from '@/content/commands.json'
 import world from '@/content/world.json'
@@ -30,28 +32,35 @@ import {
   Repeat,
   SkipBack,
   SkipForward,
+  Minus,
 } from 'lucide-react'
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 
 const time = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
 export function WorldPlayer({
   open,
+  onOpen,
   onClose,
   notify,
   onInsert,
 }: {
   open: boolean
+  onOpen: () => void
   onClose: () => void
   notify: Notify
   onInsert: (text: string) => void
 }) {
+  const titleId = useId()
+  const descriptionId = useId()
+  const returnFocus = useRef<HTMLElement | null>(null)
   const audio = useRef<HTMLAudioElement>(null)
   const playAttempt = useRef(0)
   const focusAfterInsert = useRef(false)
   const [index, setIndex] = useState(0)
   const [tab, setTab] = useState('world')
+  const [expandedWorld, setExpandedWorld] = useState(['0'])
   const [volume, setVolume] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -173,29 +182,63 @@ export function WorldPlayer({
           setError('音乐资源加载失败，可以重试、切换曲目或检查网络。')
         }}
       />
-      <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-        <SheetContent
-          className="w-full overflow-hidden sm:panel-width safe-bottom"
+      <Popover open={open} onOpenChange={(value) => (value ? onOpen() : onClose())}>
+        <div className="player-anchor">
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              className="rounded-full"
+              aria-label="展开世界与音乐"
+              tabIndex={open ? -1 : 0}
+            >
+              <Music2 />
+            </Button>
+          </PopoverTrigger>
+        </div>
+        <PopoverContent
+          align="end"
+          sideOffset={0}
+          collisionPadding={16}
+          aria-labelledby={titleId}
+          aria-describedby={descriptionId}
+          className="player-size safe-bottom max-h-(--player-content-height) w-(--player-content-width) gap-0 p-0"
+          onOpenAutoFocus={() => {
+            returnFocus.current =
+              document.activeElement instanceof HTMLElement ? document.activeElement : null
+          }}
+          onInteractOutside={(event) => {
+            if (event.target instanceof Element && event.target.closest('[data-global-toast]'))
+              event.preventDefault()
+          }}
           onCloseAutoFocus={(event) => {
             if (focusAfterInsert.current) {
               event.preventDefault()
               focusAfterInsert.current = false
-              document.getElementById('chat-input')?.focus()
+              // ChatRunner restores focus after the inserted draft is committed.
+            } else if (returnFocus.current?.isConnected) {
+              event.preventDefault()
+              returnFocus.current.focus()
             }
           }}
         >
-          <SheetHeader>
-            <SheetTitle>世界与音乐</SheetTitle>
-            <SheetDescription>背景资料、常用指令和此刻的配乐。</SheetDescription>
-          </SheetHeader>
-          <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 px-4 pb-4">
+          <PopoverHeader className="relative shrink-0 border-b-(length:--border-width) p-4 pr-16">
+            <PopoverTitle id={titleId}>世界与音乐</PopoverTitle>
+            <PopoverDescription id={descriptionId} className="compact-height:hidden">
+              Symphony of the Abyss · 权力与深渊
+            </PopoverDescription>
+            <IconButton label="关闭" className="absolute top-2 right-2" onClick={onClose}>
+              <Minus />
+            </IconButton>
+          </PopoverHeader>
+          <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 px-4 pt-2 pb-4">
             <TabsList className="w-full shrink-0">
               <TabsTrigger value="world">世界</TabsTrigger>
               <TabsTrigger value="commands">指令</TabsTrigger>
               <TabsTrigger value="music">音乐</TabsTrigger>
             </TabsList>
             <TabsContent value="world" className="min-h-0 overflow-y-auto overscroll-contain">
-              <Accordion type="multiple" defaultValue={['0']}>
+              <Accordion type="multiple" value={expandedWorld} onValueChange={setExpandedWorld}>
                 {world.map((item, i) => (
                   <AccordionItem key={i} value={String(i)}>
                     <AccordionTrigger>{item.label}</AccordionTrigger>
@@ -267,16 +310,37 @@ export function WorldPlayer({
                   </AlertDescription>
                 </Alert>
               )}
-              <Card>
-                <CardHeader>
-                  <Music2 className="size-8 text-primary" />
+              <Card className="shrink-0">
+                <CardHeader className="grid-cols-[auto_1fr] items-center gap-x-4">
+                  <div
+                    aria-hidden="true"
+                    data-record
+                    data-playing={playing && !loading}
+                    className="relative row-span-2 record-size rounded-full"
+                  >
+                    <div
+                      className={cn(
+                        'absolute inset-0 animate-record rounded-full border-(length:--border-width) border-border-soft border-t-primary',
+                        (!playing || loading) && 'animation-paused',
+                      )}
+                    />
+                    <div
+                      className={cn(
+                        'absolute inset-3 animate-record rounded-full border-(length:--border-width) border-dashed border-primary-border',
+                        (!playing || loading) && 'animation-paused',
+                      )}
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="record-core rounded-full border-(length:--border-width) border-primary bg-primary-subtle shadow-glow" />
+                    </div>
+                  </div>
                   <CardTitle>{tracks[index].name}</CardTitle>
                   <p role="status" className="text-sm text-muted-foreground">
                     {loading ? '正在加载音乐…' : playing ? '正在播放' : '已暂停'} ·{' '}
                     {repeatOne ? '单曲循环' : '列表循环'}
                   </p>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-4">
+                <CardContent className="flex flex-col gap-2">
                   <div className="flex justify-center gap-3">
                     <IconButton label="上一曲" onClick={() => switchTrack(index - 1)}>
                       <SkipBack />
@@ -351,7 +415,7 @@ export function WorldPlayer({
                   />
                 </CardContent>
               </Card>
-              <div className="flex flex-col gap-2" aria-label="播放列表">
+              <div className="flex shrink-0 flex-col gap-2" aria-label="播放列表">
                 {tracks.map((track, i) => (
                   <Button
                     key={track.name}
@@ -367,8 +431,8 @@ export function WorldPlayer({
               </div>
             </TabsContent>
           </Tabs>
-        </SheetContent>
-      </Sheet>
+        </PopoverContent>
+      </Popover>
     </>
   )
 }

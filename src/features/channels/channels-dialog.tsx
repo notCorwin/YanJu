@@ -1,12 +1,6 @@
 import { ConfirmDialog } from '@/components/shared'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { ManagementSurface } from '@/components/management-surface'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { ChannelEditor } from '@/features/channels/channel-editor'
 import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
@@ -25,6 +19,8 @@ export function ChannelsDialog({
   settings,
   notify,
   disabled,
+  page = false,
+  onContinue,
 }: {
   open: boolean
   onClose: () => void
@@ -32,10 +28,12 @@ export function ChannelsDialog({
   settings: Settings
   notify: Notify
   disabled: boolean
+  page?: boolean
+  onContinue?: () => void
 }) {
   const [selectedId, setSelectedId] = useState('')
   const [dirty, setDirty] = useState(false)
-  const { guard, confirmation } = useUnsavedChanges(dirty)
+  const { guard, confirmation } = useUnsavedChanges(dirty, page)
   const [testingAll, setTestingAll] = useState(false)
   const [progress, setProgress] = useState('')
   const controller = useRef<AbortController | null>(null)
@@ -82,24 +80,26 @@ export function ChannelsDialog({
   }
   useEffect(() => () => controller.current?.abort(), [])
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) {
+    <>
+      <ManagementSurface
+        page={page}
+        open={open}
+        title="渠道管理"
+        description="保存多个服务商配置，通过测试后可以随时切换。"
+        step="channels"
+        onClose={() =>
           guard(() => {
             controller.current?.abort()
             onClose()
           })
         }
-      }}
-    >
-      <DialogContent size="wide" className="editor-height overflow-hidden compact-height:gap-2">
-        <DialogHeader>
-          <DialogTitle>渠道管理</DialogTitle>
-          <DialogDescription className="compact-height:hidden">
-            保存多个服务商配置，通过测试后可以随时切换。
-          </DialogDescription>
-        </DialogHeader>
+        onContinue={() => guard(() => onContinue?.())}
+        continueDisabled={
+          disabled ||
+          testingAll ||
+          !channels.some((c) => c.id === settings.activeChannelId && channelIsReady(c))
+        }
+      >
         <div className="flex flex-wrap gap-2">
           <Button
             disabled={disabled || testingAll}
@@ -179,7 +179,7 @@ export function ChannelsDialog({
             />
           )}
         </div>
-      </DialogContent>
+      </ManagementSurface>
       <ConfirmDialog
         {...confirmation}
         title="放弃未保存的修改？"
@@ -187,6 +187,6 @@ export function ChannelsDialog({
         confirmLabel="放弃修改"
         destructive={false}
       />
-    </Dialog>
+    </>
   )
 }

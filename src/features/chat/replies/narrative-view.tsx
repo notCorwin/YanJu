@@ -12,6 +12,13 @@ import { SceneCard } from '@/features/chat/replies/scene-card'
 import { Section } from '@/features/chat/replies/section'
 import type { NarrativeReply } from '@/lib/schemas'
 import type { DeepPartial } from 'ai'
+import type { AnimationEvent } from 'react'
+
+function revealExpandedPanel(event: AnimationEvent<HTMLDivElement>) {
+  const content = event.currentTarget
+  if (event.target === content && content.dataset.state === 'open')
+    content.parentElement?.scrollIntoView({ block: 'start', inline: 'nearest' })
+}
 
 export function NarrativeView({
   reply,
@@ -31,11 +38,7 @@ export function NarrativeView({
                 key={block.id ?? i}
                 id={messageId && block.id ? `source-block-${messageId}-${block.id}` : undefined}
                 tabIndex={-1}
-                className={
-                  block.kind === 'dialogue'
-                    ? 'border-l-(length:--border-width) border-primary pl-4'
-                    : ''
-                }
+                className={block.kind === 'dialogue' ? 'edge-accent prose-highlight px-4 py-3' : ''}
               >
                 <Prose text={block.text} />
                 {block.kind === 'dialogue' && block.translation && (
@@ -45,7 +48,7 @@ export function NarrativeView({
             ),
         )}
       </div>
-      <Accordion type="multiple">
+      <Accordion type="multiple" className="accordion-panels">
         {reply.state && (
           <AccordionItem value="state">
             <AccordionTrigger>
@@ -54,7 +57,7 @@ export function NarrativeView({
                 <span>宴雎 · 此刻</span>
               </span>
             </AccordionTrigger>
-            <AccordionContent>
+            <AccordionContent onAnimationEnd={revealExpandedPanel}>
               <div className="flex flex-col gap-6 py-3">
                 <Section title="心声">
                   <Prose text={reply.state.innerVoice} />
@@ -87,7 +90,7 @@ export function NarrativeView({
                 <span>宴雎 · 手机</span>
               </span>
             </AccordionTrigger>
-            <AccordionContent>
+            <AccordionContent onAnimationEnd={revealExpandedPanel}>
               <div className="flex flex-col gap-6 py-3">
                 <Section title="备忘录">
                   <ul className="flex list-disc flex-col gap-3 pl-5">
@@ -180,7 +183,7 @@ export function NarrativeView({
                 <span>宴雎 · 日记</span>
               </span>
             </AccordionTrigger>
-            <AccordionContent>
+            <AccordionContent onAnimationEnd={revealExpandedPanel}>
               <div className="flex flex-col gap-4 py-3">
                 <Prose text={reply.diary.text} />
                 <p className="text-ui text-primary">

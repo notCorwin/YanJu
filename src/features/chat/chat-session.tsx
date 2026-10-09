@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { ChatRunner } from '@/features/chat/chat-runner'
 import type { ExternalChatRequest } from '@/features/chat/types'
 import type { Notify } from '@/lib/notify'
@@ -9,6 +10,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 export function ChatSession(props: {
   archive: Archive
   channel?: Channel
+  channelControl: ReactNode
   persona?: Persona
   notify: Notify
   onBusy: (value: boolean) => void

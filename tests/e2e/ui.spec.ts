@@ -12,7 +12,7 @@ import {
 } from '../fixtures'
 import { defaults, type SaveFile } from '../../src/lib/types'
 
-async function prepareUI(page: Page, archiveCount = 2) {
+async function mockUI(page: Page) {
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort())
   await page.route('https://fonts.gstatic.com/**', (route) => route.abort())
   await page.route('https://mock.example/v1/**', async (route) => {
@@ -35,6 +35,10 @@ async function prepareUI(page: Page, archiveCount = 2) {
         : JSON.stringify(responses ? response(value) : completion(value)),
     })
   })
+}
+
+async function prepareUI(page: Page, archiveCount = 2) {
+  await mockUI(page)
   await page.goto('./')
   await expect(page.getByRole('button', { name: '进入聊天' })).toBeVisible()
   const data: SaveFile = {
@@ -208,7 +212,7 @@ test('指令可点击并保存草稿，音乐状态在面板重开后保持一�
   ).toBeCloseTo(0.3)
 })
 
-test('结构化回复按分区编辑、取消和刷新后仍然可读', async ({ page }) => {
+test('结构化回复按分区编辑、取消和刷新后仍然可读', async ({ page }, testInfo) => {
   await prepareUI(page)
   await connectUI(page)
   await enterUI(page)
@@ -216,6 +220,8 @@ test('结构化回复按分区编辑、取消和刷新后仍然可读', async ({
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
   await expect(page.getByText('SCENE / 场景', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+  await page.getByText('SCENE / 场景', { exact: true }).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('narrative.png'), fullPage: true })
   const editorOpener = page.getByRole('button', { name: '编辑消息', exact: true }).last()
   await editorOpener.click()
   await page.getByRole('tab', { name: '场景', exact: true }).click()
@@ -288,6 +294,10 @@ test('流式回复完成后保留已展开的回答', async ({ page }) => {
   await more.click()
   await expect(more).toBeFocused()
   await expect(page.getByRole('button', { name: '回复', exact: true })).toHaveCount(20)
+  const reply = page.getByRole('article', { name: '宴雎的回复', exact: true }).last()
+  // Finishing the stream must update the existing message, including its animation.
+  const animation = await reply.evaluate((element) => element.getAnimations()[0]?.startTime)
+  expect(animation).toBeDefined()
   await page.evaluate(() =>
     (window as unknown as { finishForumStream: () => void }).finishForumStream(),
   )
@@ -295,6 +305,7 @@ test('流式回复完成后保留已展开的回答', async ({ page }) => {
   await expect(page.getByRole('button', { name: '回复', exact: true })).toHaveCount(20)
   await expect(more).toContainText('还有 30 条')
   await expect(more).toBeFocused()
+  expect(await reply.evaluate((element) => element.getAnimations()[0]?.startTime)).toBe(animation)
   const reading = page.getByRole('region', { name: '聊天记录', exact: true })
   await expect(page.getByRole('button', { name: '从此分叉', exact: true }).last()).toBeEnabled()
   await reading.dispatchEvent('wheel', { deltaY: -10000 })
@@ -416,6 +427,219 @@ test('最窄屏幕、大字号、长名称和长草稿仍保留可用的阅读�
   await page.getByRole('button', { name: '人设管理', exact: true }).click()
   await expect(page.getByRole('button', { name: '保存人设', exact: true })).toBeInViewport()
   await expect(page.getByRole('textbox', { name: '姓名', exact: true })).toBeInViewport()
+})
+
+test('首次进入按渠道测试、保存人设的顺序打开当前篇章', async ({ page }) => {
+  await mockUI(page)
+  await page.goto('./')
+  await page.getByRole('button', { name: '进入聊天', exact: true }).click()
+  await expect(page).toHaveURL(/#\/setup\/channels$/)
+  const next = page.getByRole('button', { name: '继续设置人设', exact: true })
+  await expect(next).toBeDisabled()
+  await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
+  await page.getByRole('option', { name: '测试 Provider', exact: true }).click()
+  await page.getByRole('textbox', { name: 'API Key', exact: true }).fill('test-key')
+  await page.getByRole('button', { name: '保存渠道', exact: true }).click()
+  await expect(next).toBeDisabled()
+  await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await expect(page.getByText(/测试通过 ·/)).toBeVisible()
+  await expect(next).toBeDisabled()
+  await page.getByRole('button', { name: '使用此渠道', exact: true }).click()
+  await expect(next).toBeEnabled()
+  await next.click()
+  await expect(page).toHaveURL(/#\/setup\/persona$/)
+  const name = page.getByRole('textbox', { name: '姓名', exact: true })
+  await name.fill('')
+  await page.getByRole('button', { name: '使用此人设', exact: true }).click()
+  await expect(name).toBeFocused()
+  await expect(page.getByText('请输入人设姓名。', { exact: true })).toBeVisible()
+  await name.fill('林知遥')
+  await page.getByRole('button', { name: '使用此人设', exact: true }).click()
+  await expect(page.getByText('当前人设已更新。', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '进入聊天', exact: true }).click()
+  await expect(page).toHaveURL(/#\/chat\/[^?]+$/)
+  await expect(page.getByRole('textbox', { name: '聊天输入', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '返回首页', exact: true }).click()
+  await page.getByRole('button', { name: '进入聊天', exact: true }).click()
+  await expect(page).toHaveURL(/#\/chat\/[^?]+$/)
+})
+
+test('引导中的浏览器返回和页面退出都保护未保存修改', async ({ page }) => {
+  await prepareUI(page)
+  await page.goto('./#/setup/channels')
+  const key = page.getByRole('textbox', { name: 'API Key', exact: true })
+  await key.fill('尚未保存的 Key')
+  await page.goBack()
+  const confirmation = page.getByRole('dialog', { name: '放弃未保存的修改？', exact: true })
+  await expect(confirmation).toBeVisible()
+  await expect(page).toHaveURL(/#\/setup\/channels$/)
+  await confirmation.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(key).toHaveValue('尚未保存的 Key')
+  await page.getByRole('button', { name: '返回首页', exact: true }).click()
+  await confirmation.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Abyss & Desire', exact: true })).toBeVisible()
+  await page.goto('./#/setup/persona')
+  const name = page.getByRole('textbox', { name: '姓名', exact: true })
+  await name.fill('还没有保存的姓名')
+  await page.getByRole('button', { name: '进入聊天', exact: true }).click()
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(name).toHaveValue('还没有保存的姓名')
+  await page.getByRole('button', { name: '返回首页', exact: true }).click()
+  await confirmation.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Abyss & Desire', exact: true })).toBeVisible()
+  await page.goto('./#/setup/persona')
+  await expect(name).toHaveValue('林知遥')
+})
+
+test('封面入口即时可用，减少动态效果后仍保留外观设置与离线阅读', async ({ page }, testInfo) => {
+  await prepareUI(page)
+  await page.reload()
+  await expect(page.getByRole('button', { name: '进入聊天', exact: true })).toBeEnabled()
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const cover = page.getByRole('heading', { name: 'Abyss & Desire', exact: true })
+  await expect(cover).toBeVisible()
+  expect(
+    await cover.evaluate((element) =>
+      Number.parseFloat(getComputedStyle(element.parentElement!).animationDuration),
+    ),
+  ).toBeLessThan(0.001)
+  await page.screenshot({ path: testInfo.outputPath('cover.png'), fullPage: true })
+  const viewport = page.viewportSize()!
+  await page.setViewportSize({ width: 320, height: 568 })
+  const main = page.getByRole('main')
+  const width = await main.evaluate((element) => ({
+    content: element.scrollWidth,
+    available: element.clientWidth,
+  }))
+  expect(width.content).toBe(width.available)
+  const titleBounds = (await cover.boundingBox())!
+  const playerBounds = (await page
+    .getByRole('button', { name: '展开世界与音乐', exact: true })
+    .boundingBox())!
+  expect(titleBounds.y).toBeGreaterThanOrEqual(playerBounds.y + playerBounds.height)
+  await page.getByRole('button', { name: '进入聊天', exact: true }).scrollIntoViewIfNeeded()
+  await expect(page.getByRole('button', { name: '进入聊天', exact: true })).toBeInViewport()
+  await page.screenshot({ path: testInfo.outputPath('cover-narrow.png'), fullPage: true })
+  await page.setViewportSize(viewport)
+  await page.getByRole('button', { name: '外观设置', exact: true }).click()
+  await page.getByRole('combobox', { name: '字体', exact: true }).click()
+  await page.getByRole('option', { name: '系统字体', exact: true }).click()
+  await page.getByRole('spinbutton', { name: '聊天字号 · 像素', exact: true }).fill('20')
+  await page.getByLabel('背景图片', { exact: true }).setInputFiles({
+    name: 'background.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  })
+  await expect(page.getByRole('button', { name: '移除背景', exact: true })).toBeEnabled()
+  await page.getByRole('slider', { name: /背景透明度/ }).fill('35')
+  await page.getByRole('button', { name: '关闭', exact: true }).click()
+  await enterUI(page)
+  await expect(page.getByText('篇章 1：午后的书房很安静。', { exact: true })).toBeVisible()
+  await page.reload()
+  const typography = await page
+    .getByRole('article', { name: '宴雎的回复', exact: true })
+    .evaluate((element) => ({
+      font: getComputedStyle(element.querySelector('[data-slot="bubble-content"]')!).fontFamily,
+      size: getComputedStyle(element.querySelector('[data-slot="bubble-content"]')!).fontSize,
+    }))
+  expect(typography.font).toContain('system-ui')
+  expect(typography.size).toBe('20px')
+  const background = await page.evaluate(() => ({
+    image: getComputedStyle(document.documentElement).getPropertyValue('--background-image'),
+    opacity: getComputedStyle(document.documentElement).getPropertyValue('--background-opacity'),
+  }))
+  expect(background.image).toContain('blob:')
+  expect(Number(background.opacity)).toBe(0.35)
+  await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true })
+})
+
+test('唱片跟随真实播放状态，收起浮窗和切换页面后继续播放', async ({ page }, testInfo) => {
+  const samples = 8000 * 60
+  const audio = Buffer.alloc(44 + samples * 2)
+  audio.write('RIFF', 0)
+  audio.writeUInt32LE(audio.length - 8, 4)
+  audio.write('WAVEfmt ', 8)
+  audio.writeUInt32LE(16, 16)
+  audio.writeUInt16LE(1, 20)
+  audio.writeUInt16LE(1, 22)
+  audio.writeUInt32LE(8000, 24)
+  audio.writeUInt32LE(16000, 28)
+  audio.writeUInt16LE(2, 32)
+  audio.writeUInt16LE(16, 34)
+  audio.write('data', 36)
+  audio.writeUInt32LE(samples * 2, 40)
+  await page.route('https://cdn.jsdelivr.net/**/*.mp3', (route) =>
+    route.fulfill({ contentType: 'audio/wav', body: audio }),
+  )
+  await prepareUI(page)
+  const opener = page.getByRole('button', { name: '展开世界与音乐', exact: true })
+  await opener.click()
+  const setting = page.getByRole('button', { name: '背景 · SETTING', exact: true })
+  const places = page.getByRole('button', { name: '地点 · 主要场景', exact: true })
+  await setting.click()
+  await places.click()
+  await page.getByRole('button', { name: '关闭', exact: true }).click()
+  await opener.click()
+  await expect(setting).toHaveAttribute('aria-expanded', 'false')
+  await expect(places).toHaveAttribute('aria-expanded', 'true')
+  await page.getByRole('tab', { name: '音乐', exact: true }).click()
+  const panel = page.getByRole('dialog', { name: '世界与音乐', exact: true })
+  await expect
+    .poll(async () => {
+      const bounds = (await panel.boundingBox())!
+      return page.viewportSize()!.width - bounds.x - bounds.width
+    })
+    .toBeCloseTo(16, 0)
+  const bounds = (await panel.boundingBox())!
+  expect(bounds.y).toBeGreaterThanOrEqual(16)
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(page.viewportSize()!.height - 16)
+  const record = page.locator('[data-record]')
+  await expect(record).toHaveAttribute('data-playing', 'false')
+  await page.getByRole('slider', { name: '音量', exact: true }).fill('0.3')
+  await page.getByRole('button', { name: '切换到单曲循环', exact: true }).click()
+  await page.getByRole('button', { name: '播放音乐', exact: true }).click()
+  await expect(page.getByRole('button', { name: '暂停音乐', exact: true })).toBeVisible()
+  await expect(record).toHaveAttribute('data-playing', 'true')
+  expect(
+    await record
+      .locator('.animate-record')
+      .first()
+      .evaluate((element) => getComputedStyle(element).animationPlayState),
+  ).toBe('running')
+  await page.screenshot({ path: testInfo.outputPath('music.png'), fullPage: true })
+  const elapsed = await page
+    .locator('audio')
+    .evaluate((element: HTMLAudioElement) => element.currentTime)
+  await page.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(opener).toBeFocused()
+  await expect(record).toHaveCount(0)
+  await enterUI(page)
+  await expect
+    .poll(() => page.locator('audio').evaluate((element: HTMLAudioElement) => element.currentTime))
+    .toBeGreaterThan(elapsed)
+  expect(await page.locator('audio').evaluate((element: HTMLAudioElement) => element.paused)).toBe(
+    false,
+  )
+  await opener.click()
+  await expect(page.getByRole('tab', { name: '音乐', exact: true })).toHaveAttribute(
+    'data-state',
+    'active',
+  )
+  await expect(page.getByRole('slider', { name: '音量', exact: true })).toHaveValue('0.3')
+  await expect(page.getByRole('button', { name: '切换到列表循环', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '暂停音乐', exact: true }).click()
+  await expect(record).toHaveAttribute('data-playing', 'false')
+  expect(
+    await record
+      .locator('.animate-record')
+      .first()
+      .evaluate((element) => getComputedStyle(element).animationPlayState),
+  ).toBe('paused')
 })
 
 test('网络字体尚未响应时，应用也能显示并进入聊天', async ({ page }) => {

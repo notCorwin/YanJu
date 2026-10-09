@@ -7,7 +7,7 @@ export type Scene = DeepPartial<NarrativeReply['scene']>
 
 export function SceneCard({ scene }: { scene: Scene }) {
   return (
-    <Card size="sm">
+    <Card size="sm" className="edge-accent">
       <CardHeader>
         <Eyebrow>SCENE / 场景</Eyebrow>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">

@@ -1,12 +1,6 @@
 import { ConfirmDialog } from '@/components/shared'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { ManagementSurface } from '@/components/management-surface'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { PersonaEditor } from '@/features/personas/persona-editor'
 import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
@@ -24,6 +18,8 @@ export function PersonasDialog({
   settings,
   notify,
   disabled,
+  page = false,
+  onContinue,
 }: {
   open: boolean
   onClose: () => void
@@ -31,23 +27,28 @@ export function PersonasDialog({
   settings: Settings
   notify: Notify
   disabled: boolean
+  page?: boolean
+  onContinue?: () => void
 }) {
   const [id, setId] = useState('')
   const [dirty, setDirty] = useState(false)
-  const { guard, confirmation } = useUnsavedChanges(dirty)
+  const { guard, confirmation } = useUnsavedChanges(dirty, page)
   const selected =
     personas.find((p) => p.id === id) ??
     personas.find((p) => p.id === settings.activePersonaId) ??
     personas[0]
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && guard(onClose)}>
-      <DialogContent size="wide" className="editor-height overflow-hidden compact-height:gap-2">
-        <DialogHeader>
-          <DialogTitle>人设管理</DialogTitle>
-          <DialogDescription className="compact-height:hidden">
-            你的姓名、身份、喜好与每轮强制指令。
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <ManagementSurface
+        page={page}
+        open={open}
+        title="人设管理"
+        description="你的姓名、身份、喜好与每轮强制指令。"
+        step="persona"
+        onClose={() => guard(onClose)}
+        onContinue={() => guard(() => onContinue?.())}
+        continueDisabled={disabled || !personas.some((p) => p.id === settings.activePersonaId)}
+      >
         <Button
           className="w-fit"
           disabled={disabled}
@@ -106,7 +107,7 @@ export function PersonasDialog({
             />
           )}
         </div>
-      </DialogContent>
+      </ManagementSurface>
       <ConfirmDialog
         {...confirmation}
         title="放弃未保存的修改？"
@@ -114,6 +115,6 @@ export function PersonasDialog({
         confirmLabel="放弃修改"
         destructive={false}
       />
-    </Dialog>
+    </>
   )
 }

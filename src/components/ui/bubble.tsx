@@ -21,7 +21,7 @@ const bubbleVariants = cva(
         default:
           '*:data-[slot=bubble-content]:bg-primary *:data-[slot=bubble-content]:text-primary-foreground [&>[data-slot=bubble-content]:is(button,a):hover]:bg-primary-hover',
         secondary:
-          '*:data-[slot=bubble-content]:bg-secondary *:data-[slot=bubble-content]:text-secondary-foreground [&>[data-slot=bubble-content]:is(button,a):hover]:bg-accent',
+          '*:data-[slot=bubble-content]:bubble-scene *:data-[slot=bubble-content]:edge-user *:data-[slot=bubble-content]:border-border-soft *:data-[slot=bubble-content]:bg-secondary *:data-[slot=bubble-content]:text-secondary-foreground [&>[data-slot=bubble-content]:is(button,a):hover]:bg-accent',
         muted:
           '*:data-[slot=bubble-content]:bg-muted [&>[data-slot=bubble-content]:is(button,a):hover]:bg-accent',
         tinted:

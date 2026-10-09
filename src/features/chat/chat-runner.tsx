@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { MessageEditor } from '@/components/message-editor'
 import { RecoveryBoundary } from '@/components/recovery-boundary'
 import { RequestDetails } from '@/components/request-details'
@@ -70,7 +71,6 @@ import {
   Copy,
   FileJson,
   GitBranch,
-  LoaderCircle,
   Pencil,
   RotateCcw,
   Send,
@@ -90,6 +90,7 @@ import {
 export function ChatRunner({
   archive,
   channel,
+  channelControl,
   persona,
   notify,
   onBusy,
@@ -110,6 +111,7 @@ export function ChatRunner({
 }: {
   archive: Archive
   channel?: Channel
+  channelControl: ReactNode
   persona?: Persona
   notify: Notify
   onBusy: (value: boolean) => void
@@ -183,15 +185,19 @@ export function ChatRunner({
   useEffect(() => {
     if (!lock.current && !busy) setMessages(stored.slice(-visibleLimit).map(toChatMessage))
   }, [stored, busy, setMessages, visibleLimit])
-  const insertDraft = useEffectEvent((text: string) => {
+  const insertDraft = useEffectEvent(async (text: string) => {
     const value = input ? `${input}\n${text}` : text
     setInput(value)
-    void db.archives.update(archive.id, { draft: value })
+    try {
+      await db.archives.update(archive.id, { draft: value })
+    } catch (error) {
+      notify(friendlyError(error), true)
+    }
     onInserted()
-    inputRef.current?.focus()
+    inputRef.current?.focus({ preventScroll: true })
   })
   useEffect(() => {
-    if (insert) insertDraft(insert)
+    if (insert) void insertDraft(insert)
   }, [insert])
   const draft = (text: string) => {
     setInput(text)
@@ -515,6 +521,11 @@ export function ChatRunner({
                     id={`message-${message.id}`}
                     tabIndex={-1}
                     aria-label={message.role === 'user' ? '你的消息' : '宴雎的回复'}
+                    className={
+                      message.role === 'user'
+                        ? 'animate-message'
+                        : 'animate-message border-l-(length:--border-width) border-primary-border pl-4'
+                    }
                   >
                     <Message align={message.role === 'user' ? 'end' : 'start'}>
                       <MessageContent>
@@ -703,9 +714,12 @@ export function ChatRunner({
                 <div
                   role="status"
                   aria-live="polite"
-                  className="flex items-center gap-2 text-ui text-primary"
+                  className="panel-glass edge-accent flex items-center gap-3 border-(length:--border-width) border-primary-border p-4 text-ui text-primary"
                 >
-                  <LoaderCircle className="size-4 animate-spin" />
+                  <span
+                    aria-hidden="true"
+                    className="size-3 rotate-45 border-(length:--border-width) border-primary animate-spin"
+                  />
                   {forumRunning
                     ? '正在生成论坛回复…'
                     : compressing
@@ -718,10 +732,11 @@ export function ChatRunner({
             </MessageScrollerContent>
           </MessageScrollerViewport>
         </MessageScroller>
-        <footer className="surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-2 sm:px-6 sm:pt-3">
+        <footer className="composer-surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-2 sm:px-6 sm:pt-3">
           <div className="mx-auto flex reading-width flex-col gap-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1">
+            <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                {channelControl}
                 <Select
                   value={mode}
                   onValueChange={(v) => setMode(v as RequestKind)}
@@ -737,11 +752,9 @@ export function ChatRunner({
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-                <IconButton
-                  className="hidden sm:inline-flex"
-                  label="打开剧情工作台"
-                  onClick={onStudio}
-                >
+              </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                <IconButton label="打开剧情工作台" onClick={onStudio}>
                   <BookOpen />
                 </IconButton>
                 <IconButton label="世界、指令与音乐" onClick={onWorld}>
@@ -750,22 +763,22 @@ export function ChatRunner({
                 <IconButton label="清空当前聊天" disabled={busy} onClick={() => setClear(true)}>
                   <Trash2 />
                 </IconButton>
+                {budget && (
+                  <div className="ml-auto flex items-center gap-1 text-xs text-muted-foreground sm:ml-2">
+                    <Button
+                      variant="ghost"
+                      onClick={() => setContextOpen(true)}
+                      aria-label="查看上下文详情"
+                    >
+                      <span className="hidden sm:inline">上下文约</span>{' '}
+                      {Math.round(budget.percent * 100)}%
+                    </Button>
+                    <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
+                      <ArrowDownToLine />
+                    </IconButton>
+                  </div>
+                )}
               </div>
-              {budget && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Button
-                    variant="ghost"
-                    onClick={() => setContextOpen(true)}
-                    aria-label="查看上下文详情"
-                  >
-                    <span className="hidden sm:inline">上下文约</span>{' '}
-                    {Math.round(budget.percent * 100)}%
-                  </Button>
-                  <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
-                    <ArrowDownToLine />
-                  </IconButton>
-                </div>
-              )}
             </div>
             <form
               onSubmit={(e) => {

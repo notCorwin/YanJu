@@ -1,9 +1,21 @@
+let publishedRoute: string | undefined
+
 export const subscribeRoute = (notify: () => void) => {
-  window.addEventListener('hashchange', notify)
-  return () => window.removeEventListener('hashchange', notify)
+  const publish = () => {
+    publishedRoute = window.location.hash
+    notify()
+  }
+  window.addEventListener('hashchange', publish)
+  return () => window.removeEventListener('hashchange', publish)
 }
 
-export const currentRoute = () => window.location.hash
+// Publish after navigation guards. Unrelated renders must not consume a pending
+// browser location change before an editor can keep its unsaved draft on screen.
+export const currentRoute = () => (publishedRoute ??= window.location.hash)
+
+export const navigateRoute = (path: string) => {
+  window.location.hash = path
+}
 
 export const archiveIdFromRoute = (route: string) => {
   if (!route.startsWith('#/chat/')) return ''

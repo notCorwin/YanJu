@@ -1,8 +1,13 @@
-import { archiveIdFromRoute, currentRoute, subscribeRoute } from '@/app/use-hash-route'
-import { Eyebrow, IconButton } from '@/components/shared'
+import {
+  archiveIdFromRoute,
+  currentRoute,
+  navigateRoute,
+  subscribeRoute,
+} from '@/app/use-hash-route'
+import { NarrativeCover } from '@/components/narrative-cover'
+import { IconButton } from '@/components/shared'
 import { Studio } from '@/components/studio'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Empty,
   EmptyContent,
@@ -35,12 +40,10 @@ import { channelIsReady } from '@/lib/provider'
 import type { RequestKind } from '@/lib/schemas'
 import { db } from '@/lib/storage'
 import type { TaskOutput } from '@/lib/tasks'
+import { cn } from '@/lib/utils'
 import { useBackground } from '@/lib/use-background'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
-  ArrowRight,
-  BookOpen,
-  Check,
   FolderOpen,
   Home,
   NotebookTabs,
@@ -62,8 +65,9 @@ export function Workspace() {
   const personas = useLiveQuery(() => db.personas.toArray()) ?? []
   const route = useSyncExternalStore(subscribeRoute, currentRoute)
   const [dialog, setDialog] = useState<
-    'channels' | 'personas' | 'appearance' | 'archives' | 'world' | 'studio' | null
+    'channels' | 'personas' | 'appearance' | 'archives' | 'studio' | null
   >(null)
+  const [worldOpen, setWorldOpen] = useState(false)
   const [chatBusy, setBusy] = useState(false)
   const [studioBusy, setStudioBusy] = useState(false)
   const busy = chatBusy || studioBusy
@@ -104,13 +108,19 @@ export function Workspace() {
   const channel = channels.find((c) => c.id === settings?.activeChannelId)
   const persona = personas.find((p) => p.id === settings?.activePersonaId)
   const chatting = route.startsWith('#/chat')
+  const setup =
+    route === '#/setup/channels' ? 'channels' : route === '#/setup/persona' ? 'persona' : null
   const params = new URLSearchParams(route.split('?')[1] ?? '')
   const studioTab = params.get('studio') ?? undefined
   const sourceMessage = params.get('message') ?? undefined
   const sourceBlock = params.get('block') ?? undefined
   useEffect(() => {
-    document.title = chatting ? `${archive?.name || '存档未找到'} · 宴雎` : '宴雎'
-  }, [chatting, archive?.name])
+    document.title = chatting
+      ? `${archive?.name || '存档未找到'} · 宴雎`
+      : setup
+        ? `${setup === 'channels' ? '连接渠道' : '选择人设'} · 宴雎`
+        : '宴雎'
+  }, [chatting, archive?.name, setup])
   useEffect(
     () => () => {
       if (toastTimer.current) clearTimeout(toastTimer.current)
@@ -123,11 +133,15 @@ export function Workspace() {
   }, [routeId, archive, settings?.activeArchiveId])
   const selectArchive = (id: string) => {
     void db.settings.update('app', { activeArchiveId: id })
-    window.location.hash = `/chat/${encodeURIComponent(id)}`
+    navigateRoute(`/chat/${encodeURIComponent(id)}`)
   }
-  const enter = () => {
+  const continueArchive = () => {
     if (archive) selectArchive(archive.id)
     else setDialog('archives')
+  }
+  const enter = () => {
+    if (!channels.length) navigateRoute('/setup/channels')
+    else continueArchive()
   }
   const sendFromStudio = (text: string, kind: RequestKind, expectedRevision?: number) => {
     if (!archive || pendingSend.current) return Promise.resolve(false)
@@ -150,39 +164,76 @@ export function Workspace() {
   }
   const sourceFromStudio = (source: SourceRef) => {
     if (source.messageId === 'setting') {
-      setDialog('world')
+      closeStudio()
+      setWorldOpen(true)
       return
     }
     setDialog(null)
     if (archive)
-      window.location.hash = `/chat/${encodeURIComponent(archive.id)}?message=${encodeURIComponent(source.messageId)}${source.blockId ? `&block=${encodeURIComponent(source.blockId)}` : ''}`
+      navigateRoute(
+        `/chat/${encodeURIComponent(archive.id)}?message=${encodeURIComponent(source.messageId)}${source.blockId ? `&block=${encodeURIComponent(source.blockId)}` : ''}`,
+      )
   }
   const commandFromStudio = (value: TaskOutput<'command'>) => {
     if (value.action === 'music') {
       if (value.targetId) requestTrack(value.targetId)
-      setDialog('world')
+      closeStudio()
+      setWorldOpen(true)
     } else if (value.action === 'archive') {
       if (value.targetId) {
         selectArchive(value.targetId)
         setDialog(null)
       } else setDialog('archives')
     } else if (value.action === 'mode' && value.mode) {
-      enter()
+      continueArchive()
       setExternalMode(value.mode)
       setDialog(null)
-    } else if (value.action === 'world') setDialog('world')
-    else if (archive && ['character', 'phone'].includes(value.action)) {
+    } else if (value.action === 'world') {
+      closeStudio()
+      setWorldOpen(true)
+    } else if (archive && ['character', 'phone'].includes(value.action)) {
       setDialog(null)
-      window.location.hash = `/chat/${encodeURIComponent(archive.id)}?studio=${value.action === 'phone' ? 'interactions' : 'archives'}&${value.action === 'phone' ? 'contact' : 'entity'}=${encodeURIComponent(value.targetId ?? '')}`
+      navigateRoute(
+        `/chat/${encodeURIComponent(archive.id)}?studio=${value.action === 'phone' ? 'interactions' : 'archives'}&${value.action === 'phone' ? 'contact' : 'entity'}=${encodeURIComponent(value.targetId ?? '')}`,
+      )
     }
   }
   const closeStudio = () => {
     setDialog(null)
-    if (studioTab && archive) window.location.hash = `/chat/${encodeURIComponent(archive.id)}`
+    if (studioTab && archive) navigateRoute(`/chat/${encodeURIComponent(archive.id)}`)
   }
+  const channelControl = channels.some(channelIsReady) ? (
+    <Select
+      value={channel?.id || ''}
+      onValueChange={(value) => void db.settings.update('app', { activeChannelId: value })}
+      disabled={busy}
+    >
+      <SelectTrigger aria-label="当前渠道" className="max-w-40 shrink-0 sm:max-w-64">
+        <SelectValue placeholder="选择已测试渠道" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          {channels.map((c) => (
+            <SelectItem key={c.id} value={c.id} disabled={!channelIsReady(c)}>
+              {c.name}
+              {channelIsReady(c) ? '' : ' · 需测试'}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  ) : (
+    <Button variant="outline" disabled={busy} onClick={() => setDialog('channels')}>
+      配置渠道
+    </Button>
+  )
+
   if (!settings) return null
   return (
-    <div className="relative isolate flex chat-height flex-col overflow-hidden bg-background">
+    <div
+      data-page={chatting ? 'chat' : setup ? 'setup' : 'home'}
+      className="relative isolate flex chat-height flex-col overflow-hidden bg-background atmosphere"
+    >
       <a
         href="#main-content"
         className="skip-link"
@@ -194,115 +245,65 @@ export function Workspace() {
         跳到主要内容
       </a>
       <div className="pointer-events-none fixed inset-0 backdrop-scene" aria-hidden="true" />
-      <header className="surface relative z-10 flex shrink-0 items-center justify-between gap-2 border-b-(length:--border-width) px-3 py-2 sm:px-6">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          {chatting && (
+      <div className="pointer-events-none fixed inset-0 scanlines" aria-hidden="true" />
+      {chatting && (
+        <header className="surface relative z-10 flex shrink-0 items-center justify-between gap-2 border-b-(length:--border-width) px-3 py-2 sm:px-6">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <IconButton
               label="返回首页"
               onClick={() => {
-                if (!busy) window.location.hash = '/'
+                if (!busy) navigateRoute('/')
               }}
               disabled={busy}
             >
               <Home />
             </IconButton>
-          )}
-          <div className="min-w-0">
-            <h1 className="text-lg text-primary">宴雎</h1>
-            <p className="hidden truncate text-xs text-muted-foreground sm:block">
-              {chatting ? archive?.name || '存档未找到' : 'Abyss & Desire'}
-            </p>
+            <div className="min-w-0">
+              <h1 className="truncate text-lg tracking-editorial text-primary">宴雎</h1>
+              <p className="truncate text-xs text-muted-foreground">
+                {archive?.name || '存档未找到'}
+              </p>
+            </div>
           </div>
-        </div>
-        <nav className="flex shrink-0 items-center gap-1" aria-label="应用操作">
-          <IconButton
-            className="hidden sm:inline-flex"
-            label="剧情工作台"
-            onClick={() => setDialog('studio')}
-            disabled={!archive}
-          >
-            <NotebookTabs />
-          </IconButton>
-          <IconButton label="渠道管理" onClick={() => setDialog('channels')}>
-            <SlidersHorizontal />
-          </IconButton>
-          <IconButton label="人设管理" onClick={() => setDialog('personas')}>
-            <VenetianMask />
-          </IconButton>
-          <IconButton label="存档管理" onClick={() => setDialog('archives')}>
-            <FolderOpen />
-          </IconButton>
-          <IconButton label="外观设置" onClick={() => setDialog('appearance')}>
-            <Settings2 />
-          </IconButton>
-          {!chatting && (
-            <IconButton label="世界与音乐" onClick={() => setDialog('world')}>
-              <BookOpen />
+          <nav className="flex shrink-0 items-center gap-1" aria-label="应用操作">
+            <IconButton
+              className="hidden sm:inline-flex"
+              label="剧情工作台"
+              onClick={() => setDialog('studio')}
+              disabled={!archive}
+            >
+              <NotebookTabs />
             </IconButton>
-          )}
-        </nav>
-      </header>
+            <IconButton label="渠道管理" onClick={() => setDialog('channels')}>
+              <SlidersHorizontal />
+            </IconButton>
+            <IconButton label="人设管理" onClick={() => setDialog('personas')}>
+              <VenetianMask />
+            </IconButton>
+            <IconButton label="存档管理" onClick={() => setDialog('archives')}>
+              <FolderOpen />
+            </IconButton>
+            <IconButton label="外观设置" onClick={() => setDialog('appearance')}>
+              <Settings2 />
+            </IconButton>
+          </nav>
+        </header>
+      )}
       {chatting && archive ? (
         <main
           id="main-content"
           tabIndex={-1}
           className="relative z-10 flex min-h-0 flex-1 flex-col"
         >
-          <div className="surface flex min-w-0 items-center justify-between gap-2 border-b-(length:--border-width) px-4 py-2 sm:px-6">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <p className="truncate text-sm text-muted-foreground sm:hidden">{archive.name}</p>
-              <Eyebrow className="hidden truncate sm:inline">
-                宴雎 / {persona?.name || '沈辞玉'}
-              </Eyebrow>
-            </div>
-            {channels.some(channelIsReady) ? (
-              <Select
-                value={channel?.id || ''}
-                onValueChange={(value) =>
-                  void db.settings.update('app', { activeChannelId: value })
-                }
-                disabled={busy}
-              >
-                <SelectTrigger aria-label="当前渠道" className="max-w-40 shrink-0 sm:max-w-64">
-                  <SelectValue placeholder="选择已测试渠道" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {channels.map((c) => (
-                      <SelectItem key={c.id} value={c.id} disabled={!channelIsReady(c)}>
-                        {c.name}
-                        {channelIsReady(c) ? '' : ' · 需测试'}
-                      </SelectItem>
-                    ))}
-                    {!channels.length && (
-                      <SelectItem value="no-channel" disabled>
-                        请先添加渠道
-                      </SelectItem>
-                    )}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            ) : (
-              <Button variant="outline" disabled={busy} onClick={() => setDialog('channels')}>
-                配置渠道
-              </Button>
-            )}
-            <IconButton
-              className="sm:hidden"
-              label="打开剧情工作台"
-              onClick={() => setDialog('studio')}
-            >
-              <NotebookTabs />
-            </IconButton>
-          </div>
           <ChatSession
             key={`${archive.id}:${restoreEpoch}`}
             archive={archive}
             channel={channel}
+            channelControl={channelControl}
             persona={persona}
             notify={notify}
             onBusy={onBusy}
-            onWorld={() => setDialog('world')}
+            onWorld={() => setWorldOpen(true)}
             onChannels={() => setDialog('channels')}
             insert={insert}
             onInserted={onInserted}
@@ -338,7 +339,7 @@ export function Workspace() {
               <Button
                 variant="outline"
                 onClick={() => {
-                  window.location.hash = '/'
+                  navigateRoute('/')
                 }}
               >
                 返回首页
@@ -346,75 +347,71 @@ export function Workspace() {
             </EmptyContent>
           </Empty>
         </main>
+      ) : setup ? (
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="relative z-10 flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-6 sm:py-6"
+        >
+          {setup === 'channels' ? (
+            <ChannelsDialog
+              page
+              open
+              onClose={() => {
+                navigateRoute('/')
+              }}
+              onContinue={() => {
+                navigateRoute('/setup/persona')
+              }}
+              channels={channels}
+              settings={settings}
+              notify={notify}
+              disabled={busy}
+            />
+          ) : (
+            <PersonasDialog
+              page
+              open
+              onClose={() => {
+                navigateRoute('/')
+              }}
+              onContinue={continueArchive}
+              personas={personas}
+              settings={settings}
+              notify={notify}
+              disabled={busy}
+            />
+          )}
+        </main>
       ) : (
         <main
           id="main-content"
           tabIndex={-1}
-          className="relative z-10 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 py-10 sm:py-16"
+          className="relative z-10 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-16 pb-6 sm:px-6 sm:py-8"
         >
-          <div className="mx-auto flex w-full reading-width flex-col items-center gap-6 text-center">
-            <Eyebrow>A PRIVATE NARRATIVE SPACE</Eyebrow>
-            <div className="flex flex-col items-center gap-1">
-              <span
-                aria-hidden="true"
-                className="font-serif text-hero leading-heading text-primary"
-              >
-                雎
-              </span>
-              <h2 className="font-serif text-xl italic text-primary">Abyss & Desire</h2>
-            </div>
-            <p className="text-chat text-muted-foreground">恨海情天。让故事在此刻继续。</p>
-            <div className="flex flex-wrap justify-center gap-3">
-              <Button size="lg" onClick={enter}>
-                进入聊天
-                <ArrowRight />
+          <div className="my-auto flex w-full flex-col items-center gap-4 py-2 sm:gap-6">
+            <NarrativeCover onEnter={enter} />
+            <nav
+              aria-label="应用操作"
+              className="flex max-w-full flex-wrap justify-center gap-1 sm:gap-3"
+            >
+              <Button variant="ghost" onClick={() => setDialog('channels')}>
+                渠道管理
               </Button>
-              <Button variant="outline" size="lg" onClick={() => setDialog('archives')}>
-                打开存档
+              <Button variant="ghost" onClick={() => setDialog('personas')}>
+                人设管理
               </Button>
-            </div>
-            <div className="mt-8 grid w-full gap-4 text-left sm:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <Eyebrow>01 / CHANNEL</Eyebrow>
-                  <CardTitle>连接你的模型</CardTitle>
-                  <CardDescription>支持多渠道与严格结构化输出。</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Button
-                    variant="outline"
-                    className="max-w-full"
-                    onClick={() => setDialog('channels')}
-                  >
-                    {channel && channelIsReady(channel) ? (
-                      <>
-                        <Check />
-                        <span className="truncate">{channel.name}</span>
-                      </>
-                    ) : (
-                      '配置渠道'
-                    )}
-                  </Button>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <Eyebrow>02 / PERSONA</Eyebrow>
-                  <CardTitle>在故事里，成为自己</CardTitle>
-                  <CardDescription>姓名、身份与规则，每轮生效。</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Button
-                    variant="outline"
-                    className="max-w-full"
-                    onClick={() => setDialog('personas')}
-                  >
-                    <span className="truncate">{persona?.name || '创建人设'}</span>
-                  </Button>
-                </CardContent>
-              </Card>
-            </div>
-            <p className="text-xs text-muted-foreground">
+              <Button variant="ghost" onClick={() => setDialog('archives')}>
+                存档管理
+              </Button>
+              <Button variant="ghost" onClick={() => setDialog('appearance')}>
+                外观设置
+              </Button>
+              <Button variant="ghost" onClick={() => setWorldOpen(true)}>
+                世界与音乐
+              </Button>
+            </nav>
+            <p className="text-center text-xs text-muted-foreground">
               聊天、人设与配置保存在当前浏览器 · 可导出完整存档
             </p>
           </div>
@@ -470,12 +467,13 @@ export function Workspace() {
         />
       )}
       <WorldPlayer
-        open={dialog === 'world'}
-        onClose={() => setDialog(null)}
+        open={worldOpen}
+        onOpen={() => setWorldOpen(true)}
+        onClose={() => setWorldOpen(false)}
         notify={notify}
         onInsert={(text) => {
           setInsert(text)
-          enter()
+          continueArchive()
         }}
       />
       {createPortal(
@@ -489,10 +487,13 @@ export function Workspace() {
             <div
               data-global-toast
               role={toast.error ? 'alert' : 'status'}
-              className="flex items-start gap-3 rounded-lg border-(length:--border-width) bg-popover p-4 shadow-lg"
+              className="flex animate-message items-start gap-3 rounded-lg border-(length:--border-width) bg-popover popover-glass edge-accent p-4 shadow-lg"
             >
               <p
-                className={`min-w-0 flex-1 wrap-break-word text-sm ${toast.error ? 'text-destructive' : 'text-foreground'}`}
+                className={cn(
+                  'min-w-0 flex-1 wrap-break-word text-sm',
+                  toast.error ? 'text-destructive' : 'text-foreground',
+                )}
               >
                 {toast.text}
               </p>
