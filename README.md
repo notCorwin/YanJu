@@ -28,7 +28,7 @@
 
 ### 渠道配置
 
-Provider、模型、API 地址、上下文容量与温度能力来自 Models.dev。目录只收录该 Provider 明确标记 `structured_output: true`、支持文本输入与输出的模型，不提供自定义 Provider、模型或地址。可手动刷新目录；网络不可用时可使用上次成功加载的浏览器缓存。
+Provider、模型、API 地址、上下文容量与温度能力来自 Models.dev。目录只收录该 Provider 明确标记 `structured_output: true`、支持文本输入与输出的模型，不提供自定义 Provider、模型或地址。可手动刷新目录；网络不可用时可使用上次成功加载的浏览器缓存。测试结果绑定当时的目录请求路由；SDK、API 地址或认证路由变更后须重新测试，正式请求不会沿用旧路由的测试结果。
 
 OpenAI SDK 渠道支持自动探测、Responses 和 Chat Completions；自动探测优先 Responses。其他 SDK 使用服务商原生协议。正式请求使用测试通过的协议，结构化输出失败不会降级为 JSON Mode。Responses 请求设置 `store: false`，应用在本地管理上下文。
 

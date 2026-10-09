@@ -436,12 +436,17 @@ export function ChannelEditor({
             </div>
           )}
 
-          {draft.capability?.ok && (
+          {draft.capability && channelIsReady(value) && (
             <p className="mt-3 text-sm text-success">
               测试通过 · {draft.capability.protocols ? '完整协议' : '连接、结构化与流式'} ·{' '}
               {formatDate(draft.capability.testedAt)}
               {' · 当前协议：'}
               {draft.capability.protocol && protocolLabels[draft.capability.protocol]}
+            </p>
+          )}
+          {draft.capability?.ok && !channelIsReady(value) && (
+            <p className="mt-3 text-sm text-muted-foreground">
+              模型目录或渠道配置已变更，请重新测试渠道。
             </p>
           )}
           {draft.capability?.checks && (

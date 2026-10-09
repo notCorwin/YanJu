@@ -1,3 +1,4 @@
+import { catalogFingerprintFixture } from '../fixtures'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { channelFingerprint } from '../../src/lib/provider'
@@ -66,6 +67,7 @@ beforeEach(async () => {
   await db.channels.update('channel-1', {
     capability: {
       fingerprint: channelFingerprint(channelFixture),
+      catalogFingerprint: catalogFingerprintFixture,
       ok: true,
       testedAt: 0,
       protocol: 'chat-completions',
@@ -275,6 +277,7 @@ describe('辅助任务完整链路', () => {
       ...channel,
       capability: {
         fingerprint: channelFingerprint(channel),
+        catalogFingerprint: catalogFingerprintFixture,
         ok: true,
         testedAt: 0,
         protocol: 'responses',

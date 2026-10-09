@@ -1,4 +1,5 @@
 import type { ApiProtocol, Channel, ChannelCapability } from './types'
+import { catalogRouteFingerprint, currentModelCatalog } from './model-catalog'
 
 export const protocolLabels: Record<ApiProtocol, string> = {
   native: 'Provider SDK',
@@ -31,10 +32,22 @@ export function channelFingerprint(channel: Channel) {
 export function channelIsReady(channel: Channel) {
   const capability = channel.capability
   if (!capability?.ok || capability.fingerprint !== channelFingerprint(channel)) return false
+  if (!channelCatalogMatches(channel)) return false
   const protocol = capability.protocol
   if (!protocol || (channel.apiMode !== 'auto' && channel.apiMode !== protocol)) return false
   const checks = capability.checks?.[protocol]
   return checks?.nonStreaming === 'passed' && checks.streaming === 'passed'
+}
+
+export function channelCatalogMatches(channel: Channel, catalog = currentModelCatalog()) {
+  if (!channel.capability?.catalogFingerprint) return false
+  // On startup the saved proof can be displayed, but requests recheck after loading the catalog.
+  if (!catalog) return true
+  try {
+    return channel.capability.catalogFingerprint === catalogRouteFingerprint(channel, catalog)
+  } catch {
+    return false
+  }
 }
 
 /** Untested channels use the preferred protocol only for estimating their budget. */
@@ -48,6 +61,9 @@ export function withCapability(channel: Channel, capability: ChannelCapability):
     ...channel,
     capability,
     calibration:
-      channel.capability?.protocol === capability.protocol ? channel.calibration : undefined,
+      channel.capability?.protocol === capability.protocol &&
+      channel.capability?.catalogFingerprint === capability.catalogFingerprint
+        ? channel.calibration
+        : undefined,
   }
 }

@@ -1,3 +1,5 @@
+import { catalogRouteFingerprint, parseModelCatalog } from '../src/lib/model-catalog'
+import { catalogFixture } from './model-catalog-fixture'
 import type { NarrativeReply, ForumReply, CompressionResult } from '../src/lib/schemas'
 import { emptyEffects } from '../src/lib/domain-schema'
 import type { Channel, StoredMessage } from '../src/lib/types'
@@ -149,6 +151,10 @@ export const channelFixture: Channel = {
   requestTimeoutMs: 300000,
   createdAt: 1,
 }
+export const catalogFingerprintFixture = catalogRouteFingerprint(
+  channelFixture,
+  parseModelCatalog(catalogFixture()),
+)
 export const messageFixture = (
   id: string,
   role: 'user' | 'assistant',

@@ -1,5 +1,5 @@
 import { createProviderModel } from './provider-model'
-import { loadModelCatalog } from './model-catalog'
+import { catalogRouteFingerprint, loadModelCatalog, type ModelCatalog } from './model-catalog'
 import { APICallError, wrapLanguageModel, type DeepPartial, type ModelMessage } from 'ai'
 import type { Reply, RequestKind, NarrativeReply, ForumReply } from './schemas'
 import type {
@@ -10,7 +10,12 @@ import type {
   ProtocolCapability,
   Usage,
 } from './types'
-import { channelFingerprint, channelIsReady, protocolLabels } from './channels'
+import {
+  channelCatalogMatches,
+  channelFingerprint,
+  channelIsReady,
+  protocolLabels,
+} from './channels'
 import { responsesLifecycle, ResponseLifecycleError } from './responses'
 export { channelFingerprint, channelIsReady } from './channels'
 import { compressionInstructions } from './prompts'
@@ -56,20 +61,26 @@ export async function channelRequest(
   channel: Channel,
   fetcher?: typeof fetch,
   protocol?: ApiProtocol,
+  signal?: AbortSignal,
+  probeCatalog?: ModelCatalog,
 ) {
   validateChannel(channel)
   if (!protocol && channel.apiMode === 'auto' && !channelIsReady(channel))
     throw new Error('自动模式尚未选定可用协议，请先重新测试渠道。')
   const selected =
     protocol ?? (channel.apiMode === 'auto' ? channel.capability!.protocol! : channel.apiMode)
+  const catalog = probeCatalog ?? (await loadModelCatalog(false, signal))
+  if (!probeCatalog && channel.capability && !channelCatalogMatches(channel, catalog))
+    throw new Error('模型目录中的渠道路由已变更，请重新测试渠道。')
   const model = await createProviderModel(
-    await loadModelCatalog(),
+    catalog,
     channel.providerId,
     channel.model,
     channel.apiKey,
     fetcher,
     selected,
   )
+  signal?.throwIfAborted()
   return {
     model: model.provider.endsWith('.responses')
       ? wrapLanguageModel({ model, middleware: responsesLifecycle })
@@ -165,6 +176,7 @@ export async function testChannel(
   const checks: ChannelCapability['checks'] = {}
   let selected: ApiProtocol | undefined
   let firstTokenMs: number | undefined
+  let catalog: ModelCatalog | undefined
   const startedAt = Date.now()
   for (const protocol of protocols) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
@@ -177,9 +189,12 @@ export async function testChannel(
       )
       try {
         await timedProbe(async (abortSignal) => {
+          // Keep both streaming stages and all protocol probes on the same catalog route.
+          catalog ??= await loadModelCatalog(false, abortSignal)
           const result = await runStructuredTask({
             kind: 'capability',
             channel,
+            catalog,
             protocol,
             streaming,
             allowCorrection: false,
@@ -203,8 +218,9 @@ export async function testChannel(
       selected = protocol
   }
   if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-  return {
+  const capability: ChannelCapability = {
     fingerprint: channelFingerprint(channel),
+    catalogFingerprint: catalog ? catalogRouteFingerprint(channel, catalog) : undefined,
     testedAt: Date.now(),
     ok: selected !== undefined,
     protocol: selected,
@@ -215,6 +231,11 @@ export async function testChannel(
       ? undefined
       : protocols.map((p) => `${protocolLabels[p]}：${checks[p]?.error}`).join('；'),
   }
+  if (capability.ok && !channelCatalogMatches({ ...channel, capability })) {
+    capability.ok = false
+    capability.error = '模型目录中的渠道路由在测试期间已变更，请重新测试渠道。'
+  }
+  return capability
 }
 
 export async function summarize(

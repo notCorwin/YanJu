@@ -1,3 +1,4 @@
+import { catalogFingerprintFixture } from '../fixtures'
 import { webcrypto } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OPFS_SAVE_FILE, OpfsPersistence } from '../../src/lib/opfs'
@@ -25,6 +26,7 @@ const save: SaveFile = {
       ...channelFixture,
       capability: {
         fingerprint: channelFingerprint(channelFixture),
+        catalogFingerprint: catalogFingerprintFixture,
         ok: true,
         testedAt: 1,
         protocol: 'chat-completions',
@@ -281,6 +283,7 @@ describe('OPFS 完整存档', () => {
             ...channel,
             capability: {
               fingerprint: channelFingerprint(channel),
+              catalogFingerprint: catalogFingerprintFixture,
               ok: true,
               testedAt: 1,
               protocol,

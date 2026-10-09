@@ -1760,3 +1760,48 @@ test('单条损坏的 v3 记录由局部恢复界面接住，编辑与导出仍�
   await expect(page.getByText('已经修复的开场', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '导出当前资料', exact: true })).toHaveCount(0)
 })
+
+test('模型目录等待中停止生成，目录稍后返回也不会发送渠道请求', async ({ page }) => {
+  const requests = await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  await page.reload()
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let catalogStarted = false
+  await page.route('https://models.dev/api.json', async (route) => {
+    catalogStarted = true
+    await held
+    await route.fulfill({ json: catalogFixture() })
+  })
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('等目录加载时停止。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect.poll(() => catalogStarted).toBe(true)
+  await page.getByRole('button', { name: '停止生成' }).click()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  expect(businessRequests(requests)).toHaveLength(0)
+  const catalogResponse = page.waitForResponse('https://models.dev/api.json')
+  release()
+  await catalogResponse
+  await expectArchiveAvailable(page)
+  expect(businessRequests(requests)).toHaveLength(0)
+})
+
+test('刷新模型目录改变 API 后立即撤销已测试渠道的可用状态', async ({ page }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await expect(page.getByText(/测试通过 ·/)).toBeVisible()
+  const catalog = catalogFixture()
+  catalog.mock.api = 'https://new-catalog.example/v2'
+  await page.route('https://models.dev/api.json', (route) => route.fulfill({ json: catalog }))
+  await page.getByRole('button', { name: '刷新模型目录', exact: true }).click()
+  await expect(page.getByText(/测试通过 ·/)).toHaveCount(0)
+  await expect(page.getByText('模型目录或渠道配置已变更，请重新测试渠道。')).toBeVisible()
+  await expect(page.getByRole('button', { name: '使用此渠道', exact: true })).toBeDisabled()
+  await expect(
+    page.getByRole('navigation', { name: '渠道列表' }).locator('.lucide-check'),
+  ).toHaveCount(0)
+})

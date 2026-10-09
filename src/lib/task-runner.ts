@@ -1,5 +1,6 @@
 import { Output, generateText, streamText, type DeepPartial, type ModelMessage } from 'ai'
 import { z } from 'zod'
+import type { ModelCatalog } from './model-catalog'
 import { estimatedProtocol } from './channels'
 import { estimateTokens, serializeRequest } from './context'
 import { channelRequest, friendlyError } from './provider'
@@ -11,6 +12,7 @@ import type { ApiProtocol, Channel, RequestDiagnostics, RequestRecord, Usage } f
 
 export interface StructuredOptions<K extends TaskKind> {
   kind: K
+  catalog?: ModelCatalog
   channel: Channel
   archiveId?: string
   ownerId?: string
@@ -137,9 +139,15 @@ export async function runStructuredTask<K extends TaskKind>(
     }
     try {
       // Some SDKs await the first event inside doStream, before AI SDK's firstChunkMs timer starts.
-      if (streaming) resetWait()
+      resetWait()
       const request = {
-        ...(await channelRequest(channel, trace.fetch, protocol)),
+        ...(await channelRequest(
+          channel,
+          trace.fetch,
+          protocol,
+          requestSignal,
+          kind === 'capability' ? options.catalog : undefined,
+        )),
         instructions,
         allowSystemInMessages: true,
         messages: requestMessages,

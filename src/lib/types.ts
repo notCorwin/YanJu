@@ -13,6 +13,7 @@ export interface ProtocolCapability {
 }
 export interface ChannelCapability {
   fingerprint: string
+  catalogFingerprint?: string
   testedAt: number
   ok: boolean
   protocol?: ApiProtocol

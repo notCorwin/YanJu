@@ -1,3 +1,4 @@
+import { catalogFingerprintFixture } from '../fixtures'
 import { describe, expect, it } from 'vitest'
 import { channelFingerprint, channelIsReady } from '../../src/lib/channels'
 import { emptyEffects } from '../../src/lib/domain-schema'
@@ -51,6 +52,7 @@ const save = (messages = [messageFixture('m-0', 'user', '开始阅读', 0)]) => 
 
 const testedCapability: ChannelCapability = {
   fingerprint: channelFingerprint(channelFixture),
+  catalogFingerprint: catalogFingerprintFixture,
   testedAt: 2,
   ok: true,
   protocol: 'chat-completions',

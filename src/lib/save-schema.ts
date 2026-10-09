@@ -21,6 +21,7 @@ const protocolCapabilitySchema = z.object({
 })
 export const capabilitySchema = z.object({
   fingerprint: z.string(),
+  catalogFingerprint: z.string().optional(),
   testedAt: timestamp,
   ok: z.boolean(),
   error: z.string().optional(),

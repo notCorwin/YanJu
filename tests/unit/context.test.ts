@@ -1,3 +1,4 @@
+import { catalogFingerprintFixture } from '../fixtures'
 import { describe, it, expect, vi } from 'vitest'
 import { calibrate, compactContext, contextBudget, shouldCompact } from '../../src/lib/context'
 import { channelFingerprint } from '../../src/lib/channels'
@@ -31,6 +32,7 @@ describe('上下文预算与压缩事务', () => {
       ...channel,
       capability: {
         fingerprint: channelFingerprint(channel),
+        catalogFingerprint: catalogFingerprintFixture,
         testedAt: 1,
         ok: true,
         protocol: 'responses',

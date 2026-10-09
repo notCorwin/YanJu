@@ -79,6 +79,24 @@ export function catalogSelection(
   }
 }
 
+/** Only catalog fields used by the SDK request builder belong to the tested route. */
+export function catalogRouteFingerprint(
+  channel: Pick<Channel, 'providerId' | 'model'>,
+  catalog: ModelCatalog,
+) {
+  const { provider, model, sdk, api } = catalogSelection(channel, catalog)
+  return JSON.stringify([
+    provider.id,
+    provider.npm,
+    provider.env,
+    model.id,
+    sdk,
+    api,
+    model.provider?.shape,
+    model.limit.output,
+  ])
+}
+
 export function selectCatalogModel(
   channel: Channel,
   provider: CatalogProvider,
@@ -114,33 +132,96 @@ export function selectCatalogModel(
   }
 }
 
+/** Each caller can stop waiting without cancelling another caller's shared catalog load. */
+function waitForCatalog<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
+}
+
+/** Browser cache storage is best-effort and must never hold a request open. */
+async function cachedValue<T>(operation: () => Promise<T>): Promise<T | undefined> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1000)
+  try {
+    return await waitForCatalog(operation(), controller.signal)
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 let current: ModelCatalog | undefined
 let pending: Promise<ModelCatalog> | undefined
-export function loadModelCatalog(refresh = false): Promise<ModelCatalog> {
+const catalogListeners = new Set<() => void>()
+export function currentModelCatalog() {
+  return current
+}
+
+export function subscribeModelCatalog(listener: () => void) {
+  catalogListeners.add(listener)
+  return () => {
+    catalogListeners.delete(listener)
+  }
+}
+
+function publishCatalog(catalog: ModelCatalog) {
+  current = catalog
+  for (const listener of catalogListeners) listener()
+  return catalog
+}
+
+export function loadModelCatalog(refresh = false, signal?: AbortSignal): Promise<ModelCatalog> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
   if (!refresh && current) return Promise.resolve(current)
-  if (pending) return pending
+  if (pending) return waitForCatalog(pending, signal)
   pending = (async () => {
     const cache =
       typeof caches === 'undefined'
         ? undefined
-        : await caches.open('yanju-models-dev').catch(() => undefined)
+        : await cachedValue(() => caches.open('yanju-models-dev'))
     const url = MODELS_DEV_URL
     try {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`模型目录加载失败（HTTP ${response.status}）`)
-      const catalog = parseModelCatalog(await response.clone().json())
-      await cache?.put(MODELS_DEV_URL, response).catch(() => undefined)
-      current = catalog
-      return catalog
+      // Bound the shared network request even if every caller has stopped waiting.
+      const controller = new AbortController()
+      const timer = setTimeout(
+        () => controller.abort(new DOMException('模型目录加载超时', 'TimeoutError')),
+        15_000,
+      )
+      let response: Response
+      let catalog: ModelCatalog
+      try {
+        response = await waitForCatalog(
+          fetch(url, { signal: controller.signal }),
+          controller.signal,
+        )
+        if (!response.ok) throw new Error(`模型目录加载失败（HTTP ${response.status}）`)
+        catalog = parseModelCatalog(
+          await waitForCatalog(response.clone().json(), controller.signal),
+        )
+      } finally {
+        clearTimeout(timer)
+      }
+      if (cache) await cachedValue(() => cache.put(MODELS_DEV_URL, response))
+      return publishCatalog(catalog)
     } catch (error) {
       if (refresh) throw error
-      const cached = await cache?.match(MODELS_DEV_URL)
+      const cached =
+        cache &&
+        (await cachedValue(async () => {
+          const response = await cache.match(MODELS_DEV_URL)
+          return response ? parseModelCatalog(await response.json()) : undefined
+        }))
       if (!cached) throw error
-      current = parseModelCatalog(await cached.json())
-      return current
+      return publishCatalog(cached)
     }
   })().finally(() => {
     pending = undefined
   })
-  return pending
+  return waitForCatalog(pending, signal)
 }

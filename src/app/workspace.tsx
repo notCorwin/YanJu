@@ -29,6 +29,7 @@ import { WorldPlayer } from '@/features/world/world-player'
 import { applyAppearance } from '@/lib/appearance'
 import type { SourceRef } from '@/lib/domain-schema'
 import { requestTrack } from '@/lib/media'
+import { currentModelCatalog, subscribeModelCatalog } from '@/lib/model-catalog'
 import { type Notify } from '@/lib/notify'
 import { channelIsReady } from '@/lib/provider'
 import type { RequestKind } from '@/lib/schemas'
@@ -52,6 +53,8 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { createPortal } from 'react-dom'
 
 export function Workspace() {
+  // Refresh readiness badges and controls when the catalog changes the tested route.
+  useSyncExternalStore(subscribeModelCatalog, currentModelCatalog)
   const settings = useLiveQuery(() => db.settings.get('app'))
   const background = useBackground(settings?.bgImage)
   const archives = useLiveQuery(() => db.archives.orderBy('updatedAt').reverse().toArray()) ?? []

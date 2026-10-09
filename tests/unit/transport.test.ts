@@ -1,3 +1,4 @@
+import { catalogFingerprintFixture } from '../fixtures'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as context from '../../src/lib/context'
 import { modelMessages } from '../../src/lib/prompts'
@@ -46,6 +47,7 @@ beforeEach(async () => {
     ...channelFixture,
     capability: {
       fingerprint: channelFingerprint(channelFixture),
+      catalogFingerprint: catalogFingerprintFixture,
       ok: true,
       testedAt: 1,
       protocol: 'chat-completions',
