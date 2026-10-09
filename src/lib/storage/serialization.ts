@@ -54,7 +54,9 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     return {
       id: z.string().min(1).parse(c.id),
       name: z.string().parse(c.name),
+      connectionMode: z.enum(['catalog', 'custom']).parse(c.connectionMode),
       providerId: z.string().parse(c.providerId),
+      modelProviderId: z.string().parse(c.modelProviderId),
       sdk: z.string().parse(c.sdk),
       baseUrl: z.string().parse(c.baseUrl),
       apiKey: z.string().parse(c.apiKey),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   catalogSelection,
+  catalogRouteFingerprint,
   parseModelCatalog,
   selectCatalogModel,
 } from '../../src/lib/model-catalog'
@@ -18,6 +19,47 @@ describe('Models.dev Provider 与模型目录', () => {
       ).name,
     ).toBe('长篇创作')
   })
+  it('自定义端点跨服务商选模型，只更新模型资料，保留调用配置', () => {
+    const source = catalogFixture()
+    const catalog = parseModelCatalog({
+      azure: {
+        ...source.mock,
+        id: 'azure',
+        npm: '@ai-sdk/azure',
+        api: 'https://${AZURE_RESOURCE_NAME}.openai.azure.com/v1',
+        env: ['AZURE_RESOURCE_NAME', 'AZURE_API_KEY'],
+      },
+    })
+    const channel = {
+      ...channelFixture,
+      connectionMode: 'custom' as const,
+      providerId: '',
+      modelProviderId: 'mock',
+      sdk: '@ai-sdk/openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+      apiMode: 'chat-completions' as const,
+    }
+    const next = selectCatalogModel(channel, catalog.azure, catalog.azure.models['test-model'])
+    expect(next).toMatchObject({
+      connectionMode: 'custom',
+      providerId: '',
+      modelProviderId: 'azure',
+      sdk: channel.sdk,
+      baseUrl: channel.baseUrl,
+      apiMode: channel.apiMode,
+      contextWindow: 131072,
+    })
+    expect(catalogSelection(next, catalog)).toMatchObject({ sdk: channel.sdk, api: undefined })
+    const fingerprint = catalogRouteFingerprint(next, catalog)
+    catalog.azure.npm = '@ai-sdk/google-vertex'
+    catalog.azure.api = 'https://unrelated.example'
+    catalog.azure.env = ['GOOGLE_VERTEX_PROJECT']
+    catalog.azure.models['test-model'].provider = { shape: 'responses', npm: '@ai-sdk/openai' }
+    expect(catalogRouteFingerprint(next, catalog)).toBe(fingerprint)
+    catalog.azure.models['test-model'].limit.context = 262144
+    expect(catalogRouteFingerprint(next, catalog)).not.toBe(fingerprint)
+  })
+
   it('Models.dev 的 completions shape 固定使用 Chat Completions', () => {
     const provider = parseModelCatalog(catalogFixture()).mock
     const model = { ...provider.models['test-model'], provider: { shape: 'completions' } }

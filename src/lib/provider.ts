@@ -1,6 +1,11 @@
 import { createProviderModel, type ModelSettings } from './provider-model'
 import { isProviderSdk } from './provider-registry'
-import { catalogRouteFingerprint, loadModelCatalog, type ModelCatalog } from './model-catalog'
+import {
+  catalogRouteFingerprint,
+  loadModelCatalog,
+  modelCatalogProviderId,
+  type ModelCatalog,
+} from './model-catalog'
 import { APICallError, wrapLanguageModel, type DeepPartial, type ModelMessage } from 'ai'
 import type { Reply, RequestKind, NarrativeReply, ForumReply } from './schemas'
 import type {
@@ -28,10 +33,16 @@ import { runStructuredTask } from './task-runner'
 
 export function channelValidationErrors(channel: Channel) {
   const errors: Partial<Record<keyof Channel, string>> = {}
-  if (!channel.providerId || !channel.sdk) errors.providerId = '请选择 Models.dev 中的 Provider。'
-  if (channel.sdk && !isProviderSdk(channel.sdk)) errors.sdk = '请选择官方 @ai-sdk Provider SDK。'
+  if (!['catalog', 'custom'].includes(channel.connectionMode))
+    errors.connectionMode = '请选择连接方式。'
+  if (channel.connectionMode === 'catalog' && !channel.providerId)
+    errors.providerId = '请选择 Models.dev 中的 Provider。'
+  if (!channel.sdk || !isProviderSdk(channel.sdk)) errors.sdk = '请选择官方 @ai-sdk Provider SDK。'
   if (!channel.apiKey.trim()) errors.apiKey = '请输入渠道提供的 API Key。'
-  if (!channel.model.trim()) errors.model = '请选择 Models.dev 中的文本模型。'
+  if (!channel.model.trim() || !modelCatalogProviderId(channel))
+    errors.model = '请选择 Models.dev 中的文本模型。'
+  if (channel.connectionMode === 'custom' && !channel.baseUrl.trim())
+    errors.baseUrl = '自定义端点需要填写 Base URL。'
   try {
     if (channel.baseUrl && !channel.baseUrl.includes('${')) {
       const url = new URL(channel.baseUrl)
@@ -78,12 +89,17 @@ export async function channelRequest(
     throw new Error('模型目录中的渠道路由已变更，请重新测试渠道。')
   const model = await createProviderModel(
     catalog,
-    channel.providerId,
+    modelCatalogProviderId(channel),
     channel.model,
     channel.apiKey,
     fetcher,
     selected,
-    { ...settings, baseUrl: channel.baseUrl, sdk: channel.sdk },
+    {
+      ...settings,
+      baseUrl: channel.baseUrl,
+      sdk: channel.sdk,
+      customEndpoint: channel.connectionMode === 'custom',
+    },
   )
   signal?.throwIfAborted()
   return {

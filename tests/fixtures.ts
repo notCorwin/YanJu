@@ -139,7 +139,9 @@ export const compressionFixture: CompressionResult = {
 export const channelFixture: Channel = {
   id: 'channel-1',
   name: '测试渠道',
+  connectionMode: 'catalog',
   providerId: 'mock',
+  modelProviderId: 'mock',
   sdk: '@ai-sdk/openai',
   temperatureSupported: true,
   baseUrl: 'https://mock.example/v1',

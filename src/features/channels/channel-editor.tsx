@@ -19,7 +19,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { loadModelCatalog, selectCatalogModel, type ModelCatalog } from '@/lib/model-catalog'
+import {
+  loadModelCatalog,
+  modelCatalogProviderId,
+  selectCatalogModel,
+  type ModelCatalog,
+} from '@/lib/model-catalog'
 import {
   channelFingerprint,
   protocolLabels,
@@ -86,10 +91,20 @@ export function ChannelEditor({
       mounted = false
     }
   }, [])
-  const provider = catalog?.[draft.providerId]
+  const custom = draft.connectionMode === 'custom'
+  const provider = catalog?.[modelCatalogProviderId(draft)]
   const selectedModel = provider?.models[draft.model]
   const providers = Object.values(catalog ?? {}).sort((a, b) => a.name.localeCompare(b.name))
-  const models = Object.values(provider?.models ?? {}).sort((a, b) => a.name.localeCompare(b.name))
+  const modelOptions = (custom ? providers : provider ? [provider] : [])
+    .flatMap((source) =>
+      Object.values(source.models).map((model) => ({
+        value: custom ? JSON.stringify([source.id, model.id]) : model.id,
+        label: `${model.name} · ${model.id}${custom ? ` · ${source.name}` : ''}`,
+        provider: source,
+        model,
+      })),
+    )
+    .sort((a, b) => a.label.localeCompare(b.label))
   const [errors, setErrors] = useState<Partial<Record<keyof Channel, string>>>({})
   const [saving, setSaving] = useState(false)
   const [showKey, setShowKey] = useState(false)
@@ -142,7 +157,7 @@ export function ChannelEditor({
       resolved.calibration = next.calibration
     }
     const issues = channelValidationErrors(resolved)
-    if (!provider) issues.providerId = '请选择 Models.dev 中的 Provider。'
+    if (!custom && !provider) issues.providerId = '请选择 Models.dev 中的 Provider。'
     if (!selectedModel) issues.model = '请选择 Models.dev 中的文本模型。'
     setErrors(issues)
     if (Object.keys(issues).length) {
@@ -230,7 +245,7 @@ export function ChannelEditor({
       className="channel-editor-height flex min-h-0 min-w-0 flex-col"
       onSubmit={(event) => {
         event.preventDefault()
-        if (!busy && !saving && !disabled) void save()
+        if (!busy && !saving && !disabled && catalog) void save()
       }}
     >
       <Card className="min-h-0 flex-1">
@@ -240,7 +255,7 @@ export function ChannelEditor({
             {active && <Badge>当前渠道</Badge>}
           </div>
           <CardDescription>
-            从 Models.dev 选择服务商与模型，填写 API Key 后测试连接。
+            选择目录中的服务商或自定义端点，再从 Models.dev 选择模型并测试连接。
           </CardDescription>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4">
@@ -255,53 +270,106 @@ export function ChannelEditor({
                 placeholder="例如：日常叙事、长篇创作…"
                 autoComplete="off"
               />
-              <Field data-invalid={!!errors.providerId}>
-                <FieldLabel htmlFor={`provider-${draft.id}`}>Provider</FieldLabel>
-                <SearchableSelect
-                  id={`provider-${draft.id}`}
-                  aria-invalid={!!errors.providerId}
-                  value={draft.providerId}
-                  disabled={busy || saving || disabled || !catalog}
-                  options={providers.map((p) => ({ value: p.id, label: p.name }))}
-                  placeholder={catalog ? '选择服务商' : '正在加载 Models.dev…'}
-                  searchLabel="搜索提供商"
-                  searchPlaceholder="搜索提供商名称或 ID…"
-                  emptyMessage="未找到匹配的提供商。"
-                  onValueChange={(id) => {
-                    const next = catalog?.[id]
-                    const model = next && Object.values(next.models)[0]
-                    if (next && model) {
-                      setDraft(selectCatalogModel(value, next, model))
-                      setErrors({})
+              <Field data-invalid={!!errors.connectionMode}>
+                <FieldLabel htmlFor={`connection-mode-${draft.id}`}>连接方式</FieldLabel>
+                <Select
+                  value={draft.connectionMode}
+                  disabled={busy || saving || disabled}
+                  onValueChange={(mode: Channel['connectionMode']) => {
+                    const next: Channel = {
+                      ...value,
+                      connectionMode: mode,
+                      providerId: mode === 'catalog' ? modelCatalogProviderId(value) : '',
+                      modelProviderId: modelCatalogProviderId(value),
+                      sdk: mode === 'custom' ? '@ai-sdk/openai-compatible' : value.sdk,
+                      apiMode: mode === 'custom' ? 'chat-completions' : value.apiMode,
+                      capability: undefined,
+                      calibration: undefined,
                     }
+                    setDraft(
+                      provider && selectedModel
+                        ? selectCatalogModel(next, provider, selectedModel)
+                        : next,
+                    )
+                    setErrors({})
                   }}
-                />
-                {errors.providerId && (
-                  <FieldDescription role="alert">{errors.providerId}</FieldDescription>
+                >
+                  <SelectTrigger
+                    id={`connection-mode-${draft.id}`}
+                    className="w-full"
+                    aria-invalid={!!errors.connectionMode}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="catalog">Models.dev 服务商</SelectItem>
+                      <SelectItem value="custom">自定义端点</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {custom
+                    ? '填写服务地址并选择它支持的 API 端点。模型可从整个 Models.dev 目录选择。'
+                    : '从 Models.dev 选择服务商，使用其地址与认证方式，也可覆盖 Base URL。'}
+                </FieldDescription>
+                {errors.connectionMode && (
+                  <FieldDescription role="alert">{errors.connectionMode}</FieldDescription>
                 )}
               </Field>
+              {!custom && (
+                <Field data-invalid={!!errors.providerId}>
+                  <FieldLabel htmlFor={`provider-${draft.id}`}>Provider</FieldLabel>
+                  <SearchableSelect
+                    id={`provider-${draft.id}`}
+                    aria-invalid={!!errors.providerId}
+                    value={draft.providerId}
+                    disabled={busy || saving || disabled || !catalog}
+                    options={providers.map((p) => ({ value: p.id, label: p.name }))}
+                    placeholder={catalog ? '选择服务商' : '正在加载 Models.dev…'}
+                    searchLabel="搜索提供商"
+                    searchPlaceholder="搜索提供商名称或 ID…"
+                    emptyMessage="未找到匹配的提供商。"
+                    onValueChange={(id) => {
+                      const next = catalog?.[id]
+                      const model = next && Object.values(next.models)[0]
+                      if (next && model) {
+                        setDraft(selectCatalogModel(value, next, model))
+                        setErrors({})
+                      }
+                    }}
+                  />
+                  {errors.providerId && (
+                    <FieldDescription role="alert">{errors.providerId}</FieldDescription>
+                  )}
+                </Field>
+              )}
               <Field data-invalid={!!errors.model}>
                 <FieldLabel htmlFor={`model-${draft.id}`}>模型</FieldLabel>
                 <SearchableSelect
                   id={`model-${draft.id}`}
                   aria-invalid={!!errors.model}
-                  value={draft.model}
-                  disabled={busy || saving || disabled || !provider}
-                  options={models.map((m) => ({ value: m.id, label: `${m.name} · ${m.id}` }))}
+                  value={
+                    custom ? JSON.stringify([draft.modelProviderId, draft.model]) : draft.model
+                  }
+                  disabled={busy || saving || disabled || !catalog || (!custom && !provider)}
+                  options={modelOptions}
                   placeholder="选择模型"
                   searchLabel="搜索模型"
                   searchPlaceholder="搜索模型名称或 ID…"
                   emptyMessage="未找到匹配的模型。"
                   onValueChange={(id) => {
-                    const model = provider?.models[id]
-                    if (provider && model) {
-                      setDraft(selectCatalogModel(value, provider, model))
+                    const option = modelOptions.find((option) => option.value === id)
+                    if (option) {
+                      setDraft(selectCatalogModel(value, option.provider, option.model))
                       setErrors({})
                     }
                   }}
                 />
                 <FieldDescription>
-                  所有支持文本输入与输出的模型均可选择。
+                  {custom
+                    ? '列表中的服务商名称仅标明模型资料来源。请求发送至自定义 Base URL，调用方式由 API 端点决定。'
+                    : '所有支持文本输入与输出的模型均可选择。'}
                   {selectedModel &&
                     `上下文 ${selectedModel.limit.context.toLocaleString()} tokens · ${selectedModel.structured_output ? '支持 Structured Outputs' : '自动选择 JSON 输出模式'}`}
                 </FieldDescription>
@@ -326,10 +394,15 @@ export function ChannelEditor({
               <FormField
                 label="API Key"
                 help={
-                  provider &&
-                  (provider.env.length > 1 || provider.npm.startsWith('@ai-sdk/google-vertex'))
-                    ? `云服务可在此粘贴完整凭据 JSON，包含 Models.dev 所列认证字段：${provider.env.join('、')}。详见服务商凭据文档。`
-                    : undefined
+                  custom
+                    ? draft.apiMode === 'native'
+                      ? '使用所选 SDK 的凭据；云服务可粘贴包含认证字段的完整 JSON。'
+                      : undefined
+                    : provider &&
+                        (provider.env.length > 1 ||
+                          provider.npm.startsWith('@ai-sdk/google-vertex'))
+                      ? `云服务可在此粘贴完整凭据 JSON，包含 Models.dev 所列认证字段：${provider.env.join('、')}。详见服务商凭据文档。`
+                      : undefined
                 }
                 name="apiKey"
                 error={errors.apiKey}
@@ -349,14 +422,20 @@ export function ChannelEditor({
                 autoComplete="off"
               />
               <FormField
-                label="Base URL（可选）"
+                label={custom ? 'Base URL' : 'Base URL（可选）'}
                 name="baseUrl"
                 error={errors.baseUrl}
                 value={draft.baseUrl}
                 placeholder={
-                  selectedModel?.provider?.api ?? provider?.api ?? '使用 Provider 默认地址'
+                  custom
+                    ? 'https://example.com/v1'
+                    : (selectedModel?.provider?.api ?? provider?.api ?? '使用 Provider 默认地址')
                 }
-                help="留空使用 Models.dev 或官方 SDK 的默认地址；可填写自定义 API 前缀或完整端点地址。"
+                help={
+                  custom
+                    ? '填写此服务的地址、API 前缀或完整端点。'
+                    : '留空使用 Models.dev 或官方 SDK 的默认地址；可填写 API 前缀或完整端点地址。'
+                }
                 onChange={(v) => update('baseUrl', v)}
                 autoComplete="off"
               />
@@ -538,7 +617,7 @@ export function ChannelEditor({
           />
         </CardContent>
         <CardFooter className="shrink-0 flex-wrap gap-2">
-          <Button type="submit" disabled={busy || saving || disabled}>
+          <Button type="submit" disabled={busy || saving || disabled || !catalog}>
             {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
             保存渠道
           </Button>
@@ -551,7 +630,7 @@ export function ChannelEditor({
             <Button
               type="button"
               variant="outline"
-              disabled={saving || disabled}
+              disabled={saving || disabled || !catalog}
               onClick={() => void test()}
             >
               <FlaskConical data-icon="inline-start" />
@@ -561,7 +640,7 @@ export function ChannelEditor({
           <Button
             type="button"
             variant="outline"
-            disabled={busy || saving || disabled}
+            disabled={busy || saving || disabled || !catalog}
             onClick={() => void test(true)}
           >
             完整协议测试
@@ -569,7 +648,7 @@ export function ChannelEditor({
           <Button
             type="button"
             variant="secondary"
-            disabled={busy || saving || disabled || !channelIsReady(value)}
+            disabled={busy || saving || disabled || !catalog || !channelIsReady(value)}
             onClick={async () => {
               const saved = await save(false)
               if (saved) {

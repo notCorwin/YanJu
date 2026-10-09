@@ -19,7 +19,7 @@
 
 打开[在线应用](https://notcorwin.github.io/YanJu/)，或按下文启动本地开发服务。
 
-1. 点击首页「进入聊天」。还没有渠道时，自动进入渠道引导；添加渠道，搜索并选择 Provider 和模型，填写 API Key，可选填写 Base URL；模型支持时可设置 Temperature。
+1. 点击首页「进入聊天」。还没有渠道时，自动进入渠道引导；添加渠道，选择 Models.dev 服务商或自定义端点，再搜索并选择模型，填写 API Key；模型支持时可设置 Temperature。目录服务商的 Base URL 可选，自定义端点需填写服务地址。
 2. 点击「测试渠道」。非流式和流式 JSON 测试均通过后，点击「使用此渠道」，再继续设置人设。需要进一步验证时，可运行「完整协议测试」。
 3. 创建或选择人设，点击「使用此人设」，进入当前篇章。已有渠道时，首页直接继续当前篇章；可从「存档管理 → 新建」创建其他篇章。
 4. 阅读开场并发送回应。顶部同一行提供渠道切换、剧情工作台、世界与音乐、清空聊天记录；人设、存档和外观设置收在「应用菜单」。输入区可切换叙事与论坛模式，「更多聊天操作」提供上下文、压缩、回到最新消息与展开输入。世界与音乐面板收起后，音乐继续播放。
@@ -32,7 +32,9 @@
 
 每条渠道默认折叠，可同时展开多条渠道并独立编辑。展开后可填写「渠道名称」，切换 Provider 或模型会保留自定义名称；关闭未保存的配置时可取消或放弃修改。
 
-Provider、模型、默认 API 地址、上下文容量与温度能力来自 [Models.dev](https://models.dev)。目录包含所有支持文本输入与输出的模型。渠道名称、Base URL（可选）、API Key 和 Temperature 手动填写，其余渠道配置使用下拉列表。可手动刷新目录；网络不可用时使用上次成功加载的浏览器缓存。测试结果绑定目录路由与配置，发生变更后须重新测试。
+Provider、模型、默认 API 地址、上下文容量与温度能力来自 [Models.dev](https://models.dev)。目录包含所有支持文本输入与输出的模型。渠道名称、Base URL、API Key 和 Temperature 手动填写，其余渠道配置使用下拉列表。可手动刷新目录；网络不可用时使用上次成功加载的浏览器缓存。测试结果绑定实际连接配置和所选模型资料，发生相关变更后须重新测试。
+
+「Models.dev 服务商」按目录中的 Provider 与模型配置地址、SDK 和认证，Base URL 可选。「自定义端点」无需选择 Provider，直接填写 Base URL、API Key 并选择服务支持的 API 端点；选择原生端点时另选官方 SDK。模型可从整个 Models.dev 目录搜索，列表中的服务商仅标明模型资料来源。模型容量与能力仍来自 Models.dev，但其服务商地址、SDK、认证字段和模型级路由不会覆盖自定义连接。相同模型 ID 在不同目录来源下分别保留资料。
 
 兼容服务统一使用 `@ai-sdk/openai-compatible`，并支持所有提供语言模型入口的官方 `@ai-sdk/*` 包。社区 SDK 与自建兼容适配器已移除。API 端点下拉列表支持：
 
@@ -66,7 +68,7 @@ Provider、模型、默认 API 地址、上下文容量与温度能力来自 [Mo
 | Anthropic AWS            | `ANTHROPIC_AWS_WORKSPACE_ID`，加 `ANTHROPIC_AWS_API_KEY` 或 AWS SigV4 凭据；`AWS_REGION` 默认 `us-east-1`。                                                                               |
 | 地址含资源占位符的服务商 | 包含目录所列认证字段与资源字段，例如 `SNOWFLAKE_ACCOUNT`、`SNOWFLAKE_CORTEX_PAT`。                                                                                                        |
 
-本机模型和自定义网关可填写 Base URL，并选择匹配的 API 端点；仍从 Models.dev 选择 Provider 与模型。浏览器不能读取本机凭据文件路径，服务账户请粘贴 JSON 内容。
+本机模型和自定义网关选择「自定义端点」，填写 Base URL 并选择匹配的 API 端点，再从 Models.dev 搜索服务实际提供的模型。浏览器不能读取本机凭据文件路径，服务账户请粘贴 JSON 内容。
 
 认证与路由的实现见 [provider-model.ts](src/lib/provider-model.ts) 和 [provider-registry.ts](src/lib/provider-registry.ts)。
 

@@ -62,35 +62,35 @@ export function parseModelCatalog(input: unknown): ModelCatalog {
   return catalog
 }
 
-export function catalogSelection(
-  channel: Pick<Channel, 'providerId' | 'model'>,
-  catalog: ModelCatalog,
-) {
-  const provider = catalog[channel.providerId]
+type CatalogReference = Pick<Channel, 'providerId' | 'model'> &
+  Partial<Pick<Channel, 'connectionMode' | 'modelProviderId' | 'sdk'>>
+
+export function modelCatalogProviderId(channel: CatalogReference) {
+  return channel.connectionMode === 'custom' ? (channel.modelProviderId ?? '') : channel.providerId
+}
+
+export function catalogSelection(channel: CatalogReference, catalog: ModelCatalog) {
+  const provider = catalog[modelCatalogProviderId(channel)]
   const model = provider?.models[channel.model]
-  if (!provider || !model) throw new Error('请从 Models.dev 选择 Provider 和文本模型。')
+  if (!provider || !model) throw new Error('请从 Models.dev 选择文本模型及其目录资料。')
   return {
     provider,
     model,
-    sdk: model.provider?.npm ?? provider.npm,
-    api: model.provider?.api ?? provider.api,
+    sdk:
+      channel.connectionMode === 'custom'
+        ? channel.sdk || '@ai-sdk/openai-compatible'
+        : (model.provider?.npm ?? provider.npm),
+    api: channel.connectionMode === 'custom' ? undefined : (model.provider?.api ?? provider.api),
   }
 }
 
 /** Only catalog fields used by the SDK request builder belong to the tested route. */
-export function catalogRouteFingerprint(
-  channel: Pick<Channel, 'providerId' | 'model'>,
-  catalog: ModelCatalog,
-) {
+export function catalogRouteFingerprint(channel: CatalogReference, catalog: ModelCatalog) {
   const { provider, model, sdk, api } = catalogSelection(channel, catalog)
   return JSON.stringify([
-    provider.id,
-    provider.npm,
-    provider.env,
-    model.id,
-    sdk,
-    api,
-    model.provider?.shape,
+    ...(channel.connectionMode === 'custom'
+      ? ['custom', provider.id, model.id]
+      : [provider.id, provider.npm, provider.env, model.id, sdk, api, model.provider?.shape]),
     model.structured_output,
     model.temperature,
     model.limit.context,
@@ -105,19 +105,22 @@ export function selectCatalogModel(
   model: CatalogModel,
 ): Channel {
   const sdk = catalogSdk(model.provider?.npm ?? provider.npm)
+  const custom = channel.connectionMode === 'custom'
   return {
     ...channel,
-    providerId: provider.id,
-    sdk,
+    providerId: custom ? '' : provider.id,
+    modelProviderId: provider.id,
+    sdk: custom ? channel.sdk || '@ai-sdk/openai-compatible' : sdk,
     model: model.id,
     name:
       channel.name.trim() && channel.name !== '新渠道'
         ? channel.name
-        : `${provider.name} · ${model.name}`,
-    baseUrl: channel.providerId === provider.id ? channel.baseUrl : '',
-    apiMode:
-      ['@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(provider.npm) ||
-      !['@ai-sdk/openai', '@ai-sdk/openai-compatible'].includes(sdk)
+        : `${custom ? '自定义端点' : provider.name} · ${model.name}`,
+    baseUrl: custom || channel.providerId === provider.id ? channel.baseUrl : '',
+    apiMode: custom
+      ? channel.apiMode
+      : ['@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(provider.npm) ||
+          !['@ai-sdk/openai', '@ai-sdk/openai-compatible'].includes(sdk)
         ? 'native'
         : model.provider?.shape === 'responses'
           ? 'responses'

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { runStructuredTask } from '../../src/lib/task-runner'
-import { testChannel } from '../../src/lib/provider'
+import { testChannel, channelValidationErrors } from '../../src/lib/provider'
 import { parseModelCatalog } from '../../src/lib/model-catalog'
 import { catalogFixture } from '../model-catalog-fixture'
 import { channelFixture, capabilityFixture, narrativeFixture } from '../fixtures'
@@ -22,6 +22,102 @@ const fixtureCatalog = () => {
 const supportedProtocols = apiProtocols.filter((p) => p !== 'native')
 
 describe('所有端点共用的 JSON 生成流程', () => {
+  it.each(supportedProtocols)('自定义 %s 不继承模型目录中的云路由与认证', async (protocol) => {
+    const catalog = fixtureCatalog()
+    catalog.mock.npm = '@ai-sdk/azure'
+    catalog.mock.api = 'https://${AZURE_RESOURCE_NAME}.openai.azure.com/v1'
+    catalog.mock.env = ['AZURE_API_KEY', 'AZURE_RESOURCE_NAME']
+    catalog.mock.models['test-model'].provider = {
+      npm: '@ai-sdk/amazon-bedrock/mantle',
+      shape: 'responses',
+      api: 'https://${UNRELATED_ACCOUNT}.example/v2',
+    }
+    const channel = {
+      ...channelFixture,
+      connectionMode: 'custom' as const,
+      providerId: '',
+      modelProviderId: 'mock',
+      sdk: '@ai-sdk/openai-compatible',
+      baseUrl: 'https://custom-gateway.example',
+      apiMode: protocol,
+      capability: undefined,
+    }
+    expect(channelValidationErrors(channel)).toEqual({})
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      const body = JSON.parse(String(init?.body))
+      const headers = new Headers(init?.headers)
+      expect(String(url)).toMatch(/^https:\/\/custom-gateway\.example\//)
+      expect(String(url)).not.toContain('api-version')
+      expect(headers.get('api-key')).toBeNull()
+      if (protocol === 'messages') expect(headers.get('x-api-key')).toBe(channel.apiKey)
+      else if (['generate-content', 'interactions'].includes(protocol))
+        expect(headers.get('x-goog-api-key')).toBe(channel.apiKey)
+      else expect(headers.get('authorization')).toBe(`Bearer ${channel.apiKey}`)
+      expect(body.max_tokens).toBe(protocol === 'messages' ? 128000 : undefined)
+      return reply(
+        protocol,
+        capabilityFixture,
+        body.stream === true || String(url).includes('streamGenerateContent'),
+      )
+    })
+    for (const streaming of [false, true]) {
+      const result = await runStructuredTask({
+        kind: 'capability',
+        channel,
+        catalog,
+        streaming,
+        fetcher,
+      })
+      expect(result.value).toEqual(capabilityFixture)
+    }
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('自定义端点必须有地址，不要求选择目录 Provider', () => {
+    const channel = {
+      ...channelFixture,
+      connectionMode: 'custom' as const,
+      providerId: '',
+      baseUrl: '',
+    }
+    expect(channelValidationErrors(channel)).toEqual({ baseUrl: '自定义端点需要填写 Base URL。' })
+  })
+
+  it('自定义原生兼容 SDK 忽略模型目录的 Responses 覆盖，并在导出导入后保留配置', async () => {
+    const catalog = fixtureCatalog()
+    catalog.mock.npm = '@ai-sdk/azure'
+    catalog.mock.models['test-model'].provider = { shape: 'responses', npm: '@ai-sdk/openai' }
+    const channel = {
+      ...channelFixture,
+      connectionMode: 'custom' as const,
+      providerId: '',
+      modelProviderId: 'mock',
+      sdk: '@ai-sdk/openai-compatible',
+      baseUrl: 'https://custom-gateway.example/v1',
+      apiMode: 'native' as const,
+      capability: undefined,
+    }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      expect(String(url)).toBe(`${channel.baseUrl}/chat/completions`)
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${channel.apiKey}`)
+      return reply('chat-completions', capabilityFixture, false)
+    })
+    expect(
+      (await runStructuredTask({ kind: 'capability', channel, catalog, streaming: false, fetcher }))
+        .value,
+    ).toEqual(capabilityFixture)
+    await db.channels.put(channel)
+    const saved = normalizeImport(await exportSave())
+    expect(saved.channels[0]).toMatchObject({
+      connectionMode: 'custom',
+      providerId: '',
+      modelProviderId: 'mock',
+      baseUrl: channel.baseUrl,
+      sdk: channel.sdk,
+      apiMode: 'native',
+    })
+  })
+
   it.each(supportedProtocols)('%s 同时验证非流式与流式，省略可选输出上限', async (protocol) => {
     const channel = { ...channelFixture, apiMode: protocol }
     const catalog = fixtureCatalog()

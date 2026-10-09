@@ -40,7 +40,9 @@ export interface ChannelCapability {
 export interface Channel {
   id: string
   name: string
+  connectionMode: 'catalog' | 'custom'
   providerId: string
+  modelProviderId: string
   sdk: string
   baseUrl: string
   apiKey: string
@@ -356,7 +358,9 @@ export const defaults: Settings = {
 export const newChannel = (): Channel => ({
   id: crypto.randomUUID(),
   name: '新渠道',
+  connectionMode: 'catalog',
   providerId: '',
+  modelProviderId: '',
   sdk: '',
   baseUrl: '',
   apiKey: '',

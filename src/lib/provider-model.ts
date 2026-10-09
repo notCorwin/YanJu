@@ -28,6 +28,7 @@ type Factory = (options: Record<string, unknown>) => Provider
 export interface ModelSettings {
   baseUrl?: string
   sdk?: string
+  customEndpoint?: boolean
   outputMode?: OutputMode
   schema?: JSONObject
   schemaName?: string
@@ -105,8 +106,14 @@ export async function createProviderModel(
   settings: ModelSettings = {},
 ): Promise<LanguageModelV4> {
   const selected = catalogSelection({ providerId, model: modelId }, catalog)
-  const { provider, model } = selected
-  const chosenSdk = catalogSdk(settings.sdk ?? selected.sdk)
+  const custom = settings.customEndpoint === true
+  const chosenSdk =
+    custom && protocol && protocol !== 'native'
+      ? (protocolSdks[protocol] ?? '@ai-sdk/openai-compatible')
+      : catalogSdk(settings.sdk ?? (custom ? '@ai-sdk/openai-compatible' : selected.sdk))
+  // Catalog model metadata must never select a custom gateway's route or authentication.
+  const provider = custom ? { id: 'custom', npm: chosenSdk, env: [] } : selected.provider
+  const model = custom ? { ...selected.model, provider: undefined } : selected.model
   let sdk = protocolSdks[protocol ?? 'native'] ?? chosenSdk
   // These official SDKs retain cloud authentication while using the same wire protocol.
   if (
@@ -154,7 +161,7 @@ export async function createProviderModel(
     credential.AWS_REGION ??= auth('region', 'AWS_REGION', 'us-east-1')
   if (provider.npm === '@ai-sdk/azure')
     credential[
-      providerId === 'azure-cognitive-services'
+      !custom && providerId === 'azure-cognitive-services'
         ? 'AZURE_COGNITIVE_SERVICES_RESOURCE_NAME'
         : 'AZURE_RESOURCE_NAME'
     ] ??= credential.resourceName
@@ -170,9 +177,10 @@ export async function createProviderModel(
   const apiKey =
     typeof credential.accessToken === 'string'
       ? credential.accessToken
-      : credentialApiKey(provider.env, credential)
+      : credentialApiKey(custom ? Object.keys(credential) : provider.env, credential)
   const override = settings.baseUrl?.trim()
-  let api = resolveCatalogApi(override || selected.api, credential)
+  if (custom && !override) throw new Error('自定义端点需要填写 Base URL。')
+  let api = resolveCatalogApi(override || (custom ? undefined : selected.api), credential)
   if (protocol && protocol !== 'native') {
     api ??=
       chosenSdk === '@ai-sdk/google'
@@ -291,11 +299,11 @@ export async function createProviderModel(
   if (sdk === '@ai-sdk/azure') {
     options.resourceName = auth(
       'resourceName',
-      providerId === 'azure-cognitive-services'
+      !custom && providerId === 'azure-cognitive-services'
         ? 'AZURE_COGNITIVE_SERVICES_RESOURCE_NAME'
         : 'AZURE_RESOURCE_NAME',
     )
-    if (providerId === 'azure-cognitive-services' && options.resourceName && !override)
+    if (!custom && providerId === 'azure-cognitive-services' && options.resourceName && !override)
       options.baseURL = `https://${options.resourceName}.services.ai.azure.com/openai/v1`
   }
   if (sdk.startsWith('@ai-sdk/google-vertex') || vertexMaas)
