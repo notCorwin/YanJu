@@ -5,7 +5,10 @@ export function remapId(value: string, ids: Map<string, string>): string {
   const prefix = [...ids.keys()]
     .sort((a, b) => b.length - a.length)
     .find((id) => value.startsWith(`${id}:`))
-  return prefix ? `${ids.get(prefix)}${value.slice(prefix.length)}` : value
+  if (!prefix) return value
+  const suffix = value.slice(prefix.length)
+  // Phone message IDs include both their turn and their contact's entity ID.
+  return `${ids.get(prefix)}${suffix.startsWith(':phone:') ? `:phone:${remapId(suffix.slice(7), ids)}` : suffix}`
 }
 
 export function remapReferences<T>(value: T, ids: Map<string, string>, key = ''): T {

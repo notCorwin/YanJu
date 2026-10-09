@@ -34,7 +34,7 @@ test('背景上传、替换、刷新和删除保留 OPFS 备份并释放预览 U
   await expect.poll(() => background(page)).toBe('none')
 })
 
-test('完整 v3 导出包含图片字节，替换导入后恢复背景预览', async ({ page }) => {
+test('完整 v4 导出包含图片字节，替换导入后恢复背景预览', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('button', { name: '外观设置', exact: true }).click()
   await upload(page)
@@ -44,10 +44,10 @@ test('完整 v3 导出包含图片字节，替换导入后恢复背景预览', a
   await page.getByRole('button', { name: '导出全部', exact: true }).click()
   const download = await downloading
   const data = JSON.parse(await readFile((await download.path())!, 'utf8'))
-  expect(data.version).toBe(3)
+  expect(data.version).toBe(4)
   expect(data.settings.bgImage).toBe(pngDataUrl)
   await page.getByLabel('导入存档文件').setInputFiles({
-    name: 'background-v3.json',
+    name: 'background-v4.json',
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(data)),
   })

@@ -1,3 +1,5 @@
+import { updateGameContext } from '@/lib/game-history'
+import { defaultStoryContent } from '@/lib/game-content'
 import { ConfirmDialog, FormField, IconButton } from '@/components/shared'
 import { Button } from '@/components/ui/button'
 import {
@@ -55,7 +57,15 @@ export function PersonaEditor({
         force: draft.force.trim(),
       }
       await db.personas.put(value)
-      if (usePersona) await db.settings.update('app', { activePersonaId: persona.id })
+      if (usePersona) {
+        await db.settings.update('app', { activePersonaId: persona.id })
+        const settings = await db.settings.get('app')
+        const archive = settings?.activeArchiveId
+          ? await db.archives.get(settings.activeArchiveId)
+          : undefined
+        if (archive)
+          await updateGameContext(archive.id, archive.content ?? defaultStoryContent(), value)
+      }
       setDraft(value)
       notify(usePersona ? '当前人设已更新。' : '人设已保存。')
     } catch (e) {

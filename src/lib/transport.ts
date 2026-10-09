@@ -1,3 +1,5 @@
+import { prepareHistoryEdit, messageSnapshot } from './game-history'
+import { registerGameOperation } from './game-operations'
 import { interceptImage, isRoleIntercepted } from '@/content/intercept'
 import {
   createUIMessageStream,
@@ -12,15 +14,7 @@ import { channelIsReady, friendlyError, generateReply, summarize } from './provi
 import { errorDiagnostics } from './request-trace'
 import type { ForumReply, NarrativeReply, RequestKind } from './schemas'
 import { sanitizePartial } from './schemas'
-import {
-  appendMessage,
-  archiveMessages,
-  commitSummary,
-  copyArchiveData,
-  db,
-  refreshStory,
-  revise,
-} from './storage'
+import { appendMessage, archiveMessages, commitSummary, db, refreshStory, revise } from './storage'
 import { applyMessage, displayCountdown, rebuildStory, storyContext } from './story'
 import type { Archive, Channel, ChatMessage, Persona, StoredMessage, Summary } from './types'
 
@@ -61,68 +55,94 @@ export function toChatMessage(message: StoredMessage): ChatMessage {
   }
 }
 
-export async function persistCancelledMessage(archiveId: string, message: ChatMessage | undefined) {
-  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
-    const archive = await db.archives.get(archiveId)
-    if (!archive) return
-    const all = await archiveMessages(archiveId)
-    const previous =
-      message?.role === 'assistant' ? all.find((m) => m.id === message.id) : undefined
-    if (previous?.status === 'complete') return
-    const narrative = message?.parts.find((p) => p.type === 'data-narrative')
-    const forum = message?.parts.find((p) => p.type === 'data-forum')
-    const partial: StoredMessage['partial'] =
-      narrative?.type === 'data-narrative'
-        ? { kind: 'narrative', value: narrative.data }
-        : forum?.type === 'data-forum'
-          ? { kind: 'forum', value: forum.data }
-          : undefined
-    await db.messages.put({
-      ...previous,
-      id: previous?.id || (message?.role === 'assistant' ? message.id : crypto.randomUUID()),
-      archiveId,
-      role: 'assistant',
-      kind: partial?.kind || (message?.metadata?.kind === 'forum' ? 'forum' : 'narrative'),
-      status: 'cancelled',
-      createdAt: previous?.createdAt || Date.now(),
-      sequence: previous?.sequence ?? (all.at(-1)?.sequence ?? -1) + 1,
-      content: partial ? JSON.stringify(partial.value) : '',
-      partial,
-      error: '已停止生成，已保留收到的内容，可重试。',
-    })
-    const updated = revise(archive)
-    await db.archives.put(updated)
-    await refreshStory(db, updated)
-  })
+export async function persistCancelledMessage(
+  archiveId: string,
+  message: ChatMessage | undefined,
+  navigationEpoch?: number,
+) {
+  await db.transaction(
+    'rw',
+    [...db.gameTables, db.archives, db.messages, db.storyStates, db.storyEvents],
+    async () => {
+      const archive = await db.archives.get(archiveId)
+      if (
+        !archive ||
+        (navigationEpoch !== undefined && (archive.navigationEpoch ?? 0) !== navigationEpoch)
+      )
+        return
+      const all = await archiveMessages(archiveId)
+      const previous =
+        message?.role === 'assistant' ? all.find((m) => m.id === message.id) : undefined
+      if (previous?.status === 'complete') return
+      const narrative = message?.parts.find((p) => p.type === 'data-narrative')
+      const forum = message?.parts.find((p) => p.type === 'data-forum')
+      const partial: StoredMessage['partial'] =
+        narrative?.type === 'data-narrative'
+          ? { kind: 'narrative', value: narrative.data }
+          : forum?.type === 'data-forum'
+            ? { kind: 'forum', value: forum.data }
+            : undefined
+      await db.messages.put({
+        ...previous,
+        id: previous?.id || (message?.role === 'assistant' ? message.id : crypto.randomUUID()),
+        archiveId,
+        role: 'assistant',
+        kind: partial?.kind || (message?.metadata?.kind === 'forum' ? 'forum' : 'narrative'),
+        status: 'cancelled',
+        createdAt: previous?.createdAt || Date.now(),
+        sequence: previous?.sequence ?? (all.at(-1)?.sequence ?? -1) + 1,
+        content: partial ? JSON.stringify(partial.value) : '',
+        partial,
+        error: '已停止生成，已保留收到的内容，可重试。',
+      })
+      const updated = revise(archive)
+      await db.archives.put(updated)
+      await refreshStory(db, updated)
+    },
+  )
 }
 
-async function saveGenerated(message: StoredMessage, revision: number, regenerateFromId?: string) {
-  if (!regenerateFromId) return appendMessage(message, revision)
-  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
+async function saveGenerated(
+  message: StoredMessage,
+  revision: number,
+  regenerateFromId?: string,
+  expectedNodeId?: string,
+  expectedOperationOwner?: string,
+) {
+  if (!regenerateFromId)
+    return appendMessage(message, revision, expectedNodeId, expectedOperationOwner)
+  await db.transaction('rw', [...db.gameTables, db.operations], async () => {
+    if (
+      expectedOperationOwner &&
+      (await db.operations.get(message.archiveId))?.owner !== expectedOperationOwner
+    )
+      throw new Error('会话操作已失效，重说结果未写入。')
     const archive = await db.archives.get(message.archiveId)
     if (!archive || archive.revision !== revision)
       throw new Error('存档已变更，重说结果未覆盖原记录。')
+    if (expectedNodeId && (await db.sessions.get(message.archiveId))?.nodeId !== expectedNodeId)
+      throw new Error('剧情起点已改变，重说结果未写入。')
     const all = await archiveMessages(archive.id)
     const start = all.findIndex((m) => m.id === regenerateFromId)
     if (start < 0) throw new Error('找不到重说的消息')
     message.sequence = all[start].sequence
-    const backup = copyArchiveData(archive, all, `${archive.name} · 重说前`)
-    await db.archives.add(backup.archive)
-    await db.messages.bulkAdd(backup.messages)
-    await refreshStory(db, backup.archive)
+    const restored = await prepareHistoryEdit(archive, regenerateFromId!)
     await db.messages.bulkDelete(all.slice(start).map((m) => m.id))
     await db.messages.put(message)
-    const next = revise(archive)
+    const next = revise(restored, true)
     next.lastUsage = message.usage
     await db.archives.put(next)
     await refreshStory(db, next)
   })
 }
 
-async function saveRecovery(message: StoredMessage) {
-  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
+async function saveRecovery(message: StoredMessage, navigationEpoch = 0, operationOwner?: string) {
+  await db.transaction('rw', [...db.gameTables, db.operations], async () => {
+    if (operationOwner && (await db.operations.get(message.archiveId))?.owner !== operationOwner)
+      throw new Error('会话操作已失效，旧回复未写入。')
     const archive = await db.archives.get(message.archiveId)
-    if (!archive) throw new Error('存档不存在，收到的内容仍保留在当前回复中。')
+    if (!archive || (archive.navigationEpoch ?? 0) !== navigationEpoch)
+      throw new Error('当前路线已改变，旧回复未写入。')
     const all = await archiveMessages(archive.id)
     const previous = all.find((m) => m.id === message.id)
     if (previous?.status === 'complete') return
@@ -145,6 +165,7 @@ export async function compressArchive(
   kind: RequestKind,
   progress?: (detail: string) => void,
   force = false,
+  persist = true,
 ): Promise<Summary | undefined> {
   try {
     return await compactContext({
@@ -157,11 +178,11 @@ export async function compressArchive(
       force,
       onProgress: progress,
       summarize: (input, s) => summarize(channel, input, s, undefined, archive.id),
-      commit: (s) => commitSummary(archive.id, archive.revision, s),
+      commit: (s) => (persist ? commitSummary(archive.id, archive.revision, s) : Promise.resolve()),
     })
   } catch (error) {
-    if (signal.reason !== supersededCompaction)
-      await db.transaction('rw', db.archives, async () => {
+    if (persist && signal.reason !== supersededCompaction)
+      await db.transaction('rw', [...db.gameTables, db.archives], async () => {
         const current = await db.archives.get(archive.id)
         if (current?.revision === archive.revision)
           await db.archives.update(archive.id, { compactionError: friendlyError(error) })
@@ -186,6 +207,14 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
   ) {
     const controller = new AbortController()
     this.compaction = controller
+    let finish!: () => void
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const unregister = registerGameOperation(archiveId, async () => {
+      controller.abort(supersededCompaction)
+      await finished
+    })
     try {
       await withArchiveOperation(archiveId, async () => {
         const archive = await db.archives.get(archiveId)
@@ -202,8 +231,13 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     } catch {
       // Compaction errors live on the archive; the completed reply stays complete and usable.
     } finally {
-      if (this.compaction === controller) this.compaction = undefined
-      await db.persistence.flush()
+      try {
+        if (this.compaction === controller) this.compaction = undefined
+        await db.persistence.flush()
+      } finally {
+        unregister()
+        finish()
+      }
     }
   }
 
@@ -212,11 +246,11 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     if (typeof body?.operationOwner === 'string') {
       if ((await db.operations.get(options.chatId))?.owner !== body.operationOwner)
         throw new Error('会话操作已失效，请重新发送。')
-      return this.sendWithOperation(options)
+      return this.sendWithOperation(options, undefined, body.operationOwner)
     }
     const operation = await acquireArchiveOperation(options.chatId)
     try {
-      return await this.sendWithOperation(options, operation.release)
+      return await this.sendWithOperation(options, operation.release, operation.owner)
     } catch (error) {
       await operation.release()
       throw error
@@ -225,6 +259,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
   private async sendWithOperation(
     options: Parameters<ChatTransport<ChatMessage>['sendMessages']>[0],
     release?: () => Promise<void>,
+    operationOwner?: string,
   ) {
     const body = options.body as Record<string, unknown> | undefined
     this.compaction?.abort(supersededCompaction)
@@ -235,7 +270,6 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     const personaId =
       typeof body?.personaId === 'string' ? body.personaId : settings?.activePersonaId
     const channel = channelId ? await db.channels.get(channelId) : undefined
-    const persona = personaId ? await db.personas.get(personaId) : undefined
     if (!archive) throw new Error('存档不存在，请创建或选择存档。')
     if (!channel || !channelIsReady(channel))
       throw new Error('请先配置渠道并通过严格结构化与浏览器连接测试。')
@@ -247,23 +281,35 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
       archive.summary &&
       regenIndex <= all.findIndex((m) => m.id === archive!.summary?.coveredThroughId)
     ) {
-      const next = revise(archive, true)
-      await db.transaction('rw', db.archives, async () => {
-        const current = await db.archives.get(next.id)
-        if (current?.revision !== archive!.revision)
-          throw new Error('存档已变更，请重新载入后重说。')
-        await db.archives.put(next)
-      })
-      archive = next
+      archive = { ...archive, summary: undefined }
     }
+    if (
+      regenIndex >= 0 &&
+      all[regenIndex].status === 'complete' &&
+      (await db.sessions.get(archive.id))
+    ) {
+      const historical = await messageSnapshot(archive.id, regen!, db)
+      archive = {
+        ...historical.archive,
+        revision: archive.revision,
+        navigationEpoch: archive.navigationEpoch,
+        summary: undefined,
+      }
+    }
+    const persona = archive.content
+      ? archive.persona
+      : personaId
+        ? await db.personas.get(personaId)
+        : undefined
     const snapshot = archive
+    const startingNodeId = (await db.sessions.get(snapshot.id))?.nodeId
     const messages = regenIndex >= 0 ? all.slice(0, regenIndex) : all
     const lastUser = messages.findLast((m) => m.role === 'user' && !m.stale)
     if (!lastUser) throw new Error('没有可回复的用户消息。')
     const beforeStory = rebuildStory(snapshot, messages).story
     if (!lastUser.requestContext) {
       lastUser.requestContext = JSON.stringify(storyContext(beforeStory))
-      await db.transaction('rw', db.archives, db.messages, async () => {
+      await db.transaction('rw', [...db.gameTables, db.archives, db.messages], async () => {
         if ((await db.archives.get(snapshot.id))?.revision !== snapshot.revision)
           throw new Error('冻结请求时存档已变更，请重试。')
         await db.messages.update(lastUser.id, { requestContext: lastUser.requestContext })
@@ -271,7 +317,9 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     }
     const kind: RequestKind =
       body?.kind === 'forum' || lastUser.kind === 'forum' ? 'forum' : 'narrative'
+    const navigationController = new AbortController()
     const signal = AbortSignal.any([
+      navigationController.signal,
       ...(options.abortSignal ? [options.abortSignal] : []),
       ...(body?.operationSignal instanceof AbortSignal ? [body.operationSignal] : []),
     ])
@@ -303,6 +351,11 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
     this.settled = new Promise<void>((resolve) => {
       settle = resolve
     })
+    const unregister = registerGameOperation(snapshot.id, async () => {
+      navigationController.abort()
+      await this.settled
+      await body?.operationFinished
+    })
     return createUIMessageStream<ChatMessage>({
       execute: async ({ writer }) => {
         writer.write({
@@ -319,7 +372,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               status: 'complete',
               content: interceptImage,
             }
-            await saveGenerated(notice, snapshot.revision, regen)
+            await saveGenerated(notice, snapshot.revision, regen, startingNodeId, operationOwner)
             committed = true
             writer.write({ type: 'data-notice', data: notice.content })
           } else {
@@ -331,8 +384,17 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               signal,
               kind,
               (d) => status(writer, 'compressing', d),
+              false,
+              !regen,
             )
-            const estimate = contextBudget(channel, persona, kind, messages, summary)
+            const estimate = contextBudget(
+              channel,
+              persona,
+              kind,
+              messages,
+              summary,
+              snapshot.content,
+            )
             if (estimate.mustCompress)
               throw new Error('压缩后仍没有足够上下文，请选择上下文容量更大的模型或缩短输入。')
             status(writer, 'generating', '正在生成严格结构化回复…')
@@ -341,7 +403,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               ownerId: base.id,
               channel,
               kind,
-              instructions: buildInstructions(persona, kind),
+              instructions: buildInstructions(persona, kind, snapshot.content),
               messages: modelMessages(messages, summary),
               signal,
               estimatedInput: estimate.estimated,
@@ -360,9 +422,14 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
                   checkpointAt = Date.now()
                   pendingCheckpoint = pendingCheckpoint
                     .then(() =>
-                      db.transaction('rw', db.archives, db.messages, async () => {
+                      db.transaction('rw', [...db.gameTables, db.operations], async () => {
                         const current = await db.archives.get(snapshot.id)
-                        if (current?.revision === snapshot.revision)
+                        if (
+                          current?.revision === snapshot.revision &&
+                          (await db.operations.get(snapshot.id))?.owner === operationOwner &&
+                          (!startingNodeId ||
+                            (await db.sessions.get(snapshot.id))?.nodeId === startingNodeId)
+                        )
                           await db.messages.put({
                             ...base,
                             partial,
@@ -410,7 +477,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
               correction: result.correction ?? correction,
             }
             partial = result.reply
-            await saveGenerated(complete, snapshot.revision, regen)
+            await saveGenerated(complete, snapshot.revision, regen, startingNodeId, operationOwner)
             committed = true
             if (result.reply.kind === 'narrative')
               writer.write({ type: 'data-narrative', id: 'reply', data: result.reply.value })
@@ -424,8 +491,14 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
                 status(writer, 'complete', `回复已保存；用量校正未保存：${friendlyError(error)}`)
               }
             if (
-              !contextBudget(completedChannel, persona, kind, [...messages, complete], summary)
-                .mustCompress
+              !contextBudget(
+                completedChannel,
+                persona,
+                kind,
+                [...messages, complete],
+                summary,
+                snapshot.content,
+              ).mustCompress
             )
               completedChannel = undefined
           }
@@ -448,7 +521,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
             },
           })
         } catch (error) {
-          await pendingCheckpoint
+          await pendingCheckpoint.catch(() => undefined)
           let detail = friendlyError(error)
           const cancelled = signal.aborted
           if (!committed) {
@@ -464,7 +537,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
             }
             // Regeneration failures append recovery data; the old branch is still intact.
             try {
-              await saveRecovery(recovery)
+              await saveRecovery(recovery, snapshot.navigationEpoch, operationOwner)
             } catch (storageError) {
               detail += `；恢复记录保存失败：${friendlyError(storageError)}`
             }
@@ -488,6 +561,7 @@ export class BrowserChatTransport implements ChatTransport<ChatMessage> {
           try {
             await release?.()
           } finally {
+            unregister()
             settle()
           }
           if (completedChannel)

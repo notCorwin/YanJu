@@ -1,4 +1,8 @@
 import type { ReactNode } from 'react'
+import { registerGameOperation } from '@/lib/game-operations'
+import { forkGame, navigateGame, nodeForMessage } from '@/lib/game-history'
+import { saveDraft } from '@/lib/draft-storage'
+import { SaveStatus } from '@/components/save-status'
 import { MessageEditor } from '@/components/message-editor'
 import { RecoveryBoundary } from '@/components/recovery-boundary'
 import { RequestDetails } from '@/components/request-details'
@@ -46,15 +50,7 @@ import type { Notify } from '@/lib/notify'
 import { withArchiveOperation } from '@/lib/operations'
 import { channelIsReady, friendlyError } from '@/lib/provider'
 import type { RequestKind } from '@/lib/schemas'
-import {
-  appendMessage,
-  archiveMessages,
-  createArchiveData,
-  db,
-  forkArchive,
-  refreshStory,
-  revise,
-} from '@/lib/storage'
+import { appendMessage, archiveMessages, db } from '@/lib/storage'
 import {
   BrowserChatTransport,
   compressArchive,
@@ -189,7 +185,7 @@ export function ChatRunner({
     const value = input ? `${input}\n${text}` : text
     setInput(value)
     try {
-      await db.archives.update(archive.id, { draft: value })
+      await saveDraft(archive.id, value, archive.navigationEpoch ?? 0)
     } catch (error) {
       notify(friendlyError(error), true)
     }
@@ -201,7 +197,9 @@ export function ChatRunner({
   }, [insert])
   const draft = (text: string) => {
     setInput(text)
-    void db.archives.update(archive.id, { draft: text })
+    void saveDraft(archive.id, text, archive.navigationEpoch ?? 0).catch((error) =>
+      notify(friendlyError(error), true),
+    )
   }
 
   const send = async (
@@ -222,6 +220,14 @@ export function ChatRunner({
     onBusy(true)
     clearError()
     finishedMessage.current = null
+    let finishOperation!: () => void
+    const operationFinished = new Promise<void>((resolve) => {
+      finishOperation = resolve
+    })
+    const unregister = registerGameOperation(archive.id, async () => {
+      controller.current?.abort()
+      await operationFinished
+    })
     try {
       return await withArchiveOperation(archive.id, async (lease) => {
         if (controller.current?.signal.aborted) throw new DOMException('已取消', 'AbortError')
@@ -250,6 +256,7 @@ export function ChatRunner({
             body: {
               kind,
               operationOwner: lease.owner,
+              operationFinished,
               operationSignal: controller.current?.signal,
               channelId: channel.id,
               personaId: persona?.id ?? '',
@@ -266,6 +273,8 @@ export function ChatRunner({
       notify(friendlyError(e), true)
       return false
     } finally {
+      unregister()
+      finishOperation()
       lock.current = false
       setPreparing(false)
       controller.current = null
@@ -347,6 +356,14 @@ export function ChatRunner({
     controller.current = new AbortController()
     onBusy(true)
     clearError()
+    let finishOperation!: () => void
+    const operationFinished = new Promise<void>((resolve) => {
+      finishOperation = resolve
+    })
+    const unregister = registerGameOperation(archive.id, async () => {
+      controller.current?.abort()
+      await operationFinished
+    })
     try {
       await withArchiveOperation(archive.id, async (lease) => {
         const all = await archiveMessages(archive.id)
@@ -357,6 +374,7 @@ export function ChatRunner({
             regenerateFromId: id,
             kind: all[target]?.kind === 'forum' ? 'forum' : 'narrative',
             operationOwner: lease.owner,
+            operationFinished,
             operationSignal: controller.current?.signal,
             channelId: channel.id,
             personaId: persona?.id ?? '',
@@ -367,6 +385,8 @@ export function ChatRunner({
     } catch (e) {
       notify(friendlyError(e), true)
     } finally {
+      unregister()
+      finishOperation()
       lock.current = false
       setPreparing(false)
       controller.current = null
@@ -385,6 +405,14 @@ export function ChatRunner({
     }
     setCompressing(true)
     controller.current = new AbortController()
+    let finishOperation!: () => void
+    const operationFinished = new Promise<void>((resolve) => {
+      finishOperation = resolve
+    })
+    const unregister = registerGameOperation(archive.id, async () => {
+      controller.current?.abort()
+      await operationFinished
+    })
     try {
       await withArchiveOperation(archive.id, async () => {
         const current = await db.archives.get(archive.id)
@@ -404,6 +432,8 @@ export function ChatRunner({
     } catch (e) {
       notify(friendlyError(e), true)
     } finally {
+      unregister()
+      finishOperation()
       setCompressing(false)
     }
   }
@@ -416,7 +446,8 @@ export function ChatRunner({
     try {
       await stop()
       await transport.waitForIdle()
-      if (!compressing) await persistCancelledMessage(archive.id, messages.at(-1))
+      if (!compressing)
+        await persistCancelledMessage(archive.id, messages.at(-1), archive.navigationEpoch ?? 0)
       await db.persistence.flush()
       setMessages((await archiveMessages(archive.id)).slice(-visibleLimit).map(toChatMessage))
     } catch (e) {
@@ -437,9 +468,10 @@ export function ChatRunner({
             mode,
             stored,
             summaryJson ? (JSON.parse(summaryJson) as Summary) : undefined,
+            archive.content,
           )
         : undefined,
-    [channel, persona, mode, stored, summaryJson],
+    [channel, persona, mode, stored, summaryJson, archive.content],
   )
   const latestStatus = messages.at(-1)?.parts.find((p) => p.type === 'data-status')
   const copy = (message: ChatMessage, raw = false) => {
@@ -657,16 +689,29 @@ export function ChatRunner({
                             >
                               <Pencil />
                             </IconButton>
+                            {message.role === 'assistant' &&
+                              message.metadata?.status === 'complete' && (
+                                <IconButton
+                                  label="回退到此处"
+                                  onClick={() => {
+                                    void nodeForMessage(archive.id, message.id)
+                                      .then((node) => navigateGame(archive.id, node.id))
+                                      .catch((error) => notify(friendlyError(error), true))
+                                  }}
+                                >
+                                  <RotateCcw />
+                                </IconButton>
+                              )}
                             <IconButton
                               label="从此分叉"
-                              disabled={busy}
+                              disabled={
+                                message.role !== 'assistant' ||
+                                message.metadata?.status !== 'complete'
+                              }
                               onClick={() => {
-                                void withArchiveOperation(archive.id, () =>
-                                  forkArchive(archive.id, message.id),
-                                )
-                                  .then((fork) => {
-                                    window.location.hash = `/chat/${encodeURIComponent(fork.id)}`
-                                  })
+                                void nodeForMessage(archive.id, message.id)
+                                  .then((node) => forkGame(archive.id, node.id))
+                                  .then(() => notify('新路线已建立。'))
                                   .catch((error) => notify(friendlyError(error), true))
                               }}
                             >
@@ -826,16 +871,7 @@ export function ChatRunner({
                       title="回到最新消息"
                       size="icon"
                     />
-                    <span className="text-xs text-muted-foreground">
-                      {touchInput ? (
-                        '草稿自动保存 · 点击发送'
-                      ) : (
-                        <>
-                          <span>Enter 发送</span>
-                          <span className="hidden sm:inline"> · Shift + Enter 换行</span>
-                        </>
-                      )}
-                    </span>
+                    <SaveStatus notify={notify} />
                   </div>
                   {chatBusy ? (
                     <InputGroupButton
@@ -923,7 +959,7 @@ export function ChatRunner({
           open={!!regenId}
           onClose={() => setRegenId('')}
           title="从这里重新生成？"
-          detail="成功后将原分支保留为独立篇章，再替换这条回复及后续内容。生成失败或取消会保留原聊天，并保存收到的部分内容。"
+          detail="成功后建立新路线，原路线的后续进度保留。生成失败或取消会保留原聊天，并保存收到的部分内容。"
           destructive={false}
           onConfirm={() => {
             void retry(regenId)
@@ -933,29 +969,13 @@ export function ChatRunner({
           open={clear}
           onClose={() => setClear(false)}
           title="清空当前聊天？"
-          detail="将删除当前篇章的聊天和摘要，并恢复原开场白。其他存档保留。"
+          detail="从指定开局创建新的路线，原路线和存档保留。"
           onConfirm={async () => {
             if (busy || lock.current) return
-            const data = createArchiveData()
-            await withArchiveOperation(archive.id, () =>
-              db.transaction(
-                'rw',
-                [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
-                async () => {
-                  await db.messages.where('archiveId').equals(archive.id).delete()
-                  await db.messages.put({ ...data.opening, archiveId: archive.id })
-                  await db.tasks.where('archiveId').equals(archive.id).delete()
-                  await db.requests.where('archiveId').equals(archive.id).delete()
-                  const current = await db.archives.get(archive.id)
-                  if (!current) throw new Error('存档不存在。')
-                  const updated = { ...revise(current, true), draft: '' }
-                  await db.archives.put(updated)
-                  await refreshStory(db, updated)
-                },
-              ),
-            )
-            draft('')
-            notify('当前聊天已清空。')
+            const session = await db.sessions.get(archive.id)
+            if (!session) throw new Error('开局存档尚未创建。')
+            await forkGame(archive.id, session.startNodeId, '从开局重新开始')
+            notify('已从开局创建新路线。')
           }}
         />
       </div>

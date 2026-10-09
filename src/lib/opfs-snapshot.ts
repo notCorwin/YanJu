@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { SaveFile, StoredMessage } from './types'
 
-export const OPFS_FORMAT = 'yanju-opfs-3'
+export const OPFS_FORMAT = 'yanju-opfs-4'
 const reference = z.object({
   id: z.string(),
   archiveId: z.string(),
@@ -11,6 +11,15 @@ const manifestSchema = z.object({
   format: z.literal(OPFS_FORMAT),
   data: z.record(z.string(), z.unknown()),
   messages: z.array(reference),
+  historyFiles: z
+    .array(
+      z.object({
+        key: z.enum(['nodes', 'contexts', 'messageVersions', 'taskVersions', 'stateVersions']),
+        id: z.string(),
+        file: z.string().regex(/^history-[\w-]+\.json$/),
+      }),
+    )
+    .default([]),
   backgroundFile: z
     .string()
     .regex(/^background-[\w-]+\.txt$/)
@@ -34,7 +43,7 @@ async function writeFile(directory: FileSystemDirectoryHandle, name: string, con
 const removeFile = (directory: FileSystemDirectoryHandle, name: string) =>
   directory.removeEntry?.(name).catch(() => undefined)
 
-/** Export remains v3. Only the internal OPFS layout uses immutable message files. */
+/** The manifest is committed last; immutable records and assets are shared across snapshots. */
 export async function readOpfsSnapshot(directory: FileSystemDirectoryHandle): Promise<unknown> {
   let raw: unknown
   try {
@@ -83,7 +92,20 @@ export async function readOpfsSnapshot(directory: FileSystemDirectoryHandle): Pr
   const bgImage = manifest.backgroundFile
     ? await (await (await directory.getFileHandle(manifest.backgroundFile)).getFile()).text()
     : ''
-  return { ...manifest.data, messages, settings: { ...settings, bgImage } }
+  const history = { ...z.record(z.string(), z.unknown()).parse(manifest.data.history) }
+  for (const key of ['nodes', 'contexts', 'messageVersions', 'taskVersions', 'stateVersions'])
+    history[key] = []
+  for (let offset = 0; offset < manifest.historyFiles.length; offset += 16) {
+    const records = await Promise.all(
+      manifest.historyFiles.slice(offset, offset + 16).map(async (ref) => {
+        const value = z.record(z.string(), z.unknown()).parse(await readJson(directory, ref.file))
+        if (value.id !== ref.id) throw new Error('OPFS 历史版本与目录记录不一致。')
+        return { key: ref.key, value }
+      }),
+    )
+    for (const { key, value } of records) (history[key] as unknown[]).push(value)
+  }
+  return { ...manifest.data, history, messages, settings: { ...settings, bgImage } }
 }
 
 export class OpfsSnapshotWriter {
@@ -106,7 +128,11 @@ export class OpfsSnapshotWriter {
     for (const [id, ref] of refs) if (!archiveIds.has(ref.archiveId)) refs.delete(id)
     for (const id of changedIds ?? []) refs.delete(id)
     const created: string[] = []
-    const known = new Set(previous?.messages.map((ref) => ref.file))
+    const known = new Set([
+      ...(previous?.messages.map((ref) => ref.file) ?? []),
+      ...(previous?.historyFiles.map((ref) => ref.file) ?? []),
+    ])
+    const historyFiles: Manifest['historyFiles'] = []
     let committed = false
     try {
       for (let offset = 0; offset < data.messages.length; offset += 16) {
@@ -140,6 +166,42 @@ export class OpfsSnapshotWriter {
         const failure = results.find((result) => result.status === 'rejected')
         if (failure?.status === 'rejected') throw failure.reason
       }
+      for (const key of [
+        'nodes',
+        'contexts',
+        'messageVersions',
+        'taskVersions',
+        'stateVersions',
+      ] as const) {
+        const values = data.history?.[key] ?? []
+        for (let offset = 0; offset < values.length; offset += 16) {
+          const records = await Promise.allSettled(
+            values.slice(offset, offset + 16).map(async (value) => {
+              const content = JSON.stringify(value)
+              const hash = crypto.subtle
+                ? [
+                    ...new Uint8Array(
+                      await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content)),
+                    ),
+                  ]
+                    .map((v) => v.toString(16).padStart(2, '0'))
+                    .join('')
+                : value.id
+              const file = `history-${hash}.json`
+              if (!known.has(file)) {
+                known.add(file)
+                created.push(file)
+                await writeFile(directory, file, content)
+              }
+              return { key, id: value.id, file }
+            }),
+          )
+          for (const result of records) {
+            if (result.status === 'rejected') throw result.reason
+            historyFiles.push(result.value)
+          }
+        }
+      }
       let backgroundFile: string | undefined
       if (data.settings.bgImage) {
         if (
@@ -156,16 +218,37 @@ export class OpfsSnapshotWriter {
       }
       const manifest: Manifest = {
         format: OPFS_FORMAT,
-        data: { ...data, messages: undefined, settings: { ...data.settings, bgImage: '' } },
+        data: {
+          ...data,
+          history: {
+            ...data.history,
+            sessions: data.history?.sessions ?? [],
+            branches: data.history?.branches ?? [],
+            slots: data.history?.slots ?? [],
+            nodes: [],
+            contexts: [],
+            messageVersions: [],
+            taskVersions: [],
+            stateVersions: [],
+          },
+          messages: undefined,
+          settings: { ...data.settings, bgImage: '' },
+        },
         messages: [...refs.values()],
+        historyFiles,
         backgroundFile,
       }
       // Commit the directory last; the old directory and its files remain valid until close.
       await writeFile(directory, 'save.json', JSON.stringify(manifest))
       committed = true
       const retained = new Set([...refs.values()].map((r) => r.file))
+      historyFiles.forEach((ref) => retained.add(ref.file))
       if (backgroundFile) retained.add(backgroundFile)
-      const obsolete = [...(previous?.messages.map((r) => r.file) ?? []), previous?.backgroundFile]
+      const obsolete = [
+        ...(previous?.messages.map((r) => r.file) ?? []),
+        ...(previous?.historyFiles.map((r) => r.file) ?? []),
+        previous?.backgroundFile,
+      ]
       if (!preserveFiles)
         await Promise.all(
           obsolete

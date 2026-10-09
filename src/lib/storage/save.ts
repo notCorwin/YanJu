@@ -1,3 +1,5 @@
+import { defaultStoryContent } from '@/lib/game-content'
+import { historyFor, putHistory, captureGameNode } from '@/lib/game-history'
 import { withImportOperation } from '@/lib/operations'
 import { type PersistenceSnapshot } from '@/lib/opfs'
 import { createArchiveData } from '@/lib/storage/archives'
@@ -15,11 +17,19 @@ export async function importSave(
   mode: 'replace' | 'merge' = 'replace',
 ) {
   const data = normalizeImport(input, restore)
+  for (const archive of data.archives) {
+    archive.content ??= defaultStoryContent(data.settings.bgImage)
+    archive.persona ??= data.masks.find((p) => p.id === data.settings.activePersonaId) ?? {
+      ...newPersona(),
+      name: archive.userName ?? '沈辞玉',
+    }
+  }
   await withImportOperation(
     () =>
       database.transaction(
         'rw',
         [
+          ...database.gameTables,
           database.archives,
           database.messages,
           database.channels,
@@ -64,6 +74,20 @@ export async function importSave(
               channel: { ...r.channel, id: remapId(r.channel.id, ids) },
               usage: r.usage && remapReferences(r.usage, ids),
             }))
+            for (const collection of Object.values(data.history))
+              for (const value of collection) {
+                if (!ids.has(value.id)) ids.set(value.id, crypto.randomUUID())
+                if ('value' in value && !ids.has(value.value.id))
+                  ids.set(value.value.id, crypto.randomUUID())
+              }
+            for (const record of [...data.history.nodes, ...data.history.slots])
+              if (!ids.has(record.branchId)) ids.set(record.branchId, crypto.randomUUID())
+            const priorHistory = data.history
+            data.history = remapReferences(priorHistory, ids)
+            data.history.messageVersions = priorHistory.messageVersions.map((v) => ({
+              ...remapReferences(v, ids),
+              value: remapMessage(v.value, ids),
+            }))
             data.storyStates = []
             data.storyEvents = []
             for (const archive of data.archives) {
@@ -93,6 +117,7 @@ export async function importSave(
               database.tasks.clear(),
               database.requests.clear(),
             ])
+          await putHistory(data.history, database, mode !== 'merge')
           await database.archives.bulkPut(data.archives)
           await database.messages.bulkPut(data.messages)
           await database.storyStates.bulkPut(data.storyStates)
@@ -102,6 +127,9 @@ export async function importSave(
           await database.channels.bulkPut(data.channels)
           await database.personas.bulkPut(data.masks)
           await database.settings.put(data.settings)
+          for (const archive of data.archives)
+            if (!(await database.sessions.get(archive.id)))
+              await captureGameNode(database, archive, '导入进度', true)
           if (!(await database.personas.count())) {
             const persona = newPersona()
             await database.personas.add(persona)
@@ -133,6 +161,7 @@ export async function exportSave(database = db, messageIds?: string[]): Promise<
   return database.transaction(
     'r',
     [
+      ...database.gameTables,
       database.archives,
       database.messages,
       database.channels,
@@ -144,7 +173,7 @@ export async function exportSave(database = db, messageIds?: string[]): Promise<
       database.requests,
     ],
     async () => ({
-      version: 3,
+      version: 4,
       exportedAt: new Date().toISOString(),
       archives: await database.archives.toArray(),
       messages:
@@ -158,6 +187,7 @@ export async function exportSave(database = db, messageIds?: string[]): Promise<
       storyEvents: await database.storyEvents.toArray(),
       tasks: await database.tasks.toArray(),
       requests: await database.requests.toArray(),
+      history: await historyFor(database),
     }),
   )
 }
@@ -169,6 +199,7 @@ export async function readPersistenceSnapshot(
   return database.transaction(
     'r',
     [
+      ...database.gameTables,
       database.archives,
       database.messages,
       database.channels,
@@ -198,15 +229,19 @@ export async function readPersistenceSnapshot(
         data,
         messageIds,
         committed: () =>
-          database.transaction('rw', database.persistenceChanges, async () => {
-            const current = await database.persistenceChanges.bulkGet(
-              journal.map((entry) => entry.id),
-            )
-            const acknowledged = journal.filter(
-              (entry, index) => current[index]?.token === entry.token,
-            )
-            await database.persistenceChanges.bulkDelete(acknowledged.map((entry) => entry.id))
-          }),
+          database.transaction(
+            'rw',
+            [...database.gameTables, database.persistenceChanges],
+            async () => {
+              const current = await database.persistenceChanges.bulkGet(
+                journal.map((entry) => entry.id),
+              )
+              const acknowledged = journal.filter(
+                (entry, index) => current[index]?.token === entry.token,
+              )
+              await database.persistenceChanges.bulkDelete(acknowledged.map((entry) => entry.id))
+            },
+          ),
       }
     },
   )

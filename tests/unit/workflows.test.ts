@@ -1,4 +1,6 @@
 import { catalogFingerprintFixture } from '../fixtures'
+import { updateGameContext } from '../../src/lib/game-history'
+import * as context from '../../src/lib/context'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { channelFingerprint } from '../../src/lib/provider'
@@ -53,7 +55,7 @@ const messages: StoredMessage[] = [
 ]
 beforeEach(async () => {
   await importSave({
-    version: 3,
+    version: 4,
     archives: [archive],
     messages,
     channels: [channelFixture],
@@ -104,6 +106,39 @@ function fake(
   })
 }
 describe('辅助任务完整链路', () => {
+  it('历史改写的临时压缩不会覆盖原路线摘要，生成失败保留原进度', async () => {
+    await appendMessage(messageFixture('later-user', 'user', '下一轮', 3))
+    await appendMessage({
+      ...messageFixture('later-reply', 'assistant', '', 4),
+      reply: { kind: 'narrative', value: structuredClone(narrativeFixture) },
+    })
+    const before = (await db.archives.get(archive.id))!
+    const session = (await db.sessions.get(archive.id))!
+    const estimate = vi.spyOn(context, 'estimateTokens').mockReturnValue(Number.MAX_SAFE_INTEGER)
+    const compress = vi.spyOn(context, 'compactContext').mockImplementation(async (options) => {
+      const summary = {
+        value: compressionFixture,
+        coveredThroughId: 'n',
+        coveredCount: 2,
+        revision: before.revision,
+        createdAt: 1,
+      }
+      await options.commit(summary)
+      return summary
+    })
+    try {
+      const task = await executeAuxiliary(archive.id, 'rewrite', '改写最后一轮', 'later-reply', {
+        fetcher: vi.fn().mockRejectedValue(new Error('请求失败')),
+      })
+      expect(task.status).toBe('failed')
+      expect(compress).toHaveBeenCalledOnce()
+      expect(await db.archives.get(archive.id)).toEqual(before)
+      expect(await db.sessions.get(archive.id)).toEqual(session)
+    } finally {
+      estimate.mockRestore()
+      compress.mockRestore()
+    }
+  })
   it('保存未启用的人设不改变篇章或投影，同轮其他任务仍可应用', async () => {
     const persona = await executeAuxiliary(archive.id, 'persona', '创建读者', null, {
       fetcher: fake('persona'),
@@ -188,7 +223,7 @@ describe('辅助任务完整链路', () => {
     const failed = vi.fn(async () => false)
     expect(await chooseContinuation(task.id, action, failed)).toBe(false)
     expect((await db.tasks.get(task.id))?.applied).not.toBe(true)
-    expect(await db.archives.get(archive.id)).toEqual(archive)
+    expect(await db.archives.get(archive.id)).toMatchObject(archive)
     const success = vi.fn(async () => true)
     expect(await chooseContinuation(task.id, action, success)).toBe(true)
     expect((await db.tasks.get(task.id))?.applied).toBe(true)
@@ -255,7 +290,7 @@ describe('辅助任务完整链路', () => {
     const saved = await exportSave()
     expect(saved.requests.at(-1)?.archiveId).toBeNull()
     expect(saved.requests.at(-1)?.output).toBeTruthy()
-    expect((await importSave(saved)).version).toBe(3)
+    expect((await importSave(saved)).version).toBe(4)
     expect((await exportSave()).requests).toEqual(saved.requests)
   })
   it.each([
@@ -457,8 +492,8 @@ describe('辅助任务完整链路', () => {
     expect(
       history[1].reply?.kind === 'narrative' && history[1].reply.value.blocks[0].text,
     ).toContain('傍晚')
-    expect(history[2].stale).toBe(true)
-    expect(history[2].reply).toBeDefined()
+    expect(history).toHaveLength(2)
+    expect(await db.branches.where('archiveId').equals(archive.id).count()).toBeGreaterThan(1)
     expect((await db.storyStates.get(archive.id))!.forums).toHaveLength(0)
     expect((await db.storyStates.get(archive.id))!.states[0].value).toBe('更加平静')
   })
@@ -556,7 +591,7 @@ describe('独立交互与请求恢复边界', () => {
     expect((await db.storyStates.get(archive.id))!.phones[0].messages.at(-2)?.text).toBe(
       '编辑后的原文',
     )
-    expect((await db.messages.get('after-phone'))?.stale).toBe(true)
+    expect(await db.messages.get('after-phone')).toBeUndefined()
     await expect(
       editMessage(message.id, JSON.stringify({ ...interaction, contactRef: 'unknown' })),
     ).rejects.toThrow(/不存在/)
@@ -623,6 +658,8 @@ describe('创作和本地操作调度', () => {
       createdAt: 0,
     })
     await db.settings.update('app', { activePersonaId: 'p' })
+    const currentArchive = (await db.archives.get(archive.id))!
+    await updateGameContext(archive.id, currentArchive.content!, (await db.personas.get('p'))!)
     const task = await executeAuxiliary(archive.id, 'phoneReply', '确认安排', 'character-shendu', {
       fetcher: fake('phoneReply'),
     })
@@ -673,8 +710,12 @@ describe('整份改写与问题位置校验', () => {
       }),
     ).rejects.toThrow(/未知段落/)
     await editMessage('u', '改变原剧情')
-    await expect(saveMediaDraft(task.id, value)).rejects.toThrow(/已失效/)
-    expect((await db.tasks.get(task.id))?.output).toEqual(edited)
+    await expect(saveMediaDraft(task.id, value)).rejects.toThrow(/尚未完成/)
+    expect(await db.tasks.get(task.id)).toBeUndefined()
+    const versions = await db.taskVersions.where('archiveId').equals(archive.id).toArray()
+    expect(versions.some((v) => JSON.stringify(v.value.output) === JSON.stringify(edited))).toBe(
+      true,
+    )
   })
   it('JSON 属性顺序不影响改写判断，重复修改引用会被拒绝', async () => {
     const target = (await db.messages.get('n'))!

@@ -13,6 +13,7 @@ import {
   response,
   responseSse,
 } from '../fixtures'
+import type { SharePackage } from '../../src/lib/game-share'
 import { defaults, type SaveFile } from '../../src/lib/types'
 import { auxiliaryFixture } from '../auxiliary-fixtures'
 import { taskDefinitions, type AuxiliaryKind, type TaskInput } from '../../src/lib/tasks'
@@ -22,10 +23,10 @@ async function readOpfs(page: Page): Promise<SaveFile | undefined> {
     const read = async () => {
       try {
         const root = await navigator.storage.getDirectory()
-        const directory = await root.getDirectoryHandle('yanju-v3')
+        const directory = await root.getDirectoryHandle('yanju-v4')
         const handle = await directory.getFileHandle('save.json')
         const raw = JSON.parse(await (await handle.getFile()).text())
-        if (raw.format !== 'yanju-opfs-3') return raw
+        if (raw.format !== 'yanju-opfs-4') return raw
         const messages = await Promise.all(
           raw.messages.map(async (ref: { id: string; archiveId: string; file: string }) => {
             const message = JSON.parse(
@@ -44,13 +45,18 @@ async function readOpfs(page: Page): Promise<SaveFile | undefined> {
         const bgImage = raw.backgroundFile
           ? await (await (await directory.getFileHandle(raw.backgroundFile)).getFile()).text()
           : ''
-        return { ...raw.data, messages, settings: { ...raw.data.settings, bgImage } }
+        const history = { ...raw.data.history }
+        for (const ref of raw.historyFiles ?? [])
+          history[ref.key].push(
+            JSON.parse(await (await (await directory.getFileHandle(ref.file)).getFile()).text()),
+          )
+        return { ...raw.data, history, messages, settings: { ...raw.data.settings, bgImage } }
       } catch (error) {
         if (error instanceof DOMException && error.name === 'NotFoundError') return undefined
         throw error
       }
     }
-    return navigator.locks?.request ? navigator.locks.request('yanju-opfs:yanju-v3', read) : read()
+    return navigator.locks?.request ? navigator.locks.request('yanju-opfs:yanju-v4', read) : read()
   })
 }
 
@@ -193,7 +199,7 @@ async function prepare(
     },
   ]
   const data = {
-    version: 3,
+    version: 4,
     exportedAt: new Date().toISOString(),
     archives,
     messages,
@@ -225,7 +231,7 @@ async function prepare(
   }
   await page.getByRole('button', { name: '存档管理' }).click()
   await page.getByLabel('导入存档文件').setInputFiles({
-    name: 'fixture-v3.json',
+    name: 'fixture-v4.json',
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(data)),
   })
@@ -304,93 +310,69 @@ async function enter(page: Page) {
   await expect(page.getByRole('textbox', { name: '聊天输入' })).toBeVisible()
 }
 
-test('OPFS Checkpoint 创建、导出、导入、恢复和删除贯通，恢复重置当前草稿', async ({ page }) => {
+test('手动和快速存档恢复草稿，分享导入创建独立篇章并保留自己的渠道', async ({ page }) => {
   await prepare(page)
   await enter(page)
   const input = page.getByRole('textbox', { name: '聊天输入' })
-  await input.fill('Checkpoint 中的阅读进度')
-  await expect
-    .poll(async () => (await readOpfs(page))?.archives.find((a) => a.id === 'archive-1')?.draft)
-    .toBe('Checkpoint 中的阅读进度')
   const open = async () => {
     await page.getByRole('button', { name: '存档管理', exact: true }).click()
-    await page.getByRole('button', { name: 'Checkpoint', exact: true }).click()
-    return page.getByRole('dialog', { name: 'Checkpoint', exact: true })
+    await page.getByRole('button', { name: '存档与路线', exact: true }).click()
+    return page.getByRole('dialog', { name: '存档与路线', exact: true })
   }
-  const dialog = await open()
-  await dialog.getByRole('button', { name: '创建 Checkpoint', exact: true }).click()
-  await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(1)
-  const opfs = () =>
-    page.evaluate(async () => {
-      const read = async () => {
-        const root = await navigator.storage.getDirectory()
-        const dir = await (
-          await root.getDirectoryHandle('yanju-v3', { create: true })
-        ).getDirectoryHandle('checkpoints', { create: true })
-        const result = []
-        for await (const [name, handle] of dir.entries())
-          if (handle.kind === 'file') {
-            try {
-              result.push({ name, value: JSON.parse(await (await handle.getFile()).text()) })
-            } catch (error) {
-              throw new Error(`读取 ${name}：${String(error)}`, { cause: error })
-            }
-          }
-        return result
-      }
-      return navigator.locks.request('yanju-checkpoints', read)
-    })
-  const stored = (await opfs())[0]
-  expect(stored.name).toBe(`${stored.value.id}.json`)
-  expect(stored.value.data.archives[0].draft).toBe('Checkpoint 中的阅读进度')
-  const downloaded = page.waitForEvent('download')
-  await dialog.getByRole('button', { name: /^导出 Checkpoint / }).click()
-  const path = (await (await downloaded).path())!
-  const exported = JSON.parse(await readFile(path, 'utf8'))
-  expect(exported.format).toBe('yanju-checkpoint-v1')
-  expect(exported.data.channels[0].apiKey).toBe(channelFixture.apiKey)
-  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
-  await page
-    .getByRole('dialog', { name: '存档', exact: true })
-    .getByRole('button', { name: '关闭', exact: true })
-    .click()
-  await input.fill('创建 Checkpoint 后的新草稿')
-  await expect
-    .poll(async () => (await readOpfs(page))?.archives.find((a) => a.id === 'archive-1')?.draft)
-    .toBe('创建 Checkpoint 后的新草稿')
-  await open()
-  await dialog.getByLabel('导入 Checkpoint 文件').setInputFiles(path)
-  await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(2)
-  expect(new Set((await opfs()).map((item) => item.value.id)).size).toBe(2)
-  expect((await readOpfs(page))?.archives[0].draft).toBe('创建 Checkpoint 后的新草稿')
-  await dialog.getByRole('button', { name: '恢复', exact: true }).first().click()
-  await page
-    .getByRole('dialog', { name: '恢复 Checkpoint？', exact: true })
-    .getByRole('button', { name: '确认', exact: true })
-    .click()
-  await expect(page.getByText('Checkpoint 已恢复，渠道须重新测试。')).toBeVisible()
-  await page
-    .getByRole('dialog', { name: '存档', exact: true })
-    .getByRole('button', { name: '关闭', exact: true })
-    .click()
-  await expect(input).toHaveValue('Checkpoint 中的阅读进度')
-  expect((await readOpfs(page))?.channels[0].capability).toBeUndefined()
-  await page.reload()
-  await expect(input).toHaveValue('Checkpoint 中的阅读进度')
-  await open()
-  await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(2)
-  for (let remaining = 1; remaining >= 0; remaining--) {
-    await dialog
-      .getByRole('button', { name: /^删除 Checkpoint / })
-      .first()
+  const close = async () => {
+    await page
+      .getByRole('dialog', { name: '存档与路线', exact: true })
+      .getByRole('button', { name: '关闭', exact: true })
       .click()
     await page
-      .getByRole('dialog', { name: '删除 Checkpoint？', exact: true })
-      .getByRole('button', { name: '确认', exact: true })
+      .getByRole('dialog', { name: '存档', exact: true })
+      .getByRole('button', { name: '关闭', exact: true })
       .click()
-    await expect(dialog.getByRole('button', { name: '恢复', exact: true })).toHaveCount(remaining)
-    expect(await opfs()).toHaveLength(remaining)
   }
+  await input.fill('存档中的阅读进度')
+  await expect
+    .poll(async () => (await readOpfs(page))?.archives.find((a) => a.id === 'archive-1')?.draft)
+    .toBe('存档中的阅读进度')
+  let dialog = await open()
+  await dialog.getByRole('textbox', { name: '存档位名称' }).fill('午后存档')
+  await dialog.getByRole('button', { name: '保存到新存档位', exact: true }).click()
+  await expect(dialog.getByText('午后存档', { exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: '快速存档', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '快速读档', exact: true })).toBeEnabled()
+  await close()
+  await input.fill('之后的新草稿')
+  dialog = await open()
+  await dialog.getByRole('button', { name: '快速读档', exact: true }).click()
+  await expect(page.getByText('快速存档已载入。', { exact: true })).toBeVisible()
+  await close()
+  await expect(input).toHaveValue('存档中的阅读进度')
+  await page.reload()
+  await expect(input).toHaveValue('存档中的阅读进度')
+  dialog = await open()
+  await dialog.getByRole('tab', { name: '分享', exact: true }).click()
+  const downloaded = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: '导出分享文件' }).click()
+  const path = (await (await downloaded).path())!
+  const exported = JSON.parse(await readFile(path, 'utf8')) as SharePackage
+  expect(exported.format).toBe('yanju-game')
+  expect(exported.history.sessions).toHaveLength(1)
+  expect(JSON.stringify(exported)).not.toContain('apiKey')
+  expect(JSON.stringify(exported)).not.toContain('test-model')
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await page.getByLabel('导入存档文件').setInputFiles(path)
+  await expect(page).not.toHaveURL(/#\/chat\/archive-1$/)
+  await expect(input).toHaveValue('存档中的阅读进度')
+  await expect.poll(async () => (await readOpfs(page))?.archives.length).toBe(3)
+  expect((await readOpfs(page))?.channels[0].apiKey).toBe(channelFixture.apiKey)
+  dialog = await open()
+  await dialog.getByRole('tab', { name: '存档位', exact: true }).click()
+  const manual = dialog
+    .locator('[data-slot="card"]')
+    .filter({ has: page.getByText('午后存档', { exact: true }) })
+  await manual.getByRole('button', { name: '覆盖', exact: true }).click()
+  await expect(page.getByText('存档位已覆盖。')).toBeVisible()
+  await manual.getByRole('button', { name: '删除存档位', exact: true }).click()
+  await expect(dialog.getByText('午后存档', { exact: true })).toHaveCount(0)
 })
 
 test('叙事、手机、日记、论坛和严格协议贯通', async ({ page }) => {
@@ -516,7 +498,7 @@ test('纠正成功后刷新续聊，纠正请求仍保留在上下文前缀', as
   expect(next.response_format).toEqual(corrected.response_format)
 })
 
-test('渠道切换、存档链接、刷新和 v3 导入导出', async ({ page }) => {
+test('渠道切换、存档链接、刷新和 v4 导入导出', async ({ page }) => {
   const requests = await prepare(page)
   await enableChannel(page)
   await enableChannel(page, '第二渠道')
@@ -712,7 +694,7 @@ test('只保留 OPFS 文件时仍恢复完整聊天、草稿、人设与已测�
   await recovered.evaluate(async () => {
     localStorage.clear()
     await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.deleteDatabase('yanju-v3')
+      const request = indexedDB.deleteDatabase('yanju-v4')
       request.onsuccess = () => resolve()
       request.onerror = () => reject(request.error)
       request.onblocked = () => reject(new Error('工作数据库仍有连接'))
@@ -903,7 +885,7 @@ test('续写发送被拒绝后可以重选，完整剧情提交前保持未应�
   expect(
     await page.evaluate(async (id) => {
       const database = await new Promise<IDBDatabase>((resolve, reject) => {
-        const request = indexedDB.open('yanju-v3')
+        const request = indexedDB.open('yanju-v4')
         request.onsuccess = () => resolve(request.result)
         request.onerror = () => reject(request.error)
       })
@@ -1067,7 +1049,7 @@ test('论坛新帖50条、追加和局部改写失效重建均可在工作台完
     )
     .toBe(0)
   await studio.getByRole('button', { name: '关闭', exact: true }).click()
-  await expect(page.getByText('已失效 · 历史记录')).toHaveCount(3)
+  await expect(page.getByText('已失效 · 历史记录')).toHaveCount(0)
   await page.getByRole('button', { name: '打开剧情工作台', exact: true }).click()
   await creationTask(page, '一致性检查', '检查修改后的剧情')
   await expect(studio.getByText('确认午后时间与当前日期一致。')).toBeVisible()
@@ -1144,7 +1126,7 @@ test('资料 JSON 提取预览、媒体编辑导出、章节 Markdown 与自然�
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
-test('自动优先 Responses，叙事、论坛、摘要续聊及 v3 存档往返', async ({ page }) => {
+test('自动优先 Responses，叙事、论坛、摘要续聊及 v4 存档往返', async ({ page }) => {
   const { requests, chatRequests } = await prepareResponses(page)
   await enableChannel(page, '测试渠道', { mode: 'auto', defaultTemperature: true })
   expect(requests).toHaveLength(2)
@@ -1197,7 +1179,7 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v3 存档往返
   await page.getByRole('button', { name: '导出全部' }).click()
   const path = await (await downloadPromise).path()
   const exported = JSON.parse(await readFile(path!, 'utf8'))
-  expect(exported.version).toBe(3)
+  expect(exported.version).toBe(4)
   expect(exported.channels.find((c: { id: string }) => c.id === 'channel-1')).toMatchObject({
     apiMode: 'auto',
     temperature: null,
@@ -1515,7 +1497,7 @@ test('损坏存档在覆盖前被拒绝，原篇章仍可载入', async ({ page 
   await expect(page.getByText('第二篇章的开场。', { exact: true })).toBeVisible()
 })
 
-test('从指定消息分叉、单篇章导出和冲突存档合并都保留原记录', async ({ page }) => {
+test('从指定消息分叉、切换原路线和完整篇章分享保留全部未来', async ({ page }) => {
   await prepare(page)
   await enableChannel(page)
   await enter(page)
@@ -1525,38 +1507,38 @@ test('从指定消息分叉、单篇章导出和冲突存档合并都保留原�
     await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
     await expect(page.getByText(text, { exact: true })).toBeVisible()
   }
-  await expect(page.getByRole('button', { name: /DIARY \/ COUNTDOWN/ })).toHaveCount(2)
   await page.getByRole('button', { name: '从此分叉', exact: true }).nth(2).click()
-  await expect(page).not.toHaveURL(/#\/chat\/archive-1$/)
+  await expect(page).toHaveURL(/#\/chat\/archive-1$/)
   await expect(page.getByText('第一轮。', { exact: true })).toBeVisible()
   await expect(page.getByText('第二轮。', { exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: '存档管理' }).click()
-  await page.getByRole('searchbox', { name: '搜索存档', exact: true }).fill('第二篇章')
-  await expect(page.getByRole('button', { name: '导出 阅读篇章', exact: true })).toHaveCount(0)
-  await page.getByRole('searchbox', { name: '搜索存档', exact: true }).fill('')
-  const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出 阅读篇章', exact: true }).click()
-  const download = await downloadPromise
-  const path = (await download.path())!
-  const saved = JSON.parse(await readFile(path, 'utf8')) as SaveFile
-  expect(saved.archives).toHaveLength(1)
-  expect(saved.messages).toHaveLength(5)
-  await page.getByRole('button', { name: '合并导入', exact: true }).click()
+  await page.getByRole('button', { name: '存档与路线', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '存档与路线', exact: true })
+  await dialog.getByRole('tab', { name: '路线', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '载入路线' })).toHaveCount(2)
+  await dialog.getByRole('button', { name: '载入路线' }).first().click()
+  await expect(page.getByText('路线最新进度已载入。')).toBeVisible()
+  await dialog.getByRole('tab', { name: '分享', exact: true }).click()
+  await dialog.getByRole('combobox', { name: '分享范围' }).click()
+  await page.getByRole('option', { name: '整个篇章、全部路线与存档位' }).click()
+  const downloaded = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: '导出分享文件' }).click()
+  const path = (await (await downloaded).path())!
+  const saved = JSON.parse(await readFile(path, 'utf8')) as SharePackage
+  expect(saved.history.branches).toHaveLength(2)
+  expect(
+    saved.history.messageVersions
+      .map((v) => v.value.id)
+      .filter((id, i, ids) => ids.indexOf(id) === i),
+  ).toHaveLength(5)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
   await page.getByLabel('导入存档文件').setInputFiles(path)
-  await page
-    .getByRole('dialog', { name: '合并导入存档？', exact: true })
-    .getByRole('button', { name: '确认', exact: true })
-    .click()
-  await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
+  await expect(page).not.toHaveURL(/#\/chat\/archive-1$/)
   await expect(page.getByText('第二轮。', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '存档管理' }).click()
-  await expect(page.getByRole('button', { name: '导出 阅读篇章', exact: true })).toBeVisible()
-  await expect(
-    page.getByRole('button', { name: '导出 阅读篇章 · 分支', exact: true }),
-  ).toBeVisible()
-  await expect(
-    page.getByRole('button', { name: '导出 阅读篇章 · 导入', exact: true }),
-  ).toBeVisible()
+  await page.getByRole('button', { name: '存档与路线', exact: true }).click()
+  await dialog.getByRole('tab', { name: '路线', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '载入路线' })).toHaveCount(2)
 })
 
 test('千条历史按需加载，导出保留全部消息', async ({ page }) => {
@@ -1566,12 +1548,77 @@ test('千条历史按需加载，导出保留全部消息', async ({ page }) => 
   await page.getByRole('button', { name: /加载较早消息/ }).click()
   await expect(page.getByRole('button', { name: '编辑消息', exact: true })).toHaveCount(120)
   await page.getByRole('button', { name: '存档管理' }).click()
+  await page.getByRole('button', { name: '存档与路线', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '存档与路线', exact: true })
+  await dialog.getByRole('tab', { name: '分享', exact: true }).click()
   const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出 阅读篇章', exact: true }).click()
+  await dialog.getByRole('button', { name: '导出分享文件' }).click()
   const download = await downloadPromise
-  const data = JSON.parse(await readFile((await download.path())!, 'utf8')) as SaveFile
-  expect(data.messages).toHaveLength(1001)
-  expect(data.messages[0].id).toBe('opening')
+  const data = JSON.parse(await readFile((await download.path())!, 'utf8')) as SharePackage
+  const node = data.history.nodes.find((n) => n.id === data.history.sessions[0].nodeId)!
+  expect(node.messageIds).toHaveLength(1001)
+  expect(data.history.messageVersions.find((v) => v.id === node.messageIds[0])!.value.id).toBe(
+    'opening',
+  )
+})
+
+test('生成中快速读档取消请求，刷新和路线切换仍可恢复中断内容', async ({ page }) => {
+  await prepare(page)
+  await enableChannel(page)
+  await enter(page)
+  await page.getByRole('button', { name: '存档管理' }).click()
+  await page.getByRole('button', { name: '存档与路线', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '存档与路线', exact: true })
+  await dialog.getByRole('button', { name: '快速存档', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '快速读档', exact: true })).toBeEnabled()
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '存档', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await page.evaluate(() => {
+    window.fetch = async (_url, init) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            const partial = JSON.stringify({
+              scene: { time: '2019年', location: '书房' },
+              blocks: [{ kind: 'narration', text: '读档前生成的部分内容', translation: '' }],
+            }).slice(0, -1)
+            controller.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify({ id: 'slow', created: 1, model: 'test-model', choices: [{ index: 0, delta: { content: partial }, finish_reason: null }] })}\n\n`,
+              ),
+            )
+            init?.signal?.addEventListener(
+              'abort',
+              () => controller.error(new DOMException('已取消', 'AbortError')),
+              { once: true },
+            )
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+  })
+  await page.getByRole('textbox', { name: '聊天输入' }).fill('生成中的问题')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByText('读档前生成的部分内容', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '存档管理' }).click()
+  await page.getByRole('button', { name: '存档与路线', exact: true }).click()
+  await dialog.getByRole('button', { name: '快速读档', exact: true }).click()
+  await expect(page.getByText('快速存档已载入。', { exact: true })).toBeVisible()
+  await dialog.getByRole('tab', { name: '路线', exact: true }).click()
+  await dialog.getByRole('button', { name: '载入路线', exact: true }).click()
+  await expect(page.getByText('路线最新进度已载入。', { exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '存档', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await expect(page.getByText('读档前生成的部分内容', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+  await page.reload()
+  await expect(page.getByText('读档前生成的部分内容', { exact: true })).toBeVisible()
 })
 
 test('两个窗口争用同一篇章时拒绝重复发送，停止后锁可立即重用', async ({ page, context }) => {
@@ -1662,7 +1709,7 @@ test('导入持有全局锁时另一窗口不能排队发送到恢复后的同�
   // Hold the lease store so the real import stays in progress until both tabs exercise its gate.
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('yanju-v3')
+      const request = indexedDB.open('yanju-v4')
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
@@ -1705,7 +1752,7 @@ test('导入持有全局锁时另一窗口不能排队发送到恢复后的同�
       .poll(() =>
         page.evaluate(async () =>
           (await navigator.locks.query()).held?.some(
-            (lock) => lock.name === 'yanju-import:yanju-v3' && lock.mode === 'exclusive',
+            (lock) => lock.name === 'yanju-import:yanju-v4' && lock.mode === 'exclusive',
           ),
         ),
       )
@@ -1731,12 +1778,12 @@ test('导入持有全局锁时另一窗口不能排队发送到恢复后的同�
   }
 })
 
-test('单条损坏的 v3 记录由局部恢复界面接住，编辑与导出仍可用', async ({ page }) => {
+test('单条损坏的 v4 记录由局部恢复界面接住，编辑与导出仍可用', async ({ page }) => {
   await prepare(page)
   await enter(page)
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('yanju-v3')
+      const request = indexedDB.open('yanju-v4')
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })

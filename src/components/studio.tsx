@@ -484,7 +484,7 @@ export function Studio({
                               ('archives' in parsed || 'messages' in parsed)
                             )
                               throw new Error(
-                                '这里仅接收角色或世界资料；应用存档请使用存档管理，新版只支持 v3。',
+                                '这里仅接收角色或世界资料；应用存档请使用存档管理，新版只支持 v4。',
                               )
                           }
                           setImportText(content)

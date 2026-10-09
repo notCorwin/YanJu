@@ -20,7 +20,7 @@ import {
 import { cn } from '@/lib/utils'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import commands from '@/content/commands.json'
-import world from '@/content/world.json'
+import defaultWorld from '@/content/world.json'
 import { tracks } from '@/lib/media'
 import type { Notify } from '@/lib/notify'
 import {
@@ -45,11 +45,13 @@ export function WorldPlayer({
   onClose,
   notify,
   onInsert,
+  world = defaultWorld,
 }: {
   open: boolean
   onOpen: () => void
   onClose: () => void
   notify: Notify
+  world?: { label: string; text: string }[]
   onInsert: (text: string) => void
 }) {
   const titleId = useId()

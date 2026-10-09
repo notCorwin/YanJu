@@ -1,3 +1,4 @@
+import { captureGameNode, prepareHistoryEdit } from '@/lib/game-history'
 import { effectsSchema } from '@/lib/domain-schema'
 import { validateForum, validateNarrative } from '@/lib/schemas'
 import { db } from '@/lib/storage/database'
@@ -46,11 +47,23 @@ export function revise(archive: Archive, invalidate = false): Archive {
   }
 }
 
-export async function appendMessage(message: StoredMessage, expectedRevision?: number) {
-  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
+export async function appendMessage(
+  message: StoredMessage,
+  expectedRevision?: number,
+  expectedNodeId?: string,
+  expectedOperationOwner?: string,
+) {
+  await db.transaction('rw', [...db.gameTables, db.operations], async () => {
+    if (
+      expectedOperationOwner &&
+      (await db.operations.get(message.archiveId))?.owner !== expectedOperationOwner
+    )
+      throw new Error('会话操作已失效，旧回复未写入。')
     const archive = await db.archives.get(message.archiveId)
     if (!archive || (expectedRevision !== undefined && archive.revision !== expectedRevision))
       throw new Error('存档已在其他窗口修改，请重新载入后重试。')
+    if (expectedNodeId && (await db.sessions.get(message.archiveId))?.nodeId !== expectedNodeId)
+      throw new Error('剧情起点已改变，旧回复未写入。')
     const existing = await db.messages.get(message.id)
     if (existing?.status === 'complete') {
       if (JSON.stringify(existing) === JSON.stringify(message)) return
@@ -76,89 +89,95 @@ export async function appendMessage(message: StoredMessage, expectedRevision?: n
 }
 
 export async function editMessage(id: string, content: string) {
-  await db.transaction('rw', db.archives, db.messages, db.storyStates, db.storyEvents, async () => {
-    const message = await db.messages.get(id)
-    if (!message) throw new Error('消息不存在')
-    const archive = await db.archives.get(message.archiveId)
-    if (!archive) throw new Error('存档不存在')
-    let next: StoredMessage = {
-      ...message,
-      content,
-      rawContent: undefined,
-      requestContext: undefined,
-      stale: false,
-      correction: undefined,
-      partial: undefined,
-      error: undefined,
-      status: 'complete',
-    }
-    if (message.role === 'assistant' && message.reply) {
-      const parsed: unknown = JSON.parse(content)
-      next = {
-        ...next,
-        reply:
-          message.reply.kind === 'narrative'
-            ? { kind: 'narrative', value: validateNarrative(parsed) }
-            : { kind: 'forum', value: validateForum(parsed) },
+  await db.transaction(
+    'rw',
+    [...db.gameTables, db.archives, db.messages, db.storyStates, db.storyEvents],
+    async () => {
+      const message = await db.messages.get(id)
+      if (!message) throw new Error('消息不存在')
+      const archive = await db.archives.get(message.archiveId)
+      if (!archive) throw new Error('存档不存在')
+      let next: StoredMessage = {
+        ...message,
+        content,
+        rawContent: undefined,
+        requestContext: undefined,
+        stale: false,
+        correction: undefined,
+        partial: undefined,
+        error: undefined,
+        status: 'complete',
       }
-    } else if (message.interaction) {
-      const text = z.string().refine((value) => !!value.trim(), '内容不能为空')
-      const interaction = z
-        .discriminatedUnion('kind', [
-          z.strictObject({
-            kind: z.literal('phone'),
-            contactRef: text,
-            userText: text,
-            speaker: text,
-            time: text,
-            text,
-          }),
-          z.strictObject({
-            kind: z.literal('forum'),
-            postId: text,
-            replyTo: text,
-            userText: text,
-            author: text,
-            time: text,
-            content: text,
-          }),
-        ])
-        .parse(JSON.parse(content))
-      const user = message.userName ?? archive.userName ?? '你'
-      next = {
-        ...next,
-        interaction,
-        content:
-          interaction.kind === 'phone'
-            ? `${user}：${interaction.userText}\n${interaction.speaker}：${interaction.text}`
-            : `${user}：${interaction.userText}\n${interaction.author}：${interaction.content}`,
-      }
-    } else if (message.effects) {
-      const material = z
-        .strictObject({ content: z.string().min(1), effects: effectsSchema })
-        .parse(JSON.parse(content))
-      next = { ...next, ...material }
-    } else if (message.role === 'assistant') next = { ...next, kind: message.kind }
-    rebuildStory(archive, [
-      ...(await archiveMessages(archive.id)).filter((m) => m.sequence < next.sequence),
-      next,
-    ])
-    await db.messages.put(next)
-    const all = await archiveMessages(archive.id)
-    const coveredIndex = all.findIndex((m) => m.id === archive.summary?.coveredThroughId)
-    const updated = revise(
-      archive,
-      !!archive.summary && all.findIndex((m) => m.id === id) <= coveredIndex,
-    )
-    const tail = all.filter((m) => m.sequence > message.sequence)
-    await db.messages.bulkPut(tail.map((m) => ({ ...m, stale: true })))
-    await db.archives.put(updated)
-    await refreshStory(db, updated)
-  })
+      if (message.role === 'assistant' && message.reply) {
+        const parsed: unknown = JSON.parse(content)
+        next = {
+          ...next,
+          reply:
+            message.reply.kind === 'narrative'
+              ? { kind: 'narrative', value: validateNarrative(parsed) }
+              : { kind: 'forum', value: validateForum(parsed) },
+        }
+      } else if (message.interaction) {
+        const text = z.string().refine((value) => !!value.trim(), '内容不能为空')
+        const interaction = z
+          .discriminatedUnion('kind', [
+            z.strictObject({
+              kind: z.literal('phone'),
+              contactRef: text,
+              userText: text,
+              speaker: text,
+              time: text,
+              text,
+            }),
+            z.strictObject({
+              kind: z.literal('forum'),
+              postId: text,
+              replyTo: text,
+              userText: text,
+              author: text,
+              time: text,
+              content: text,
+            }),
+          ])
+          .parse(JSON.parse(content))
+        const user = message.userName ?? archive.userName ?? '你'
+        next = {
+          ...next,
+          interaction,
+          content:
+            interaction.kind === 'phone'
+              ? `${user}：${interaction.userText}\n${interaction.speaker}：${interaction.text}`
+              : `${user}：${interaction.userText}\n${interaction.author}：${interaction.content}`,
+        }
+      } else if (message.effects) {
+        const material = z
+          .strictObject({ content: z.string().min(1), effects: effectsSchema })
+          .parse(JSON.parse(content))
+        next = { ...next, ...material }
+      } else if (message.role === 'assistant') next = { ...next, kind: message.kind }
+      const base = await prepareHistoryEdit(archive, id)
+      rebuildStory(base, [
+        ...(await archiveMessages(archive.id)).filter((m) => m.sequence < next.sequence),
+        next,
+      ])
+      await db.messages.put(next)
+      const all = await archiveMessages(archive.id)
+      const coveredIndex = all.findIndex((m) => m.id === archive.summary?.coveredThroughId)
+      const updated = revise(
+        base,
+        !!archive.summary && all.findIndex((m) => m.id === id) <= coveredIndex,
+      )
+      const tail = all.filter((m) => m.sequence > message.sequence)
+      await db.messages.bulkDelete(tail.map((m) => m.id))
+      await db.archives.put(updated)
+      await refreshStory(db, updated)
+      await captureGameNode(db, updated, '编辑剧情', true)
+    },
+  )
 }
 
 export async function commitSummary(archiveId: string, revision: number, summary: Summary) {
-  await db.transaction('rw', db.archives, async () => {
+  await db.transaction('rw', [...db.gameTables, db.archives], async () => {
     const archive = await db.archives.get(archiveId)
     if (!archive || archive.revision !== revision)
       throw new Error('压缩期间存档有变更，摘要未提交。')

@@ -1,3 +1,5 @@
+import { captureGameNode, prepareHistoryEdit, messageSnapshot } from './game-history'
+import { registerGameOperation } from './game-operations'
 import { z } from 'zod'
 import { calibrate, compactContext, estimateTokens, serializeRequest } from './context'
 import { validDate } from './domain-schema'
@@ -30,10 +32,21 @@ import type { Archive, StoredMessage, TaskRun } from './types'
 const invalid = (text: string): never => {
   throw new ContentValidationError([text])
 }
-async function saveTaskProgress(task: TaskRun, create = false) {
-  return db.transaction('rw', [db.archives, db.tasks], async () => {
+async function saveTaskProgress(
+  task: TaskRun,
+  create = false,
+  operationOwner?: string,
+  nodeId?: string,
+) {
+  return db.transaction('rw', [...db.gameTables, db.operations], async () => {
     const archive = await db.archives.get(task.archiveId)
-    if (!archive || (create ? archive.revision !== task.revision : !(await db.tasks.get(task.id))))
+    if (
+      !archive ||
+      (operationOwner && (await db.operations.get(task.archiveId))?.owner !== operationOwner) ||
+      (nodeId && (await db.sessions.get(task.archiveId))?.nodeId !== nodeId) ||
+      (archive.navigationEpoch ?? 0) !== (task.navigationEpoch ?? 0) ||
+      (create ? archive.revision !== task.revision : !(await db.tasks.get(task.id)))
+    )
       return false
     await db.tasks.put(task)
     return true
@@ -130,7 +143,14 @@ function validateAuxiliary<K extends AuxiliaryKind>(
       invalid('改写没有修改任何内容，请按要求修改正文或相关模块')
     const prefix = history.filter((m) => m.sequence < target!.sequence)
     applyMessage(
-      rebuildStory({ id: story.archiveId, revision: story.revision } as Archive, prefix).story,
+      rebuildStory(
+        {
+          id: story.archiveId,
+          revision: story.revision,
+          content: input.context.setting,
+        } as Archive,
+        prefix,
+      ).story,
       { ...target!, reply: { kind: 'narrative', value: v.replacement } },
     )
   }
@@ -223,9 +243,27 @@ export async function executeAuxiliary<K extends AuxiliaryKind>(
     fetcher?: typeof fetch
   } = {},
 ): Promise<TaskRun> {
-  return withArchiveOperation(archiveId, () =>
-    executeAuxiliaryWithOperation(archiveId, kind, text, targetId, options),
-  )
+  const controller = new AbortController()
+  let finished!: () => void
+  const completion = new Promise<void>((resolve) => {
+    finished = resolve
+  })
+  const unregister = registerGameOperation(archiveId, async () => {
+    controller.abort()
+    await completion
+  })
+  try {
+    return await withArchiveOperation(archiveId, (operation) =>
+      executeAuxiliaryWithOperation(archiveId, kind, text, targetId, {
+        ...options,
+        operationOwner: operation.owner,
+        signal: AbortSignal.any([controller.signal, ...(options.signal ? [options.signal] : [])]),
+      }),
+    )
+  } finally {
+    unregister()
+    finished()
+  }
 }
 
 async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
@@ -234,6 +272,7 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
   text: string,
   targetId: string | null,
   options: {
+    operationOwner?: string
     signal?: AbortSignal
     onPartial?: (task: TaskRun) => void
     fetcher?: typeof fetch
@@ -254,17 +293,30 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
     )
       throw new Error('应用存档请通过存档管理导入；资料提取不处理应用存档。')
   }
-  const archive = await db.archives.get(archiveId)
+  let archive = await db.archives.get(archiveId)
   const settings = await db.settings.get('app')
   const channel = settings?.activeChannelId
     ? await db.channels.get(settings.activeChannelId)
     : undefined
   if (!archive || !channel || !channelIsReady(channel))
     throw new Error('请先选择篇章并配置已测试的渠道。')
-  const persona = settings?.activePersonaId
-    ? await db.personas.get(settings.activePersonaId)
-    : undefined
-  const history = (await archiveMessages(archiveId)).filter(
+  let historicalMessages: StoredMessage[] | undefined
+  if (kind === 'rewrite' && targetId && (await db.sessions.get(archiveId))) {
+    const historical = await messageSnapshot(archiveId, targetId)
+    archive = {
+      ...historical.archive,
+      revision: archive.revision,
+      navigationEpoch: archive.navigationEpoch,
+      summary: undefined,
+    }
+    historicalMessages = historical.messages
+  }
+  const persona = archive.content
+    ? archive.persona
+    : settings?.activePersonaId
+      ? await db.personas.get(settings.activePersonaId)
+      : undefined
+  const history = (historicalMessages ?? (await archiveMessages(archiveId))).filter(
     (m) => !m.stale && m.status === 'complete',
   )
   const story = rebuildStory(archive, history).story
@@ -275,6 +327,7 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
     context: {
       archive: { id: archive.id, name: archive.name, summary: archive.summary?.value },
       persona: persona ?? null,
+      setting: archive.content,
       story: storyContext(story),
       target: target?.reply?.value ?? null,
       phone: story.phones.find((p) => p.id === targetId) ?? null,
@@ -299,13 +352,17 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
     id: crypto.randomUUID(),
     archiveId,
     revision: archive.revision,
+    navigationEpoch: archive.navigationEpoch ?? 0,
     kind,
     input,
     channelId: channel.id,
     createdAt: Date.now(),
     status: 'partial',
   }
-  if (!(await saveTaskProgress(task, true))) throw new Error('篇章已变更，请重新生成后保存。')
+  const startNodeId = (await db.sessions.get(archiveId))?.nodeId
+  const persistTask = (snapshot: TaskRun, create = false) =>
+    saveTaskProgress(snapshot, create, options.operationOwner, startNodeId)
+  if (!(await persistTask(task, true))) throw new Error('篇章已变更，请重新生成后保存。')
   let checkpoint = Promise.resolve()
   let checkpointAt = 0
   try {
@@ -331,7 +388,10 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
         force: true,
         summarize: (value, signal) =>
           summarize(channel, value, signal, options.fetcher, archive.id),
-        commit: (value) => commitSummary(archive.id, archive.revision, value),
+        commit:
+          kind === 'rewrite'
+            ? async () => undefined
+            : (value) => commitSummary(archive.id, archive.revision, value),
       })
       if (summary) {
         input.context.archive = { id: archive.id, name: archive.name, summary: summary.value }
@@ -359,7 +419,7 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
         if (Date.now() - checkpointAt > 500) {
           checkpointAt = Date.now()
           const snapshot = structuredClone(task)
-          checkpoint = checkpoint.then(() => saveTaskProgress(snapshot)).then(() => undefined)
+          checkpoint = checkpoint.then(() => persistTask(snapshot)).then(() => undefined)
         }
       },
       onCorrection: (_detail, correction) => {
@@ -375,7 +435,7 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
       correction: result.correction,
       status: 'complete',
     })
-    if (!(await saveTaskProgress(task)))
+    if (!(await persistTask(task)))
       throw new Error('篇章已删除或资料已替换，收到的结果保留在请求记录中。')
     const calibration = calibrate(
       channel,
@@ -392,7 +452,7 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
     task.status = options.signal?.aborted ? 'cancelled' : 'failed'
     task.error = friendlyError(error)
     task.diagnostics = errorDiagnostics(error)
-    await saveTaskProgress(task)
+    await persistTask(task)
     await db.persistence.flush()
     return task
   }
@@ -406,7 +466,16 @@ export async function applyTask(id: string, editedOutput?: unknown) {
 async function applyTaskWithOperation(id: string, editedOutput?: unknown) {
   await db.transaction(
     'rw',
-    [db.archives, db.messages, db.storyStates, db.storyEvents, db.tasks, db.personas, db.settings],
+    [
+      ...db.gameTables,
+      db.archives,
+      db.messages,
+      db.storyStates,
+      db.storyEvents,
+      db.tasks,
+      db.personas,
+      db.settings,
+    ],
     async () => {
       const task = await db.tasks.get(id)
       if (!task || task.status !== 'complete') throw new Error('任务尚未完成，不能应用。')
@@ -438,6 +507,7 @@ async function applyTaskWithOperation(id: string, editedOutput?: unknown) {
         const persona = value as TaskOutput<'persona'>
         await db.personas.put({ ...persona, id: crypto.randomUUID(), createdAt: Date.now() })
         await db.tasks.update(id, { output: value, applied: true })
+        await captureGameNode(db, archive, '剧情修改', true)
         return
       }
       if (task.kind === 'continuation') throw new Error('请选择一个分支，推进成功后才会保存选择。')
@@ -454,7 +524,7 @@ async function applyTaskWithOperation(id: string, editedOutput?: unknown) {
         usage: task.usage,
         diagnostics: task.diagnostics,
       }
-      const updated = revise(archive)
+      let updated = revise(archive)
       if (task.kind === 'phoneReply') {
         const v = value as TaskOutput<'phoneReply'>
         const speaker = entityName(story, v.contactRef)
@@ -483,21 +553,24 @@ async function applyTaskWithOperation(id: string, editedOutput?: unknown) {
         const target = all.find((m) => m.id === task.input.targetId)
         if (!target || target.reply?.kind !== 'narrative') throw new Error('找不到改写目标')
         const replacement = validateNarrative((value as TaskOutput<'rewrite'>).replacement)
+        const historical = await messageSnapshot(archive.id, target.id)
         applyMessage(
           rebuildStory(
-            archive,
+            historical.archive,
             all.filter((m) => m.sequence < target.sequence),
           ).story,
           { ...target, reply: { kind: 'narrative', value: replacement } },
         )
+        updated = revise(await prepareHistoryEdit(archive, target.id), true)
+        await db.tasks.put({ ...task, revision: updated.revision })
         await db.messages.put({
           ...target,
           reply: { kind: 'narrative', value: replacement },
           content: JSON.stringify(replacement),
           correction: undefined,
         })
-        await db.messages.bulkPut(
-          all.filter((m) => m.sequence > target.sequence).map((m) => ({ ...m, stale: true })),
+        await db.messages.bulkDelete(
+          all.filter((m) => m.sequence > target.sequence).map((m) => m.id),
         )
         updated.summary = undefined
       } else if (task.kind === 'archiveMetadata') {
@@ -511,11 +584,13 @@ async function applyTaskWithOperation(id: string, editedOutput?: unknown) {
         task.kind === 'chapters'
       ) {
         await db.tasks.update(id, { output: value, applied: true })
+        await captureGameNode(db, archive, '剧情修改', true)
         return
       }
       await db.archives.put(updated)
-      await refreshStory(db, updated)
       await db.tasks.update(id, { output: value, applied: true })
+      await refreshStory(db, updated)
+      await captureGameNode(db, updated, '剧情修改', true)
     },
   )
   await db.persistence.flush()
@@ -540,7 +615,7 @@ export async function chooseContinuation(
     return task
   })
   if (!task || !(await send(action, task.revision))) return false
-  await db.transaction('rw', [db.archives, db.tasks], async () => {
+  await db.transaction('rw', [...db.gameTables, db.archives, db.tasks], async () => {
     const current = await db.tasks.get(id)
     if (
       !(await db.archives.get(task.archiveId)) ||
@@ -551,13 +626,14 @@ export async function chooseContinuation(
     )
       throw new Error('分支任务已变更，推进的剧情仍已保存。')
     await db.tasks.update(id, { applied: true })
+    await captureGameNode(db, (await db.archives.get(task.archiveId))!, '剧情修改', true)
   })
   await db.persistence.flush()
   return true
 }
 
 export async function saveMediaDraft(id: string, editedOutput: unknown) {
-  await db.transaction('rw', [db.archives, db.messages, db.tasks], async () => {
+  await db.transaction('rw', [...db.gameTables, db.archives, db.messages, db.tasks], async () => {
     const task = await db.tasks.get(id)
     if (!task || task.kind !== 'media' || task.status !== 'complete')
       throw new Error('媒体任务尚未完成，不能保存。')

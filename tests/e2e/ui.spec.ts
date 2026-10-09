@@ -42,7 +42,7 @@ async function prepareUI(page: Page, archiveCount = 2) {
   await page.goto('./')
   await expect(page.getByRole('button', { name: '进入聊天' })).toBeVisible()
   const data: SaveFile = {
-    version: 3,
+    version: 4,
     exportedAt: new Date().toISOString(),
     archives: Array.from({ length: archiveCount }, (_, index) => ({
       id: `archive-${index + 1}`,
@@ -88,7 +88,7 @@ async function prepareUI(page: Page, archiveCount = 2) {
   }
   await page.getByRole('button', { name: '存档管理', exact: true }).click()
   await page.getByLabel('导入存档文件').setInputFiles({
-    name: 'ui-fixture-v3.json',
+    name: 'ui-fixture-v4.json',
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(data)),
   })

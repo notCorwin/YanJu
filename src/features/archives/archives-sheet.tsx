@@ -1,4 +1,7 @@
-import { CheckpointsDialog } from './checkpoints-dialog'
+import { withPendingDrafts } from '@/lib/draft-storage'
+import { GameSavesDialog } from './game-saves-dialog'
+import { importGame, parseGameShare } from '@/lib/game-share'
+import { removeGameHistory } from '@/lib/game-history'
 import { ConfirmDialog, FormField, IconButton } from '@/components/shared'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -26,7 +29,6 @@ import { friendlyError } from '@/lib/provider'
 import {
   createArchive,
   db,
-  exportArchive,
   exportSave,
   importSave,
   initializeStorage,
@@ -55,7 +57,7 @@ export function ArchivesSheet({
   notify: Notify
   disabled: boolean
 }) {
-  const [checkpointOpen, setCheckpointOpen] = useState(false)
+  const [savesOpen, setSavesOpen] = useState(false)
   const [removeId, setRemoveId] = useState('')
   const [renameId, setRenameId] = useState('')
   const [name, setName] = useState('')
@@ -74,7 +76,7 @@ export function ArchivesSheet({
   const download = async () => {
     try {
       const data = await exportSave()
-      downloadJson(data, saveFileName())
+      downloadJson(withPendingDrafts(data), saveFileName())
       notify('全部存档、人设、渠道和外观已导出。')
     } catch (e) {
       notify(friendlyError(e), true)
@@ -106,8 +108,8 @@ export function ArchivesSheet({
           )}
         </SheetHeader>
         <div className="flex flex-wrap gap-2 px-4">
-          <Button variant="outline" onClick={() => setCheckpointOpen(true)}>
-            Checkpoint
+          <Button variant="outline" onClick={() => setSavesOpen(true)}>
+            存档与路线
           </Button>
           <Button
             disabled={disabled}
@@ -156,8 +158,22 @@ export function ArchivesSheet({
               if (!file) return
               try {
                 const value: unknown = JSON.parse(await file.text())
-                normalizeImport(value)
-                setPendingImport(value)
+                if (
+                  value &&
+                  typeof value === 'object' &&
+                  'format' in value &&
+                  value.format === 'yanju-game'
+                ) {
+                  parseGameShare(value)
+                  const imported = await importGame(value)
+                  onRestored()
+                  onSelect(imported.id)
+                  notify('剧情已导入为独立篇章。')
+                  onClose()
+                } else {
+                  normalizeImport(value)
+                  setPendingImport(value)
+                }
               } catch (err) {
                 notify(friendlyError(err), true)
               }
@@ -224,9 +240,8 @@ export function ArchivesSheet({
                   <IconButton
                     label={`导出 ${a.name}`}
                     onClick={() => {
-                      void exportArchive(a.id)
-                        .then((data) => downloadJson(data, saveFileName(a.name)))
-                        .catch((error) => notify(friendlyError(error), true))
+                      onSelect(a.id)
+                      setSavesOpen(true)
                     }}
                   >
                     <Download />
@@ -255,16 +270,12 @@ export function ArchivesSheet({
             </Card>
           ))}
         </div>
-        <CheckpointsDialog
-          open={checkpointOpen}
-          onClose={() => setCheckpointOpen(false)}
-          disabled={disabled}
+        <GameSavesDialog
+          open={savesOpen}
+          onClose={() => setSavesOpen(false)}
+          archiveId={activeId}
           notify={notify}
-          archiveName={archives.find((a) => a.id === activeId)?.name ?? '宴雎'}
-          onRestore={(id) => {
-            onRestored()
-            onSelect(id)
-          }}
+          onRestore={onRestored}
         />
         <ConfirmDialog
           open={!!removeId}
@@ -275,9 +286,18 @@ export function ArchivesSheet({
             await withArchiveOperation(removeId, () =>
               db.transaction(
                 'rw',
-                [db.messages, db.archives, db.storyStates, db.storyEvents, db.tasks, db.requests],
+                [
+                  ...db.gameTables,
+                  db.messages,
+                  db.archives,
+                  db.storyStates,
+                  db.storyEvents,
+                  db.tasks,
+                  db.requests,
+                ],
                 async () => {
                   await db.messages.where('archiveId').equals(removeId).delete()
+                  await removeGameHistory(removeId)
                   await db.archives.delete(removeId)
                   await db.storyStates.delete(removeId)
                   await db.storyEvents.where('archiveId').equals(removeId).delete()

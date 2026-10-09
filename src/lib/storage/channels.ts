@@ -7,7 +7,7 @@ export async function commitChannelCapability(
   capability: ChannelCapability,
   database = db,
 ): Promise<Channel | undefined> {
-  return database.transaction('rw', database.channels, async () => {
+  return database.transaction('rw', [...database.gameTables, database.channels], async () => {
     const current = await database.channels.get(tested.id)
     if (!current || channelFingerprint(current) !== channelFingerprint(tested)) return undefined
     const next = withCapability(current, capability)

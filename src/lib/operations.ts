@@ -18,6 +18,27 @@ export const operationLockName = (name: string, archiveId: string) =>
 const conflict = () => new Error('这个篇章正在另一个窗口操作，请等待完成后重试。')
 const importConflict = () => new Error('另一个窗口正在导入存档，请等待完成后重试。')
 
+/** A save slot copies a consistent view without stopping an active generation. */
+export async function withSnapshotOperation<T>(
+  action: () => Promise<T>,
+  database = db,
+): Promise<T> {
+  const run = async () => {
+    const lease = await database.operations.get(importLeaseId)
+    if (lease && lease.expiresAt > Date.now()) throw importConflict()
+    return action()
+  }
+  if (!navigator.locks?.request) return run()
+  return navigator.locks.request(
+    importLockName(database.name),
+    { mode: 'shared', ifAvailable: true },
+    (lock) => {
+      if (!lock) throw importConflict()
+      return run()
+    },
+  )
+}
+
 function maintainLease(
   archiveId: string,
   owner: string,
@@ -36,7 +57,7 @@ function maintainLease(
     owner,
     release: async () => {
       clearInterval(heartbeat)
-      await database.transaction('rw', database.operations, async () => {
+      await database.transaction('rw', [...database.gameTables, database.operations], async () => {
         if ((await database.operations.get(archiveId))?.owner === owner)
           await database.operations.delete(archiveId)
       })
@@ -53,21 +74,25 @@ async function openLease(
   // Reject immediately while an import writes archives, before queuing for its transaction.
   const importing = await database.operations.get(importLeaseId)
   if (importing && importing.expiresAt > Date.now()) throw importConflict()
-  await database.transaction('rw', database.archives, database.operations, async () => {
-    // An import can start between the fast check above and this atomic lease acquisition.
-    const importing = await database.operations.get(importLeaseId)
-    if (importing && importing.expiresAt > Date.now()) throw importConflict()
-    if (!(await database.archives.get(archiveId))) throw new Error('存档不存在。')
-    const existing = await database.operations.get(archiveId)
-    if (!reclaim && existing && existing.expiresAt > Date.now()) throw conflict()
-    await database.operations.put({ archiveId, owner, expiresAt: Date.now() + leaseDuration })
-  })
+  await database.transaction(
+    'rw',
+    [...database.gameTables, database.archives, database.operations],
+    async () => {
+      // An import can start between the fast check above and this atomic lease acquisition.
+      const importing = await database.operations.get(importLeaseId)
+      if (importing && importing.expiresAt > Date.now()) throw importConflict()
+      if (!(await database.archives.get(archiveId))) throw new Error('存档不存在。')
+      const existing = await database.operations.get(archiveId)
+      if (!reclaim && existing && existing.expiresAt > Date.now()) throw conflict()
+      await database.operations.put({ archiveId, owner, expiresAt: Date.now() + leaseDuration })
+    },
+  )
   return maintainLease(archiveId, owner, database)
 }
 
 async function openImportLease(database: YanJuDatabase): Promise<ArchiveOperation> {
   const owner = crypto.randomUUID()
-  await database.transaction('rw', database.operations, async () => {
+  await database.transaction('rw', [...database.gameTables, database.operations], async () => {
     if ((await database.operations.toArray()).some((lease) => lease.expiresAt > Date.now()))
       throw new Error('另一个窗口正在操作存档，请等待完成后导入。')
     await database.operations.put({

@@ -1,7 +1,7 @@
 import character from '@/content/character.txt?raw'
 import rules from '@/content/narrative-rules.txt?raw'
 import style from '@/content/style.txt?raw'
-import type { Persona, StoredMessage, Summary } from './types'
+import type { Persona, StoredMessage, Summary, StoryContent } from './types'
 import type { ModelMessage } from 'ai'
 import type { RequestKind } from './schemas'
 
@@ -20,12 +20,22 @@ const forumProtocol = `只返回 ForumReply 根对象，禁止 HTML、XML、CSS�
 post 有 id、title、author、time、content、tags、views、followers。answers 必须完整输出 50 条回答，每条有唯一 id、author、time、content、非负整数 likes 和 replyTo（没有回复对象时填空字符串）。
 仅为本轮用户原文建立一个新帖，不重建此前帖子。后续论坛回复使用独立任务增量追加。文字须完整且非空，不要生成场景、手机、日记、状态栏或任何记忆档案。`
 
-export function buildInstructions(persona: Persona | undefined, kind: RequestKind) {
+export function buildInstructions(
+  persona: Persona | undefined,
+  kind: RequestKind,
+  content?: StoryContent,
+) {
   const identity = persona
     ? `当前用户人设：姓名 ${persona.name}；性别 ${persona.gender}；身份 ${persona.identity}；喜好 ${persona.prefer}。
 每轮必须遵循用户强制指令：${persona.force}`
     : '用户为沈辞玉，不允许代替用户说话、行动或做决定。'
-  return [character, rules, style, identity, kind === 'forum' ? forumProtocol : narrativeProtocol]
+  return [
+    content?.character ?? character,
+    content?.rules ?? rules,
+    content?.style ?? style,
+    identity,
+    kind === 'forum' ? forumProtocol : narrativeProtocol,
+  ]
     .join('\n\n')
     .replaceAll('{{user}}', persona?.name || '沈辞玉')
     .replaceAll('沈辞玉', persona?.name || '沈辞玉')

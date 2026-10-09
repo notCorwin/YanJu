@@ -428,6 +428,15 @@ export function MessageEditor({
     try {
       await withArchiveOperation(message.archiveId, () => editMessage(message.id, text))
       onSaved()
+      // A historical edit mounts the selected route again, replacing the original opener.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          document
+            .getElementById(`message-${message.id}`)
+            ?.querySelector<HTMLButtonElement>('button[aria-label="编辑消息"]')
+            ?.focus({ preventScroll: true })
+        }),
+      )
       onClose()
     } catch (e) {
       if (e instanceof SyntaxError) {

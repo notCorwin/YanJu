@@ -93,6 +93,101 @@ export interface Archive {
   userName?: string
   description?: string
   keywords?: string[]
+  content?: StoryContent
+  persona?: Persona
+  navigationEpoch?: number
+}
+export interface StoryContent {
+  character: string
+  rules: string
+  style: string
+  opening: string
+  world: { label: string; text: string }[]
+  entities: {
+    id: string
+    kind: 'character' | 'location' | 'organization'
+    name: string
+    description: string
+  }[]
+  background: string
+}
+export interface GameSession {
+  id: string
+  branchId: string
+  nodeId: string
+  startNodeId: string
+  detached?: boolean
+}
+export interface Branch {
+  id: string
+  archiveId: string
+  name: string
+  headId: string
+  forkNodeId?: string
+  createdAt: number
+  recovery?: RecoveryState
+}
+export interface RecoveryState {
+  nodeId: string
+  archive: Omit<Archive, 'content' | 'persona'>
+  contextId: string
+  messageIds: string[]
+  taskIds: string[]
+  stateId: string
+}
+export interface HistoryNode {
+  id: string
+  archiveId: string
+  branchId: string
+  parentId?: string
+  createdAt: number
+  label: string
+  messageIds: string[]
+  taskIds: string[]
+  contextId: string
+  stateId: string
+  archive: Omit<Archive, 'content' | 'persona'>
+}
+export interface GameContext {
+  id: string
+  archiveId: string
+  content: StoryContent
+  persona?: Persona
+}
+export interface MessageVersion {
+  id: string
+  archiveId: string
+  value: StoredMessage
+}
+export interface TaskVersion {
+  id: string
+  archiveId: string
+  value: TaskRun
+}
+export interface StateVersion {
+  id: string
+  archiveId: string
+  state: StoryState
+}
+export interface SaveSlot {
+  id: string
+  archiveId: string
+  branchId: string
+  nodeId: string
+  name: string
+  kind: 'auto' | 'manual' | 'quick'
+  createdAt: number
+  recovery?: RecoveryState
+}
+export interface GameHistory {
+  sessions: GameSession[]
+  branches: Branch[]
+  nodes: HistoryNode[]
+  contexts: GameContext[]
+  messageVersions: MessageVersion[]
+  taskVersions: TaskVersion[]
+  slots: SaveSlot[]
+  stateVersions: StateVersion[]
 }
 export type MessageStatus = 'complete' | 'partial' | 'failed' | 'cancelled'
 export interface RequestDiagnostics {
@@ -149,6 +244,7 @@ export interface StoredMessage {
       }
 }
 export interface TaskRun {
+  navigationEpoch?: number
   id: string
   archiveId: string
   revision: number
@@ -211,7 +307,7 @@ export type ChatMessage = UIMessage<
   Record<string, never>
 >
 export interface SaveFile {
-  version: 3
+  version: 4
   exportedAt: string
   archives: Archive[]
   messages: StoredMessage[]
@@ -222,6 +318,7 @@ export interface SaveFile {
   storyEvents: StoryEvent[]
   tasks: TaskRun[]
   requests: RequestRecord[]
+  history: GameHistory
 }
 
 export const defaults: Settings = {

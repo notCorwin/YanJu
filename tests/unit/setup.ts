@@ -13,6 +13,7 @@ vi.mock('../../src/lib/model-catalog', async (importOriginal) => {
 
 afterEach(async () => {
   await Promise.all([
+    ...db.historyTables.map((table) => table.clear()),
     db.archives.clear(),
     db.messages.clear(),
     db.channels.clear(),

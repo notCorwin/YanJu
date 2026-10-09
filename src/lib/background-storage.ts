@@ -1,3 +1,4 @@
+import { updateGameContext } from './game-history'
 import { blobToDataUrl } from './file-storage'
 import type { YanJuDatabase } from './storage'
 
@@ -6,6 +7,17 @@ export async function replaceBackground(database: YanJuDatabase, image?: File) {
   if (image && !image.type.startsWith('image/')) throw new Error('请选择图片文件。')
   const bgImage = image ? await blobToDataUrl(image) : ''
   if (!(await database.settings.update('app', { bgImage }))) throw new Error('本地设置尚未打开。')
+  const settings = await database.settings.get('app')
+  const archive = settings?.activeArchiveId
+    ? await database.archives.get(settings.activeArchiveId)
+    : undefined
+  if (archive?.content)
+    await updateGameContext(
+      archive.id,
+      { ...archive.content, background: bgImage },
+      archive.persona,
+      database,
+    )
   const status = await database.persistence.flush()
   if (status.phase === 'error') throw new Error(status.error || '背景图片尚未完成 OPFS 备份。')
 }

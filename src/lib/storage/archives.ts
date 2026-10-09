@@ -1,15 +1,24 @@
+import { defaultStoryContent } from '@/lib/game-content'
 import opening from '@/content/opening.txt?raw'
 import { db } from '@/lib/storage/database'
 import { archiveMessages } from '@/lib/storage/messages'
 import { remapMessage, remapReferences } from '@/lib/storage/references'
 import { exportSave } from '@/lib/storage/save'
 import { refreshStory } from '@/lib/storage/story'
-import { type Archive, type SaveFile, type StoredMessage } from '@/lib/types'
+import { newPersona, type Archive, type SaveFile, type StoredMessage } from '@/lib/types'
 
 export function createArchiveData(name = '新的篇章'): { archive: Archive; opening: StoredMessage } {
   const now = Date.now()
   const id = crypto.randomUUID()
-  const archive: Archive = { id, name, createdAt: now, updatedAt: now, revision: 0, draft: '' }
+  const archive: Archive = {
+    id,
+    name,
+    createdAt: now,
+    updatedAt: now,
+    revision: 0,
+    draft: '',
+    content: defaultStoryContent(),
+  }
   const msg: StoredMessage = {
     id: crypto.randomUUID(),
     archiveId: id,
@@ -28,15 +37,20 @@ export async function createArchive(name?: string, database = db) {
   const settings = await database.settings.get('app')
   const persona = settings?.activePersonaId
     ? await database.personas.get(settings.activePersonaId)
-    : undefined
+    : newPersona()
   data.archive.userName = persona?.name ?? '沈辞玉'
+  data.archive.persona = persona
+  data.archive.content = defaultStoryContent(settings?.bgImage)
   await database.transaction(
     'rw',
-    database.archives,
-    database.messages,
-    database.settings,
-    database.storyStates,
-    database.storyEvents,
+    [
+      ...database.gameTables,
+      database.archives,
+      database.messages,
+      database.settings,
+      database.storyStates,
+      database.storyEvents,
+    ],
     async () => {
       await database.archives.add(data.archive)
       await database.messages.add(data.opening)
@@ -77,11 +91,14 @@ export function copyArchiveData(source: Archive, messages: StoredMessage[], name
 export async function forkArchive(id: string, throughId: string, database = db) {
   return database.transaction(
     'rw',
-    database.archives,
-    database.messages,
-    database.settings,
-    database.storyStates,
-    database.storyEvents,
+    [
+      ...database.gameTables,
+      database.archives,
+      database.messages,
+      database.settings,
+      database.storyStates,
+      database.storyEvents,
+    ],
     async () => {
       const archive = await database.archives.get(id)
       if (!archive) throw new Error('存档不存在。')
@@ -111,6 +128,16 @@ export async function exportArchive(id: string, database = db): Promise<SaveFile
     storyEvents: data.storyEvents.filter((e) => e.archiveId === id),
     tasks: data.tasks.filter((t) => t.archiveId === id),
     requests: data.requests.filter((r) => r.archiveId === id),
+    history: {
+      sessions: data.history.sessions.filter((s) => s.id === id),
+      branches: data.history.branches.filter((v) => v.archiveId === id),
+      nodes: data.history.nodes.filter((v) => v.archiveId === id),
+      contexts: data.history.contexts.filter((v) => v.archiveId === id),
+      messageVersions: data.history.messageVersions.filter((v) => v.archiveId === id),
+      taskVersions: data.history.taskVersions.filter((v) => v.archiveId === id),
+      stateVersions: data.history.stateVersions.filter((v) => v.archiveId === id),
+      slots: data.history.slots.filter((v) => v.archiveId === id),
+    },
     settings: { ...data.settings, activeArchiveId: id },
   }
 }

@@ -1,3 +1,13 @@
+import type {
+  Branch,
+  GameSession,
+  GameContext,
+  HistoryNode,
+  SaveSlot,
+  MessageVersion,
+  TaskVersion,
+  StateVersion,
+} from '@/lib/types'
 import { type OperationLease } from '@/lib/operations'
 import { OpfsPersistence } from '@/lib/opfs'
 import { readPersistenceSnapshot } from '@/lib/storage/save'
@@ -29,8 +39,38 @@ export class YanJuDatabase extends Dexie {
   requests!: Table<RequestRecord, string>
   operations!: Table<OperationLease, string>
   persistenceChanges!: Table<PersistenceChange, string>
+  sessions!: Table<GameSession, string>
+  branches!: Table<Branch, string>
+  nodes!: Table<HistoryNode, string>
+  contexts!: Table<GameContext, string>
+  messageVersions!: Table<MessageVersion, string>
+  taskVersions!: Table<TaskVersion, string>
+  slots!: Table<SaveSlot, string>
+  stateVersions!: Table<StateVersion, string>
+  get gameTables(): Table[] {
+    return [
+      ...this.historyTables,
+      this.archives,
+      this.messages,
+      this.tasks,
+      this.storyStates,
+      this.storyEvents,
+    ]
+  }
+  get historyTables(): Table[] {
+    return [
+      this.sessions,
+      this.branches,
+      this.nodes,
+      this.contexts,
+      this.messageVersions,
+      this.taskVersions,
+      this.slots,
+      this.stateVersions,
+    ]
+  }
   readonly persistence: OpfsPersistence
-  constructor(name = 'yanju-v3') {
+  constructor(name = 'yanju-v4') {
     super(name)
     this.persistence = new OpfsPersistence(name, (ids) => readPersistenceSnapshot(this, ids), true)
     this.version(1).stores({
@@ -45,6 +85,16 @@ export class YanJuDatabase extends Dexie {
     })
     this.version(2).stores({ requests: 'id,archiveId,kind,createdAt,[archiveId+createdAt]' })
     this.version(3).stores({ operations: 'archiveId', persistenceChanges: 'id' })
+    this.version(4).stores({
+      sessions: 'id',
+      branches: 'id,archiveId',
+      nodes: 'id,archiveId,branchId',
+      contexts: 'id,archiveId',
+      messageVersions: 'id,archiveId',
+      taskVersions: 'id,archiveId',
+      slots: 'id,archiveId,[branchId+kind]',
+      stateVersions: 'id,archiveId',
+    })
     const changes = new WeakMap<object, { touched: boolean; full: boolean; ids: Set<string> }>()
     this.use({
       stack: 'dbcore',

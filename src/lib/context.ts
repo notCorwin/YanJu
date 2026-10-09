@@ -13,7 +13,15 @@ import {
   modelMessages,
   serializeMessage,
 } from './prompts'
-import type { ApiProtocol, Archive, Channel, Persona, StoredMessage, Summary } from './types'
+import type {
+  ApiProtocol,
+  Archive,
+  Channel,
+  Persona,
+  StoredMessage,
+  Summary,
+  StoryContent,
+} from './types'
 import { estimatedProtocol } from './channels'
 
 export const COMPRESSION_THRESHOLD = 0.85
@@ -74,10 +82,11 @@ export function contextBudget(
   kind: RequestKind,
   messages: StoredMessage[],
   summary?: Summary,
+  content?: StoryContent,
 ) {
   const serialized = serializeRequest(
     channel,
-    buildInstructions(persona, kind),
+    buildInstructions(persona, kind, content),
     modelMessages(messages, summary),
     JSON.parse(schemaString(kind)),
     kind === 'forum' ? 'ForumReply' : 'NarrativeReply',
@@ -133,7 +142,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
     messages.some((m) => m.id === archive.summary?.coveredThroughId)
       ? archive.summary
       : undefined
-  const before = contextBudget(channel, persona, kind, messages, valid)
+  const before = contextBudget(channel, persona, kind, messages, valid, archive.content)
   if (!options.force && !before.mustCompress) return valid
   checkAbort(signal)
   const userStarts = messages
@@ -223,7 +232,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
       revision: archive.revision,
       createdAt: Date.now(),
     }
-    const after = contextBudget(channel, persona, kind, messages, candidate)
+    const after = contextBudget(channel, persona, kind, messages, candidate, archive.content)
     if (after.percent <= COMPRESSION_TARGET || (keep === 1 && !after.mustCompress)) {
       checkAbort(signal)
       await commit(candidate)
@@ -239,7 +248,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
       revision: archive.revision,
       createdAt: Date.now(),
     }
-    if (!contextBudget(channel, persona, kind, messages, candidate).mustCompress) {
+    if (!contextBudget(channel, persona, kind, messages, candidate, archive.content).mustCompress) {
       await commit(candidate)
       return candidate
     }

@@ -37,7 +37,7 @@ const archive: Archive = {
   userName: '沈辞玉',
 }
 const save = (messages = [messageFixture('m-0', 'user', '开始阅读', 0)]) => ({
-  version: 3,
+  version: 4,
   exportedAt: new Date().toISOString(),
   archives: [archive],
   messages,
@@ -110,11 +110,11 @@ describe('渠道测试结果的并发提交', () => {
     expect(channelIsReady(saved!)).toBe(true)
   })
 })
-describe('v3 IndexedDB 与独立存档协议', () => {
+describe('v4 IndexedDB 与独立存档协议', () => {
   it('默认使用新库，不读取旧 localStorage 或旧数据库', async () => {
-    expect(db.name).toBe('yanju-v3')
+    expect(db.name).toBe('yanju-v4')
     localStorage.setItem('YanJu_Save', JSON.stringify({ version: 1, archives: [{ id: 'old' }] }))
-    const fresh = new YanJuDatabase('v3-fresh-test')
+    const fresh = new YanJuDatabase('v4-fresh-test')
     await initializeStorage(fresh)
     expect(await fresh.archives.count()).toBe(1)
     expect(await fresh.archives.get('old')).toBeUndefined()
@@ -125,10 +125,10 @@ describe('v3 IndexedDB 与独立存档协议', () => {
   it('明确拒绝 v1、v2，非法导入不改变现有资料', async () => {
     await db.archives.put(archive)
     for (const version of [1, 2])
-      await expect(importSave({ ...save(), version })).rejects.toThrow(/版本 3/)
+      await expect(importSave({ ...save(), version })).rejects.toThrow(/版本 4/)
     await expect(importSave({ ...save(), archives: [archive, archive] })).rejects.toThrow(/重复/)
     expect(await db.archives.count()).toBe(1)
-    expect(() => normalizeImport({ version: 3 })).toThrow()
+    expect(() => normalizeImport({ version: 4 })).toThrow()
   })
   it('完整往返重建事实、来源、投影，并保留请求冻结内容和草稿', async () => {
     const m = {
@@ -139,7 +139,7 @@ describe('v3 IndexedDB 与独立存档协议', () => {
     }
     await importSave({ ...save([m]), archives: [{ ...archive, draft: '未发出的输入' }] })
     const exported = await exportSave()
-    expect(exported.version).toBe(3)
+    expect(exported.version).toBe(4)
     expect(exported.storyStates[0].memories[0].source).toEqual({ messageId: 'm-0', blockId: 'b1' })
     expect(exported.storyEvents[0].effects).toEqual(narrativeFixture.effects)
     expect(exported.channels[0].apiKey).toBe(channelFixture.apiKey)
@@ -176,9 +176,8 @@ describe('v3 IndexedDB 与独立存档协议', () => {
     expect((await db.archives.get(archive.id))?.summary).toBeDefined()
     await editMessage('m-0', '修改已覆盖消息')
     const history = await archiveMessages(archive.id)
-    expect(history).toHaveLength(3)
-    expect(history[1].stale).toBe(true)
-    expect(history[1].reply).toBeDefined()
+    expect(history).toHaveLength(1)
+    expect(await db.branches.where('archiveId').equals(archive.id).count()).toBeGreaterThan(1)
     expect((await db.archives.get(archive.id))?.summary).toBeUndefined()
     expect((await db.storyStates.get(archive.id))?.memories).toHaveLength(0)
     expect(await db.storyEvents.count()).toBe(0)
@@ -226,7 +225,7 @@ describe('v3 IndexedDB 与独立存档协议', () => {
   })
 })
 
-describe('v3 分支与合并引用', () => {
+describe('v4 分支与合并引用', () => {
   it.each(['fork', 'merge'] as const)(
     '%s 重映射跨轮实体、关系、会话与事实来源，并保留用户原文',
     async (mode) => {
@@ -327,7 +326,7 @@ describe('v3 分支与合并引用', () => {
     { diagnostics: { elapsedMs: 1 } },
     { createdAt: 9_000_000_000_000_000 },
     { sequence: -1 },
-  ])('损坏的 v3 元数据拒绝覆盖：%j', async (invalid) => {
+  ])('损坏的 v4 元数据拒绝覆盖：%j', async (invalid) => {
     await db.archives.put(archive)
     await expect(
       importSave(save([{ ...messageFixture('invalid', 'user', '原文', 0), ...invalid } as never])),

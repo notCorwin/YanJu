@@ -8,7 +8,17 @@ import { defaults, type SaveFile } from '../../src/lib/types'
 import { channelFixture, messageFixture, narrativeFixture } from '../fixtures'
 
 const save: SaveFile = {
-  version: 3,
+  version: 4,
+  history: {
+    sessions: [],
+    branches: [],
+    nodes: [],
+    contexts: [],
+    messageVersions: [],
+    taskVersions: [],
+    slots: [],
+    stateVersions: [],
+  },
   exportedAt: '2026-10-08T00:00:00.000Z',
   storyStates: [],
   storyEvents: [],

@@ -1,3 +1,9 @@
+import {
+  parseHistory,
+  assertSnapshotState,
+  storyContentSchema,
+  personaSnapshotSchema,
+} from '@/lib/game-history-schema'
 import { effectsSchema } from '@/lib/domain-schema'
 import {
   calibrationSchema,
@@ -29,7 +35,7 @@ export const list = (v: unknown) => z.array(z.unknown()).parse(v ?? [])
 
 export function normalizeImport(input: unknown, restore = false): SaveFile {
   const raw = record(input)
-  if (raw.version !== 3) throw new Error('新版仅支持版本 3 的宴雎 JSON 存档。')
+  if (raw.version !== 4) throw new Error('新版仅支持版本 4 的宴雎 JSON 存档。')
   for (const key of [
     'channels',
     'masks',
@@ -97,6 +103,9 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       updatedAt: z.number().int().min(0).max(8_640_000_000_000_000).parse(a.updatedAt),
       revision: z.number().int().nonnegative().parse(a.revision),
       draft: str(a.draft),
+      content: storyContentSchema.optional().parse(a.content),
+      persona: personaSnapshotSchema.optional().parse(a.persona),
+      navigationEpoch: z.number().int().nonnegative().optional().parse(a.navigationEpoch),
       userName: str(a.userName, '沈辞玉'),
       description: str(a.description) || undefined,
       keywords: a.keywords === undefined ? undefined : z.array(z.string()).parse(a.keywords),
@@ -247,8 +256,47 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     settings.activePersonaId = masks[0]?.id ?? ''
   if (!archives.some((a) => a.id === settings.activeArchiveId))
     settings.activeArchiveId = archives[0]?.id ?? ''
+  const history = parseHistory(
+    raw.history,
+    archives.map((a) => a.id),
+  )
+  const snapshots = [
+    ...history.nodes,
+    ...[...history.branches, ...history.slots].flatMap((owner) =>
+      owner.recovery ? [owner.recovery] : [],
+    ),
+  ]
+  for (const node of snapshots) {
+    const context = history.contexts.find((c) => c.id === node.contextId)!
+    const snapshot = normalizeImport(
+      {
+        version: 4,
+        channels: [],
+        masks: [],
+        archives: [{ ...node.archive, content: context.content, persona: context.persona }],
+        messages: node.messageIds.map(
+          (id) => history.messageVersions.find((v) => v.id === id)!.value,
+        ),
+        tasks: node.taskIds.map((id) => history.taskVersions.find((v) => v.id === id)!.value),
+        requests: [],
+        storyStates: [],
+        storyEvents: [],
+        settings,
+        history: undefined,
+      },
+      restore,
+    )
+    const archive = { ...snapshot.archives[0] }
+    assertSnapshotState(
+      history.stateVersions.find((v) => v.id === node.stateId)!.state,
+      snapshot.storyStates[0],
+    )
+    delete archive.content
+    delete archive.persona
+    node.archive = archive
+  }
   return {
-    version: 3,
+    version: 4,
     exportedAt: new Date().toISOString(),
     channels,
     masks,
@@ -259,5 +307,6 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
     storyEvents,
     tasks,
     requests,
+    history,
   }
 }

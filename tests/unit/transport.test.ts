@@ -5,6 +5,7 @@ import { modelMessages } from '../../src/lib/prompts'
 import { channelFingerprint } from '../../src/lib/provider'
 import { appendMessage, archiveMessages, db } from '../../src/lib/storage'
 import { BrowserChatTransport, toChatMessage } from '../../src/lib/transport'
+import { captureGameNode, navigateGame, loadGameBranch } from '../../src/lib/game-history'
 import { defaults } from '../../src/lib/types'
 import {
   channelFixture,
@@ -71,6 +72,47 @@ beforeEach(async () => {
   ])
 })
 describe('浏览器 ChatTransport 与持久化', () => {
+  it('操作编号被新操作取代时，即使剧情节点未变化也拒绝迟到提交', async () => {
+    const archive = (await db.archives.get('archive-1'))!
+    await db.transaction('rw', db.gameTables, () => captureGameNode(db, archive, '开局', true))
+    const session = (await db.sessions.get(archive.id))!
+    mock.generate.mockImplementation(async () => {
+      await db.operations.update(archive.id, { owner: 'new-operation' })
+      return { reply: { kind: 'narrative', value: narrativeFixture } }
+    })
+    const chunks = await run()
+    expect(await archiveMessages(archive.id)).toHaveLength(5)
+    expect(await db.sessions.get(archive.id)).toEqual(session)
+    expect((await db.archives.get(archive.id))?.revision).toBe(archive.revision)
+    expect(JSON.stringify(chunks)).toContain('会话操作已失效')
+  })
+  it('生成中回退先取消并保存部分内容，忽略迟到成功结果且原路线仍可恢复', async () => {
+    const archive = (await db.archives.get('archive-1'))!
+    await db.transaction('rw', db.gameTables, () => captureGameNode(db, archive, '开局', true))
+    const session = (await db.sessions.get(archive.id))!
+    let received = false
+    mock.generate.mockImplementation(async (opts) => {
+      opts.onPartial({ scene: { time: '收到的部分剧情' } })
+      received = true
+      await new Promise<void>((resolve) =>
+        opts.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+      // Simulate a provider that delivers a success after the client has cancelled.
+      return { reply: { kind: 'narrative', value: narrativeFixture } }
+    })
+    const running = run()
+    await vi.waitFor(() => expect(received).toBe(true))
+    await navigateGame(archive.id, session.nodeId, session.branchId)
+    await running
+    expect(await archiveMessages(archive.id)).toHaveLength(5)
+    expect((await db.sessions.get(archive.id))?.nodeId).toBe(session.nodeId)
+    expect(await db.nodes.count()).toBe(1)
+    await loadGameBranch(archive.id, session.branchId)
+    const restored = (await archiveMessages(archive.id)).at(-1)!
+    expect(restored.status).toBe('cancelled')
+    expect(restored.partial?.value.scene?.time).toBe('收到的部分剧情')
+    expect(restored.reply).toBeUndefined()
+  })
   it('类型化 partial 部件更新，完整校验结果才标记完成', async () => {
     mock.generate.mockImplementation(async (opts) => {
       opts.onPartial({ scene: { time: '2019年' } })
@@ -149,18 +191,29 @@ describe('浏览器 ChatTransport 与持久化', () => {
     const failed = await archiveMessages('archive-1')
     expect(failed.slice(0, 5).map((m) => m.id)).toEqual(['m0', 'm1', 'm2', 'm3', 'm4'])
     expect(failed.at(-1)?.status).toBe('failed')
-    expect((await db.archives.get('archive-1'))?.summary).toBeUndefined()
+    expect((await db.archives.get('archive-1'))?.summary?.value).toEqual(compressionFixture)
     mock.generate.mockResolvedValueOnce({ reply: { kind: 'narrative', value: narrativeFixture } })
     await run('m1')
     const complete = await archiveMessages('archive-1')
     expect(complete).toHaveLength(2)
     expect(complete[0].id).toBe('m0')
     expect(complete[1].reply?.value).toEqual(narrativeFixture)
-    const previous = await db.archives.filter((archive) => archive.name.endsWith('重说前')).first()
+    const session = (await db.sessions.get('archive-1'))!
+    const previous = await db.branches
+      .where('archiveId')
+      .equals('archive-1')
+      .filter((branch) => branch.id !== session.branchId)
+      .first()
     expect(previous).toBeDefined()
-    expect(
-      (await archiveMessages(previous!.id)).slice(0, 5).map((message) => message.content),
-    ).toEqual(['第一轮输入', '第一轮回复', '第二轮输入', '第二轮回复', '当前输入'])
+    const snapshot = (await db.nodes.get(previous!.headId))!
+    const versions = await db.messageVersions.bulkGet(snapshot.messageIds)
+    expect(versions.slice(0, 5).map((v) => v!.value.content)).toEqual([
+      '第一轮输入',
+      '第一轮回复',
+      '第二轮输入',
+      '第二轮回复',
+      '当前输入',
+    ])
   })
   it('请求开始时冻结渠道，切换设置不会把结果写入另一存档', async () => {
     await db.archives.put({
@@ -223,6 +276,39 @@ describe('浏览器 ChatTransport 与持久化', () => {
     expect((await archiveMessages('archive-1')).at(-1)?.status).toBe('complete')
     resolveCompaction()
     await pending
+  })
+  it('读档会取消后台摘要请求并等待操作锁释放，保留路线最新回复', async () => {
+    const archive = (await db.archives.get('archive-1'))!
+    await db.transaction('rw', db.gameTables, () => captureGameNode(db, archive, '开局', true))
+    const session = (await db.sessions.get(archive.id))!
+    vi.spyOn(context, 'contextBudget')
+      .mockReturnValueOnce({ estimated: 25000, percent: 0.2, mustCompress: false })
+      .mockReturnValueOnce({ estimated: 120000, percent: 0.9, mustCompress: true })
+    let started = false
+    let cancelled = false
+    vi.spyOn(context, 'compactContext')
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce((options) => {
+        started = true
+        return new Promise((resolve) => {
+          options.signal.addEventListener(
+            'abort',
+            () => {
+              cancelled = true
+              resolve(undefined)
+            },
+            { once: true },
+          )
+        })
+      })
+    mock.generate.mockResolvedValue({ reply: { kind: 'narrative', value: narrativeFixture } })
+    await run()
+    await vi.waitFor(() => expect(started).toBe(true))
+    await navigateGame(archive.id, session.nodeId, session.branchId)
+    expect(cancelled).toBe(true)
+    expect(await archiveMessages(archive.id)).toHaveLength(5)
+    await loadGameBranch(archive.id, session.branchId)
+    expect((await archiveMessages(archive.id)).at(-1)?.reply?.kind).toBe('narrative')
   })
   it('完成后的压缩失败不会把已保存回复标成失败', async () => {
     vi.spyOn(context, 'contextBudget')

@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import type { Persona } from './types'
+import { storyContentSchema } from './game-history-schema'
+import type { Persona, StoryContent } from './types'
 import type { StoryState } from './story'
 import type { ModelMessage } from 'ai'
 import { effectsSchema } from './domain-schema'
@@ -91,6 +92,7 @@ export interface TaskInput {
   text: string
   targetId: string | null
   context: {
+    setting?: StoryContent
     archive: { id: string; name: string; summary?: TaskOutput<'compression'> }
     persona: Persona | null
     story: Pick<
@@ -311,6 +313,7 @@ export const taskInputSchema = object({
   text,
   targetId: nullable,
   context: object({
+    setting: storyContentSchema.optional(),
     archive: object({ id: text, name: text, summary: compressionSchema.optional() }),
     persona: object({
       id: text,

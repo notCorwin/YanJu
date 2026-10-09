@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/select'
 import { AppearanceDialog } from '@/features/appearance/appearance-dialog'
 import { ArchivesSheet } from '@/features/archives/archives-sheet'
+import { SaveStatus } from '@/components/save-status'
 import { ChannelsDialog } from '@/features/channels/channels-dialog'
 import { ChatSession } from '@/features/chat/chat-session'
 import { type ExternalChatRequest } from '@/features/chat/types'
@@ -59,7 +60,6 @@ export function Workspace() {
   // Refresh readiness badges and controls when the catalog changes the tested route.
   useSyncExternalStore(subscribeModelCatalog, currentModelCatalog)
   const settings = useLiveQuery(() => db.settings.get('app'))
-  const background = useBackground(settings?.bgImage)
   const archives = useLiveQuery(() => db.archives.orderBy('updatedAt').reverse().toArray()) ?? []
   const channels = useLiveQuery(() => db.channels.toArray()) ?? []
   const personas = useLiveQuery(() => db.personas.toArray()) ?? []
@@ -99,14 +99,19 @@ export function Workspace() {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
   }, [])
   useEffect(() => () => pendingSend.current?.complete(false), [])
-  useEffect(() => {
-    if (settings) applyAppearance({ ...settings, bgImage: background })
-  }, [settings, background])
   const routeId = archiveIdFromRoute(route)
   const [restoreEpoch, setRestoreEpoch] = useState(0)
   const archive = archives.find((a) => a.id === (routeId || settings?.activeArchiveId))
+  const background = useBackground(
+    archive?.content ? archive.content.background : settings?.bgImage,
+  )
+  useEffect(() => {
+    if (settings) applyAppearance({ ...settings, bgImage: background })
+  }, [settings, background])
   const channel = channels.find((c) => c.id === settings?.activeChannelId)
-  const persona = personas.find((p) => p.id === settings?.activePersonaId)
+  const persona = archive?.content
+    ? archive.persona
+    : personas.find((p) => p.id === settings?.activePersonaId)
   const chatting = route.startsWith('#/chat')
   const setup =
     route === '#/setup/channels' ? 'channels' : route === '#/setup/persona' ? 'persona' : null
@@ -296,7 +301,7 @@ export function Workspace() {
           className="relative z-10 flex min-h-0 flex-1 flex-col"
         >
           <ChatSession
-            key={`${archive.id}:${restoreEpoch}`}
+            key={`${archive.id}:${restoreEpoch}:${archive.navigationEpoch ?? 0}`}
             archive={archive}
             channel={channel}
             channelControl={channelControl}
@@ -411,6 +416,7 @@ export function Workspace() {
                 世界与音乐
               </Button>
             </nav>
+            <SaveStatus notify={notify} />
             <p className="text-center text-xs text-muted-foreground">
               聊天、人设与配置保存在当前浏览器 · 可导出完整存档
             </p>
@@ -451,7 +457,7 @@ export function Workspace() {
       />
       {archive && (
         <Studio
-          key={`${archive.id}:${studioTab ?? ''}:${params.get('contact') ?? ''}:${params.get('entity') ?? ''}`}
+          key={`${archive.id}:${archive.navigationEpoch ?? 0}:${studioTab ?? ''}:${params.get('contact') ?? ''}:${params.get('entity') ?? ''}`}
           open={dialog === 'studio' || (!dialog && !!studioTab)}
           onClose={closeStudio}
           archive={archive}
@@ -467,6 +473,7 @@ export function Workspace() {
         />
       )}
       <WorldPlayer
+        world={archive?.content?.world}
         open={worldOpen}
         onOpen={() => setWorldOpen(true)}
         onClose={() => setWorldOpen(false)}
