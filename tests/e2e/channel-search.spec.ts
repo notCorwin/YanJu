@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import { test } from './fixtures'
+import { test, expandChannel, openChannels } from './fixtures'
 import { catalogFixture } from '../model-catalog-fixture'
 
 async function openChannelEditor(page: Page) {
@@ -33,8 +33,9 @@ async function openChannelEditor(page: Page) {
     }),
   )
   await page.goto('./')
-  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await openChannels(page)
   await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await expandChannel(page, '新渠道')
   const provider = page.getByRole('combobox', { name: 'Provider', exact: true })
   await expect(provider).toBeEnabled()
   return provider
@@ -150,6 +151,6 @@ test('模型支持名称与 ID 搜索、键盘选择，搜索不会修改已保�
     .click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await page.reload()
-  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await openChannels(page)
   await expect(model).toHaveText('夜航助手 · stellar-chat-v2')
 })

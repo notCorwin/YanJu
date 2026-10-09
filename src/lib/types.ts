@@ -110,6 +110,7 @@ export interface Archive {
   content?: StoryContent
   persona?: Persona
   navigationEpoch?: number
+  deletedMessageIds?: string[]
 }
 export interface StoryContent {
   character: string

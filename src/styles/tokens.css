@@ -98,8 +98,16 @@
   --panel-width: 28rem;
   --dialog-wide-width: 60rem;
   --editor-height: min(52rem, calc(100dvh - 2rem));
-  --composer-max-height: clamp(4rem, 22dvh, 10rem);
-  --composer-desktop-max-height: 14rem;
+  --chat-chrome-budget: 15dvh;
+  --composer-max-height: max(
+    var(--touch-size),
+    calc(
+      var(--chat-chrome-budget) - var(--touch-size) - var(--space-unit) * 4 - var(--border-width) *
+        4
+    )
+  );
+  --composer-expanded-height: min(14rem, 50dvh);
+  --channel-editor-height: max(16rem, min(36rem, calc(100dvh - 16rem)));
   --reading-width: 53.75rem;
   --page-width: 72rem;
   --touch-size: 2.75rem;
@@ -378,11 +386,22 @@
   height: var(--editor-height);
 }
 @custom-variant compact-height (@media (max-height: 32rem));
+@custom-variant short-chat (@media (max-height: 40rem));
 @utility composer-height {
   max-height: var(--composer-max-height);
-  @media (min-width: 40rem) {
-    max-height: var(--composer-desktop-max-height);
-  }
+}
+@utility composer-expanded-height {
+  min-height: var(--composer-expanded-height);
+  max-height: var(--composer-expanded-height);
+}
+@utility channel-editor-height {
+  height: var(--channel-editor-height);
+}
+@utility chat-safe-top {
+  padding-top: max(env(safe-area-inset-top), var(--space-unit));
+}
+@utility chat-safe-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom), var(--space-unit));
 }
 @utility toast-layer {
   z-index: var(--layer-toast);

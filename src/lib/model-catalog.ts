@@ -110,7 +110,10 @@ export function selectCatalogModel(
     providerId: provider.id,
     sdk,
     model: model.id,
-    name: `${provider.name} · ${model.name}`,
+    name:
+      channel.name.trim() && channel.name !== '新渠道'
+        ? channel.name
+        : `${provider.name} · ${model.name}`,
     baseUrl: channel.providerId === provider.id ? channel.baseUrl : '',
     apiMode:
       ['@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(provider.npm) ||

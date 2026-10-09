@@ -279,16 +279,93 @@ export function applyMessage(story: StoryState, message: StoredMessage) {
   } else if (message.effects) applyEffects(story, message.effects, message, [])
 }
 
+/** Remove only unavailable references originating in deleted turns from the projection.
+ * Original later messages stay untouched; newly generated replies still use strict applyMessage.
+ */
+function projectAfterDeletion(
+  story: StoryState,
+  message: StoredMessage,
+  deleted: Set<string>,
+): StoredMessage {
+  if (!deleted.size) return message
+  const present = new Set(
+    [
+      ...story.entities,
+      ...story.relationships,
+      ...story.knowledge,
+      ...story.events,
+      ...story.memories,
+      ...story.goals,
+      ...story.forums,
+      ...story.forums.flatMap((forum) => forum.answers),
+    ].map((item) => item.id),
+  )
+  const deletedOrigin = (ref: string) => {
+    for (let end = ref.indexOf(':'); end !== -1; end = ref.indexOf(':', end + 1))
+      if (deleted.has(ref.slice(0, end))) return true
+    return false
+  }
+  const missing = (ref: string | null) => ref !== null && !present.has(ref) && deletedOrigin(ref)
+  const projectEffects = (effects: TurnEffects): TurnEffects => ({
+    ...effects,
+    entities: effects.entities.filter((item) => !missing(item.ref)),
+    states: effects.states.filter((item) => !missing(item.entityRef)),
+    relationships: effects.relationships.filter(
+      (item) => !missing(item.ref) && !missing(item.from) && !missing(item.to),
+    ),
+    knowledge: effects.knowledge.filter((item) => !missing(item.ref) && !missing(item.entityRef)),
+    events: effects.events
+      .filter((item) => !missing(item.ref))
+      .map((item) => ({
+        ...item,
+        locationRef: missing(item.locationRef) ? null : item.locationRef,
+        participants: item.participants.filter((ref) => !missing(ref)),
+      })),
+    memories: effects.memories
+      .filter((item) => !missing(item.ref))
+      .map((item) => ({
+        ...item,
+        entityRefs: item.entityRefs.filter((ref) => !missing(ref)),
+      })),
+    goals: effects.goals.filter((item) => !missing(item.ref) && !missing(item.ownerRef)),
+  })
+  const next = structuredClone(message)
+  if (next.reply?.kind === 'narrative') {
+    const reply = next.reply.value
+    reply.effects = projectEffects(reply.effects)
+    reply.scene.characterRefs = reply.scene.characterRefs.filter((ref) => !missing(ref))
+    if (missing(reply.scene.locationRef)) reply.scene.locationRef = null
+    for (const block of reply.blocks) if (missing(block.speakerRef)) block.speakerRef = null
+    reply.phone.conversations = reply.phone.conversations.filter(
+      (item) => !missing(item.contactRef),
+    )
+  }
+  if (next.effects) next.effects = projectEffects(next.effects)
+  const interaction = next.interaction
+  if (
+    interaction?.kind === 'phone' &&
+    !story.phones.some((phone) => phone.id === interaction.contactRef)
+  )
+    next.interaction = undefined
+  if (next.interaction?.kind === 'forum') {
+    if (missing(next.interaction.postId)) next.interaction = undefined
+    else if (missing(next.interaction.replyTo)) next.interaction.replyTo = next.interaction.postId
+  }
+  return next
+}
+
 export function rebuildStory(
   archive: Archive,
   messages: StoredMessage[],
 ): { story: StoryState; events: StoryEvent[] } {
   const story = initialStory(archive.id, archive.userName, archive.content)
   const events: StoryEvent[] = []
+  const deleted = new Set(archive.deletedMessageIds ?? [])
   for (const message of [...messages].sort((a, b) => a.sequence - b.sequence)) {
-    applyMessage(story, message)
+    const projected = projectAfterDeletion(story, message, deleted)
+    applyMessage(story, projected)
     const effects =
-      message.reply?.kind === 'narrative' ? message.reply.value.effects : message.effects
+      projected.reply?.kind === 'narrative' ? projected.reply.value.effects : projected.effects
     if (message.status === 'complete' && !message.stale && effects)
       events.push({
         id: message.id,

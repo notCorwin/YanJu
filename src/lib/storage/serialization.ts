@@ -108,6 +108,7 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       content: storyContentSchema.optional().parse(a.content),
       persona: personaSnapshotSchema.optional().parse(a.persona),
       navigationEpoch: z.number().int().nonnegative().optional().parse(a.navigationEpoch),
+      deletedMessageIds: z.array(z.string().min(1)).optional().parse(a.deletedMessageIds),
       userName: str(a.userName, '沈辞玉'),
       description: str(a.description) || undefined,
       keywords: a.keywords === undefined ? undefined : z.array(z.string()).parse(a.keywords),

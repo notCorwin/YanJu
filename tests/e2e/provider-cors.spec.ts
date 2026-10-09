@@ -1,6 +1,6 @@
 import { createServer, type IncomingHttpHeaders } from 'node:http'
 import { expect } from '@playwright/test'
-import { test } from './fixtures'
+import { test, expandChannel, openChannels } from './fixtures'
 import { capabilityFixture, completion, response, responseSse, sse } from '../fixtures'
 
 test('严格 CORS 服务商通过非流式与流式测试，浏览器负责 User-Agent', async ({ page }) => {
@@ -127,8 +127,9 @@ test('严格 CORS 服务商通过非流式与流式测试，浏览器负责 User
           : nativeFetch(input, init)
     }, catalog)
     await page.goto('./', { waitUntil: 'domcontentloaded' })
-    await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+    await openChannels(page)
     await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+    await expandChannel(page, '新渠道')
     for (const provider of providers) {
       const start = calls.length
       await page.getByRole('combobox', { name: 'Provider', exact: true }).click()

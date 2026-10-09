@@ -9,6 +9,14 @@ import { IconButton } from '@/components/shared'
 import { Studio } from '@/components/studio'
 import { Button } from '@/components/ui/button'
 import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverDescription,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
   Empty,
   EmptyContent,
   EmptyDescription,
@@ -47,6 +55,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   FolderOpen,
   Home,
+  Menu,
   NotebookTabs,
   Settings2,
   SlidersHorizontal,
@@ -61,13 +70,16 @@ export function Workspace() {
   useSyncExternalStore(subscribeModelCatalog, currentModelCatalog)
   const settings = useLiveQuery(() => db.settings.get('app'))
   const archives = useLiveQuery(() => db.archives.orderBy('updatedAt').reverse().toArray()) ?? []
-  const channels = useLiveQuery(() => db.channels.toArray()) ?? []
+  const channels = useLiveQuery(() => db.channels.orderBy('createdAt').toArray()) ?? []
   const personas = useLiveQuery(() => db.personas.toArray()) ?? []
   const route = useSyncExternalStore(subscribeRoute, currentRoute)
   const [dialog, setDialog] = useState<
     'channels' | 'personas' | 'appearance' | 'archives' | 'studio' | null
   >(null)
   const [worldOpen, setWorldOpen] = useState(false)
+  const [applicationOpen, setApplicationOpen] = useState(false)
+  const applicationTrigger = useRef<HTMLButtonElement>(null)
+  const returnToApplication = useRef(false)
   const [chatBusy, setBusy] = useState(false)
   const [studioBusy, setStudioBusy] = useState(false)
   const busy = chatBusy || studioBusy
@@ -207,14 +219,82 @@ export function Workspace() {
     setDialog(null)
     if (studioTab && archive) navigateRoute(`/chat/${encodeURIComponent(archive.id)}`)
   }
+  const closeDialog = () => {
+    setDialog(null)
+    if (returnToApplication.current) {
+      returnToApplication.current = false
+      requestAnimationFrame(() => applicationTrigger.current?.focus({ preventScroll: true }))
+    }
+  }
+  const applicationControl = (
+    <Popover open={applicationOpen} onOpenChange={setApplicationOpen}>
+      <PopoverTrigger asChild>
+        <IconButton ref={applicationTrigger} label="应用菜单" variant="outline">
+          <Menu />
+        </IconButton>
+      </PopoverTrigger>
+      <PopoverContent align="end" aria-label="应用菜单">
+        <PopoverHeader>
+          <PopoverTitle>宴雎</PopoverTitle>
+          <PopoverDescription className="truncate">{archive?.name}</PopoverDescription>
+        </PopoverHeader>
+        <nav aria-label="应用操作" className="flex flex-col gap-1">
+          <Button
+            variant="ghost"
+            className="justify-start"
+            disabled={busy}
+            onClick={() => {
+              setApplicationOpen(false)
+              navigateRoute('/')
+            }}
+          >
+            <Home data-icon="inline-start" />
+            返回首页
+          </Button>
+          {(
+            [
+              ['channels', '渠道管理', SlidersHorizontal],
+              ['personas', '人设管理', VenetianMask],
+              ['archives', '存档管理', FolderOpen],
+              ['appearance', '外观设置', Settings2],
+            ] as const
+          ).map(([value, label, Icon]) => (
+            <Button
+              key={value}
+              variant="ghost"
+              className="justify-start"
+              onClick={() => {
+                returnToApplication.current = true
+                setApplicationOpen(false)
+                setDialog(value)
+              }}
+            >
+              <Icon data-icon="inline-start" />
+              {label}
+            </Button>
+          ))}
+        </nav>
+      </PopoverContent>
+    </Popover>
+  )
   const channelControl = channels.some(channelIsReady) ? (
     <Select
       value={channel?.id || ''}
       onValueChange={(value) => void db.settings.update('app', { activeChannelId: value })}
       disabled={busy}
     >
-      <SelectTrigger aria-label="当前渠道" className="max-w-40 shrink-0 sm:max-w-64">
-        <SelectValue placeholder="选择已测试渠道" />
+      <SelectTrigger
+        aria-label="当前渠道"
+        title={`渠道切换 · ${channel?.name || '选择已测试渠道'}`}
+        className="min-w-0 flex-1 max-sm:px-1 max-sm:[&>svg]:hidden"
+      >
+        <SelectValue>
+          <span className="truncate sm:hidden short-chat:inline">渠道</span>
+          <span className="truncate hidden sm:inline short-chat:hidden">渠道切换</span>
+          <span className="sr-only lg:not-sr-only lg:max-w-32 lg:truncate short-chat:sr-only">
+            {channel?.name || '选择已测试渠道'}
+          </span>
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         <SelectGroup>
@@ -228,8 +308,15 @@ export function Workspace() {
       </SelectContent>
     </Select>
   ) : (
-    <Button variant="outline" disabled={busy} onClick={() => setDialog('channels')}>
-      配置渠道
+    <Button
+      aria-label="配置渠道"
+      variant="outline"
+      className="min-w-0 flex-1"
+      disabled={busy}
+      onClick={() => setDialog('channels')}
+    >
+      <span className="sm:hidden short-chat:inline">渠道</span>
+      <span className="hidden sm:inline short-chat:hidden">渠道切换</span>
     </Button>
   )
 
@@ -251,7 +338,7 @@ export function Workspace() {
       </a>
       <div className="pointer-events-none fixed inset-0 backdrop-scene" aria-hidden="true" />
       <div className="pointer-events-none fixed inset-0 scanlines" aria-hidden="true" />
-      {chatting && (
+      {chatting && !archive && (
         <header className="surface relative z-10 flex shrink-0 items-center justify-between gap-2 border-b-(length:--border-width) px-3 py-2 sm:px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <IconButton
@@ -265,9 +352,7 @@ export function Workspace() {
             </IconButton>
             <div className="min-w-0">
               <h1 className="truncate text-lg tracking-editorial text-primary">宴雎</h1>
-              <p className="truncate text-xs text-muted-foreground">
-                {archive?.name || '存档未找到'}
-              </p>
+              <p className="truncate text-xs text-muted-foreground">存档未找到</p>
             </div>
           </div>
           <nav className="flex shrink-0 items-center gap-1" aria-label="应用操作">
@@ -305,11 +390,11 @@ export function Workspace() {
             archive={archive}
             channel={channel}
             channelControl={channelControl}
+            applicationControl={applicationControl}
             persona={persona}
             notify={notify}
             onBusy={onBusy}
             onWorld={() => setWorldOpen(true)}
-            onChannels={() => setDialog('channels')}
             insert={insert}
             onInserted={onInserted}
             externalRequest={externalRequest}
@@ -425,7 +510,7 @@ export function Workspace() {
       )}
       <ChannelsDialog
         open={dialog === 'channels'}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         channels={channels}
         settings={settings}
         notify={notify}
@@ -433,7 +518,7 @@ export function Workspace() {
       />
       <PersonasDialog
         open={dialog === 'personas'}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         personas={personas}
         settings={settings}
         notify={notify}
@@ -441,13 +526,13 @@ export function Workspace() {
       />
       <AppearanceDialog
         open={dialog === 'appearance'}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         settings={settings}
         notify={notify}
       />
       <ArchivesSheet
         open={dialog === 'archives'}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         archives={archives}
         activeId={archive?.id || ''}
         onRestored={() => setRestoreEpoch((value) => value + 1)}
@@ -473,6 +558,7 @@ export function Workspace() {
         />
       )}
       <WorldPlayer
+        floating={!chatting}
         world={archive?.content?.world}
         open={worldOpen}
         onOpen={() => setWorldOpen(true)}

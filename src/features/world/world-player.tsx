@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverDescription,
   PopoverHeader,
@@ -41,6 +42,7 @@ const time = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).
 
 export function WorldPlayer({
   open,
+  floating = true,
   onOpen,
   onClose,
   notify,
@@ -48,6 +50,7 @@ export function WorldPlayer({
   world = defaultWorld,
 }: {
   open: boolean
+  floating?: boolean
   onOpen: () => void
   onClose: () => void
   notify: Notify
@@ -186,17 +189,24 @@ export function WorldPlayer({
       />
       <Popover open={open} onOpenChange={(value) => (value ? onOpen() : onClose())}>
         <div className="player-anchor">
-          <PopoverTrigger asChild>
-            <Button
-              variant="outline"
-              size="icon"
-              className="rounded-full"
-              aria-label="展开世界与音乐"
-              tabIndex={open ? -1 : 0}
-            >
-              <Music2 />
-            </Button>
-          </PopoverTrigger>
+          {!floating && (
+            <PopoverAnchor asChild>
+              <span className="block size-0" aria-hidden="true" />
+            </PopoverAnchor>
+          )}
+          {floating && (
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                className="rounded-full"
+                aria-label="展开世界与音乐"
+                tabIndex={open ? -1 : 0}
+              >
+                <Music2 />
+              </Button>
+            </PopoverTrigger>
+          )}
         </div>
         <PopoverContent
           align="end"

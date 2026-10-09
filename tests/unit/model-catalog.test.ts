@@ -8,6 +8,16 @@ import { catalogFixture } from '../model-catalog-fixture'
 import { channelFixture } from '../fixtures'
 
 describe('Models.dev Provider 与模型目录', () => {
+  it('选择和切换模型保留用户自定义的渠道名称', () => {
+    const provider = parseModelCatalog(catalogFixture()).mock
+    expect(
+      selectCatalogModel(
+        { ...channelFixture, name: '长篇创作' },
+        provider,
+        provider.models['test-model'],
+      ).name,
+    ).toBe('长篇创作')
+  })
   it('Models.dev 的 completions shape 固定使用 Chat Completions', () => {
     const provider = parseModelCatalog(catalogFixture()).mock
     const model = { ...provider.models['test-model'], provider: { shape: 'completions' } }

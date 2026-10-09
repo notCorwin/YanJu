@@ -11,11 +11,11 @@ export function ChatSession(props: {
   archive: Archive
   channel?: Channel
   channelControl: ReactNode
+  applicationControl: ReactNode
   persona?: Persona
   notify: Notify
   onBusy: (value: boolean) => void
   onWorld: () => void
-  onChannels: () => void
   insert: string
   onInserted: () => void
   externalRequest: ExternalChatRequest | null

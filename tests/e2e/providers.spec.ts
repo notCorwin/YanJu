@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { test } from './fixtures'
+import { test, expandChannel, openChannels } from './fixtures'
 import { capabilityFixture, completion, response, responseSse, sse } from '../fixtures'
 import { generateKeyPairSync } from 'node:crypto'
 
@@ -305,8 +305,9 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
     },
   )
   await page.goto('./')
-  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await openChannels(page)
   await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await expandChannel(page, '新渠道')
   for (const provider of providers) {
     const start = requests.length
     await page.getByRole('combobox', { name: 'Provider', exact: true }).click()

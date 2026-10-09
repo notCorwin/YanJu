@@ -3,10 +3,12 @@ import { effectsSchema } from '@/lib/domain-schema'
 import { validateForum, validateNarrative } from '@/lib/schemas'
 import { db } from '@/lib/storage/database'
 import { refreshStory } from '@/lib/storage/story'
-import { rebuildStory } from '@/lib/story'
+import { applyMessage, rebuildStory } from '@/lib/story'
 import { type Archive, type StoredMessage, type Summary } from '@/lib/types'
 import Dexie from 'dexie'
 import { z } from 'zod'
+import { withArchiveOperation } from '@/lib/operations'
+import type { YanJuDatabase } from '@/lib/storage/database'
 
 export const archiveMessages = (id: string, database = db) =>
   database.messages.where('archiveId').equals(id).sortBy('sequence')
@@ -77,8 +79,11 @@ export async function appendMessage(
         .count()
     )
       throw new Error('消息序号已被其他窗口占用，请重新载入后重试。')
-    if (message.reply?.kind === 'narrative')
-      rebuildStory(archive, [...(await archiveMessages(archive.id)), message])
+    if (message.status === 'complete' && !message.stale)
+      applyMessage(
+        rebuildStory(archive, await archiveMessages(archive.id)).story,
+        structuredClone(message),
+      )
     await db.messages.put(message)
     const updated = revise(archive)
     if (message.usage) updated.lastUsage = message.usage
@@ -183,4 +188,37 @@ export async function commitSummary(archiveId: string, revision: number, summary
       throw new Error('压缩期间存档有变更，摘要未提交。')
     await db.archives.update(archiveId, { summary, compactionError: undefined })
   })
+}
+
+/** A deletion keeps every other record and sequence intact, including later turns. */
+export async function deleteMessage(
+  id: string,
+  expectedRevision?: number,
+  expectedEpoch?: number,
+  database: YanJuDatabase = db,
+) {
+  const target = await database.messages.get(id)
+  if (!target) throw new Error('消息不存在。')
+  await withArchiveOperation(
+    target.archiveId,
+    () =>
+      database.transaction('rw', database.gameTables, async () => {
+        const message = await database.messages.get(id)
+        const archive = await database.archives.get(target.archiveId)
+        if (!message || !archive) throw new Error('消息或篇章已删除。')
+        if (
+          (expectedRevision !== undefined && archive.revision !== expectedRevision) ||
+          (expectedEpoch !== undefined && (archive.navigationEpoch ?? 0) !== expectedEpoch)
+        )
+          throw new Error('篇章已在其他窗口修改，请重新载入后删除。')
+        const updated = {
+          ...revise(archive, true),
+          deletedMessageIds: [...(archive.deletedMessageIds ?? []), id],
+        }
+        await database.messages.delete(id)
+        await database.archives.put(updated)
+        await refreshStory(database, updated, '删除消息', true)
+      }),
+    database,
+  )
 }

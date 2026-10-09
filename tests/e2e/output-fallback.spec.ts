@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import { test } from './fixtures'
+import { test, expandChannel, openChannels } from './fixtures'
 import { capabilityFixture } from '../fixtures'
 import { catalogFixture } from '../model-catalog-fixture'
 import { protocolResponse } from '../provider-protocol-fixtures'
@@ -14,8 +14,9 @@ async function prepare(page: Page, structured = true) {
   }
   await page.route('https://models.dev/api.json', (route) => route.fulfill({ json: catalog }))
   await page.goto('./')
-  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await openChannels(page)
   await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await expandChannel(page, '新渠道')
   await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
   await page.getByRole('option', { name: '测试 Provider', exact: true }).click()
   await page.getByRole('combobox', { name: '模型', exact: true }).click()

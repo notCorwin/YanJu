@@ -35,6 +35,14 @@ import {
 } from '@/components/ui/message-scroller'
 import { Progress } from '@/components/ui/progress'
 import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
+import {
   Select,
   SelectContent,
   SelectGroup,
@@ -50,7 +58,7 @@ import type { Notify } from '@/lib/notify'
 import { withArchiveOperation } from '@/lib/operations'
 import { channelIsReady, friendlyError } from '@/lib/provider'
 import type { RequestKind } from '@/lib/schemas'
-import { appendMessage, archiveMessages, db } from '@/lib/storage'
+import { appendMessage, archiveMessages, db, deleteMessage } from '@/lib/storage'
 import {
   BrowserChatTransport,
   compressArchive,
@@ -67,10 +75,13 @@ import {
   Copy,
   FileJson,
   GitBranch,
+  Music2,
+  PenLine,
   Pencil,
   RotateCcw,
   Send,
   Square,
+  SlidersHorizontal,
   Trash2,
 } from 'lucide-react'
 import {
@@ -87,11 +98,11 @@ export function ChatRunner({
   archive,
   channel,
   channelControl,
+  applicationControl,
   persona,
   notify,
   onBusy,
   onWorld,
-  onChannels,
   stored,
   insert,
   onInserted,
@@ -108,11 +119,11 @@ export function ChatRunner({
   archive: Archive
   channel?: Channel
   channelControl: ReactNode
+  applicationControl: ReactNode
   persona?: Persona
   notify: Notify
   onBusy: (value: boolean) => void
   onWorld: () => void
-  onChannels: () => void
   stored: StoredMessage[]
   insert: string
   onInserted: () => void
@@ -146,6 +157,12 @@ export function ChatRunner({
   const [editing, setEditing] = useState<StoredMessage | null>(null)
   const [regenId, setRegenId] = useState('')
   const [clear, setClear] = useState(false)
+  const [removing, setRemoving] = useState<StoredMessage | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [composerOpen, setComposerOpen] = useState(false)
+  const [composerFocused, setComposerFocused] = useState(false)
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const [modeOpen, setModeOpen] = useState(false)
   const [preparing, setPreparing] = useState(false)
   const [compressing, setCompressing] = useState(false)
   const [forumRunning, setForumRunning] = useState(false)
@@ -161,11 +178,21 @@ export function ChatRunner({
     },
     () => window.matchMedia('(pointer: coarse)').matches,
   )
+  const compactViewport = useSyncExternalStore(
+    (notify) => {
+      const query = window.matchMedia('(max-height: 40rem)')
+      query.addEventListener('change', notify)
+      return () => query.removeEventListener('change', notify)
+    },
+    () => window.matchMedia('(max-height: 40rem)').matches,
+  )
+  const compactComposer = compactViewport && !composerFocused && !optionsOpen && !modeOpen
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const composerTrigger = useRef<HTMLButtonElement>(null)
   const controller = useRef<AbortController | null>(null)
   const chatBusy =
     status === 'streaming' || status === 'submitted' || preparing || compressing || forumRunning
-  const busy = chatBusy || disabled
+  const busy = chatBusy || disabled || deleting
 
   useEffect(() => {
     onBusy(chatBusy)
@@ -184,6 +211,7 @@ export function ChatRunner({
   const insertDraft = useEffectEvent(async (text: string) => {
     const value = input ? `${input}\n${text}` : text
     setInput(value)
+    if (compactComposer) setComposerOpen(true)
     try {
       await saveDraft(archive.id, value, archive.navigationEpoch ?? 0)
     } catch (error) {
@@ -245,6 +273,8 @@ export function ChatRunner({
         }
         await appendMessage(user, expectedRevision)
         draft('')
+        setComposerOpen(false)
+        setComposerFocused(false)
         await sendMessage(
           {
             id: user.id,
@@ -515,9 +545,215 @@ export function ChatRunner({
       () => notify('复制失败，请使用浏览器的文本选择功能。', true),
     )
   }
+  const composer = (
+    <form
+      onFocusCapture={() => setComposerFocused(true)}
+      onBlurCapture={(event) => {
+        if (
+          !(event.relatedTarget instanceof Node) ||
+          !event.currentTarget.contains(event.relatedTarget)
+        )
+          setComposerFocused(false)
+      }}
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (!composing.current) {
+          inputRef.current?.focus({ preventScroll: true })
+          void send()
+        }
+      }}
+    >
+      <InputGroup>
+        <InputGroupTextarea
+          id="chat-input"
+          ref={inputRef}
+          aria-label="聊天输入"
+          value={input}
+          onChange={(event) => draft(event.target.value)}
+          onCompositionStart={() => {
+            composing.current = true
+          }}
+          onCompositionEnd={() => {
+            composing.current = false
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === 'Enter' &&
+              !event.shiftKey &&
+              (!touchInput || event.ctrlKey || event.metaKey) &&
+              !event.nativeEvent.isComposing &&
+              !composing.current &&
+              event.keyCode !== 229
+            ) {
+              event.preventDefault()
+              if (!busy) void send()
+            }
+          }}
+          className={cn(
+            'min-h-touch resize-none overflow-y-auto',
+            composerOpen ? 'composer-expanded-height' : 'composer-height',
+          )}
+          rows={1}
+          placeholder={mode === 'forum' ? '输入帖子或回复内容…' : '写下你的回应…'}
+        />
+        <InputGroupAddon align="inline-start" className="gap-1 py-0">
+          <Select
+            open={modeOpen}
+            onOpenChange={setModeOpen}
+            value={mode}
+            onValueChange={(value) => setMode(value as RequestKind)}
+            disabled={busy}
+          >
+            <SelectTrigger aria-label="聊天模式">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="narrative">叙事</SelectItem>
+                <SelectItem value="forum">论坛</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <Popover open={optionsOpen} onOpenChange={setOptionsOpen}>
+            <PopoverTrigger asChild>
+              <InputGroupButton aria-label="更多聊天操作" size="icon-sm">
+                <SlidersHorizontal />
+              </InputGroupButton>
+            </PopoverTrigger>
+            <PopoverContent align="start" side="top" aria-label="聊天操作设置">
+              <PopoverHeader>
+                <PopoverTitle>聊天操作</PopoverTitle>
+              </PopoverHeader>
+              <Button
+                variant="ghost"
+                className="justify-start"
+                onClick={() => {
+                  setOptionsOpen(false)
+                  setComposerOpen(true)
+                }}
+              >
+                <PenLine data-icon="inline-start" />
+                展开输入
+              </Button>
+              <MessageScrollerButton aria-label="回到最新消息" title="回到最新消息" />
+              {budget && (
+                <>
+                  <Button
+                    variant="ghost"
+                    className="justify-start"
+                    aria-label="查看上下文详情"
+                    onClick={() => {
+                      setOptionsOpen(false)
+                      setContextOpen(true)
+                    }}
+                  >
+                    上下文约 {Math.round(budget.percent * 100)}%
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start"
+                    aria-label="压缩上下文"
+                    disabled={busy}
+                    onClick={() => {
+                      setOptionsOpen(false)
+                      void compress()
+                    }}
+                  >
+                    <ArrowDownToLine data-icon="inline-start" />
+                    压缩上下文
+                  </Button>
+                </>
+              )}
+              <SaveStatus notify={notify} />
+            </PopoverContent>
+          </Popover>
+        </InputGroupAddon>
+        <InputGroupAddon align="inline-end" className="py-0">
+          {chatBusy ? (
+            <InputGroupButton
+              aria-label="停止生成"
+              onClick={() => void stopGeneration()}
+              variant="secondary"
+              size="sm"
+            >
+              <Square data-icon="inline-start" />
+              <span className="hidden sm:inline">停止</span>
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton
+              type="submit"
+              aria-label="发送消息"
+              variant="default"
+              size="sm"
+              disabled={busy || !input.trim() || !channel || !channelIsReady(channel)}
+            >
+              <Send data-icon="inline-start" />
+              <span className="hidden sm:inline">发送</span>
+            </InputGroupButton>
+          )}
+        </InputGroupAddon>
+      </InputGroup>
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {friendlyError(error)}
+        </p>
+      )}
+    </form>
+  )
   return (
     <MessageScrollerProvider autoScroll={chatBusy} defaultScrollPosition="end">
       <div className="flex min-h-0 flex-1 flex-col">
+        <header className="surface chat-safe-top shrink-0 border-b-(length:--border-width) px-2 pb-1 sm:px-4">
+          <h1 className="sr-only">{archive.name} · 宴雎</h1>
+          <nav
+            aria-label="聊天功能"
+            className="mx-auto flex w-full reading-width items-center gap-1"
+          >
+            {channelControl}
+            <Button
+              variant="outline"
+              className="min-w-0 flex-1 max-sm:px-1"
+              aria-label="打开剧情工作台"
+              onClick={onStudio}
+            >
+              <BookOpen data-icon="inline-start" className="hidden md:inline short-chat:hidden" />
+              <span className="sm:hidden short-chat:inline">剧情</span>
+              <span className="hidden sm:inline short-chat:hidden">剧情工作台</span>
+            </Button>
+            <Button
+              variant="outline"
+              className="min-w-0 flex-1 max-sm:px-1"
+              aria-label="世界、指令与音乐"
+              onClick={onWorld}
+            >
+              <Music2 data-icon="inline-start" className="hidden md:inline short-chat:hidden" />
+              <span className="sm:hidden short-chat:inline">世界</span>
+              <span className="hidden sm:inline short-chat:hidden">世界与音乐</span>
+            </Button>
+            <Button
+              variant="outline"
+              className="min-w-0 flex-1 max-sm:px-1"
+              aria-label="清空当前聊天"
+              disabled={busy}
+              onClick={() => setClear(true)}
+            >
+              <Trash2 data-icon="inline-start" className="hidden md:inline short-chat:hidden" />
+              <span className="sm:hidden short-chat:inline">清空</span>
+              <span className="hidden sm:inline short-chat:hidden">清空聊天记录</span>
+            </Button>
+            {compactComposer && (
+              <IconButton
+                ref={composerTrigger}
+                label={chatBusy ? '停止生成' : '撰写消息'}
+                variant="outline"
+                onClick={() => (chatBusy ? void stopGeneration() : setComposerOpen(true))}
+              >
+                {chatBusy ? <Square /> : <PenLine />}
+              </IconButton>
+            )}
+            {applicationControl}
+          </nav>
+        </header>
         {archive.compactionError && (
           <div
             role="alert"
@@ -689,6 +925,15 @@ export function ChatRunner({
                             >
                               <Pencil />
                             </IconButton>
+                            <IconButton
+                              label="删除消息"
+                              disabled={busy || !stored.some((item) => item.id === message.id)}
+                              onClick={() =>
+                                setRemoving(stored.find((item) => item.id === message.id) ?? null)
+                              }
+                            >
+                              <Trash2 />
+                            </IconButton>
                             {message.role === 'assistant' &&
                               message.metadata?.status === 'complete' && (
                                 <IconButton
@@ -746,11 +991,8 @@ export function ChatRunner({
               {(!channel || !channelIsReady(channel)) && (
                 <Alert role="status">
                   <AlertTitle>连接模型后，故事就能继续</AlertTitle>
-                  <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-                    <span>可以先阅读开场、写下回应，草稿会自动保存。</span>
-                    <Button variant="outline" onClick={onChannels}>
-                      配置并测试渠道
-                    </Button>
+                  <AlertDescription>
+                    可以先阅读开场、写下回应，草稿会自动保存。点击顶部「渠道」配置并测试连接。
                   </AlertDescription>
                 </Alert>
               )}
@@ -777,134 +1019,30 @@ export function ChatRunner({
             </MessageScrollerContent>
           </MessageScrollerViewport>
         </MessageScroller>
-        <footer className="composer-surface safe-bottom shrink-0 border-t-(length:--border-width) px-3 pt-2 sm:px-6 sm:pt-3">
-          <div className="mx-auto flex reading-width flex-col gap-2">
-            <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-              <div className="flex min-w-0 flex-wrap items-center gap-1">
-                {channelControl}
-                <Select
-                  value={mode}
-                  onValueChange={(v) => setMode(v as RequestKind)}
-                  disabled={busy}
-                >
-                  <SelectTrigger aria-label="聊天模式">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="narrative">叙事</SelectItem>
-                      <SelectItem value="forum">论坛</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-1">
-                <IconButton label="打开剧情工作台" onClick={onStudio}>
-                  <BookOpen />
-                </IconButton>
-                <IconButton label="世界、指令与音乐" onClick={onWorld}>
-                  <BookOpen />
-                </IconButton>
-                <IconButton label="清空当前聊天" disabled={busy} onClick={() => setClear(true)}>
-                  <Trash2 />
-                </IconButton>
-                {budget && (
-                  <div className="ml-auto flex items-center gap-1 text-xs text-muted-foreground sm:ml-2">
-                    <Button
-                      variant="ghost"
-                      onClick={() => setContextOpen(true)}
-                      aria-label="查看上下文详情"
-                    >
-                      <span className="hidden sm:inline">上下文约</span>{' '}
-                      {Math.round(budget.percent * 100)}%
-                    </Button>
-                    <IconButton label="压缩上下文" disabled={busy} onClick={() => void compress()}>
-                      <ArrowDownToLine />
-                    </IconButton>
-                  </div>
-                )}
-              </div>
-            </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (!composing.current) {
-                  inputRef.current?.focus({ preventScroll: true })
-                  void send()
-                }
-              }}
-            >
-              <InputGroup>
-                <InputGroupTextarea
-                  id="chat-input"
-                  ref={inputRef}
-                  aria-label="聊天输入"
-                  value={input}
-                  onChange={(e) => draft(e.target.value)}
-                  onCompositionStart={() => {
-                    composing.current = true
-                  }}
-                  onCompositionEnd={() => {
-                    composing.current = false
-                  }}
-                  onKeyDown={(e) => {
-                    if (
-                      e.key === 'Enter' &&
-                      !e.shiftKey &&
-                      (!touchInput || e.ctrlKey || e.metaKey) &&
-                      !e.nativeEvent.isComposing &&
-                      !composing.current &&
-                      e.keyCode !== 229
-                    ) {
-                      e.preventDefault()
-                      if (!busy) void send()
-                    }
-                  }}
-                  className="composer-height resize-none overflow-y-auto"
-                  rows={2}
-                  placeholder={mode === 'forum' ? '输入帖子或回复内容…' : '写下你的回应…'}
-                />
-                <InputGroupAddon align="block-end" className="justify-between">
-                  <div className="flex min-w-0 items-center gap-1">
-                    <MessageScrollerButton
-                      aria-label="回到最新消息"
-                      title="回到最新消息"
-                      size="icon"
-                    />
-                    <SaveStatus notify={notify} />
-                  </div>
-                  {chatBusy ? (
-                    <InputGroupButton
-                      aria-label="停止生成"
-                      onClick={() => void stopGeneration()}
-                      variant="secondary"
-                      size="sm"
-                    >
-                      <Square />
-                      停止
-                    </InputGroupButton>
-                  ) : (
-                    <InputGroupButton
-                      type="submit"
-                      aria-label="发送消息"
-                      variant="default"
-                      size="sm"
-                      disabled={busy || !input.trim() || !channel || !channelIsReady(channel)}
-                    >
-                      <Send />
-                      发送
-                    </InputGroupButton>
-                  )}
-                </InputGroupAddon>
-              </InputGroup>
-            </form>
-            {error && (
-              <p role="alert" className="text-xs text-destructive">
-                {friendlyError(error)}
-              </p>
-            )}
-          </div>
-        </footer>
+        {!compactComposer && !composerOpen && (
+          <footer className="composer-surface chat-safe-bottom shrink-0 border-t-(length:--border-width) px-2 pt-1 sm:px-4">
+            <div className="mx-auto w-full reading-width">{composer}</div>
+          </footer>
+        )}
+        <Dialog open={composerOpen} onOpenChange={setComposerOpen}>
+          <DialogContent
+            onOpenAutoFocus={(event) => {
+              event.preventDefault()
+              inputRef.current?.focus({ preventScroll: true })
+            }}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault()
+              const target = compactViewport ? composerTrigger.current : inputRef.current
+              target?.focus({ preventScroll: true })
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>撰写消息</DialogTitle>
+              <DialogDescription>收起后保留草稿，可继续阅读聊天记录。</DialogDescription>
+            </DialogHeader>
+            {composerOpen && composer}
+          </DialogContent>
+        </Dialog>
         <Dialog open={contextOpen} onOpenChange={setContextOpen}>
           <DialogContent>
             <DialogHeader>
@@ -963,6 +1101,23 @@ export function ChatRunner({
           destructive={false}
           onConfirm={() => {
             void retry(regenId)
+          }}
+        />
+        <ConfirmDialog
+          open={!!removing}
+          onClose={() => setRemoving(null)}
+          title="删除这条消息？"
+          detail="只删除当前路线中选中的消息，其他消息、路线和存档保留。"
+          confirmLabel="删除消息"
+          onConfirm={async () => {
+            if (!removing || busy || lock.current) return
+            setDeleting(true)
+            try {
+              await deleteMessage(removing.id, archive.revision, archive.navigationEpoch ?? 0)
+              notify('这条消息已删除。')
+            } finally {
+              setDeleting(false)
+            }
           }}
         />
         <ConfirmDialog

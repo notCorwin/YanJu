@@ -26,6 +26,7 @@ export const emptyHistory = (): GameHistory => ({
   slots: [],
   stateVersions: [],
 })
+const mutationLabels = new Set(['设定与人设', '编辑剧情', '剧情修改', '删除消息'])
 
 async function versions<T extends MessageVersion | TaskVersion>(
   table: YanJuDatabase['messageVersions'] | YanJuDatabase['taskVersions'],
@@ -74,8 +75,7 @@ export async function captureGameNode(
   force = false,
 ) {
   let session = await database.sessions.get(archive.id)
-  if (session && force && !['设定与人设', '编辑剧情', '剧情修改'].includes(label))
-    return session.nodeId
+  if (session && force && !mutationLabels.has(label)) return session.nodeId
   const messages = await database.messages.where('archiveId').equals(archive.id).sortBy('sequence')
   const last = messages.at(-1)
   if (
@@ -167,7 +167,7 @@ export async function captureGameNode(
     startNodeId: session?.startNodeId ?? nodeId,
   }
   await database.sessions.put(session)
-  if (!force || !previous || ['设定与人设', '编辑剧情', '剧情修改'].includes(label)) {
+  if (!force || !previous || mutationLabels.has(label)) {
     await database.slots.add({
       id: crypto.randomUUID(),
       archiveId: archive.id,

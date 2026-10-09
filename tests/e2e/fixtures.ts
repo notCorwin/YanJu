@@ -1,5 +1,5 @@
 import { catalogFixture } from '../model-catalog-fixture'
-import { test as base } from '@playwright/test'
+import { test as base, expect, type Page } from '@playwright/test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -91,3 +91,40 @@ export const test = base.extend({
     { scope: 'test', timeout: 30_000 },
   ],
 })
+
+export async function openAppAction(page: Page, name: string) {
+  await expect(page.locator('[data-page]')).toBeVisible()
+  const button = page.getByRole('button', { name, exact: true })
+  if (await page.locator('[data-page="chat"]').count()) {
+    await expect(page.getByRole('navigation', { name: '聊天功能', exact: true })).toBeVisible()
+    if (!(await button.isVisible()))
+      await page.getByRole('button', { name: '应用菜单', exact: true }).click()
+  }
+  await button.click()
+}
+
+export async function expandChannel(page: Page, name?: string | RegExp) {
+  const list = page.getByRole('navigation', { name: '渠道列表', exact: true })
+  await expect(list).toBeAttached()
+  const trigger = (
+    name === undefined
+      ? list.locator('[data-slot="accordion-trigger"]')
+      : list.getByRole('button', { name, exact: true })
+  ).first()
+  if (name !== undefined || (await trigger.count())) {
+    await expect(trigger).toBeVisible()
+    if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click()
+  }
+}
+
+export async function openChannels(page: Page) {
+  await openAppAction(page, '渠道管理')
+  await expandChannel(page)
+}
+
+export async function ensureComposer(page: Page) {
+  const input = page.getByRole('textbox', { name: '聊天输入', exact: true })
+  if (!(await input.isVisible()))
+    await page.getByRole('button', { name: '撰写消息', exact: true }).click()
+  await expect(input).toBeVisible()
+}

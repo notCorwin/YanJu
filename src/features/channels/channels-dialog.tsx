@@ -1,5 +1,12 @@
 import { ConfirmDialog } from '@/components/shared'
 import { Button } from '@/components/ui/button'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
+import { Badge } from '@/components/ui/badge'
 import { ManagementSurface } from '@/components/management-surface'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { ChannelEditor } from '@/features/channels/channel-editor'
@@ -10,7 +17,7 @@ import { channelIsReady, friendlyError, testChannel } from '@/lib/provider'
 import { commitChannelCapability, db } from '@/lib/storage'
 import { newChannel, type Channel, type ChannelCapability, type Settings } from '@/lib/types'
 import { Check, Plus, SlidersHorizontal } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 export function ChannelsDialog({
   open,
@@ -31,16 +38,21 @@ export function ChannelsDialog({
   page?: boolean
   onContinue?: () => void
 }) {
-  const [selectedId, setSelectedId] = useState('')
-  const [dirty, setDirty] = useState(false)
-  const { guard, confirmation } = useUnsavedChanges(dirty, page)
+  const [expandedIds, setExpandedIds] = useState<string[]>([])
+  const [dirtyIds, setDirtyIds] = useState<Set<string>>(() => new Set())
+  const onDirtyChange = useCallback((id: string, dirty: boolean) => {
+    setDirtyIds((previous) => {
+      if (previous.has(id) === dirty) return previous
+      const next = new Set(previous)
+      if (dirty) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+  const { guard, confirmation } = useUnsavedChanges(dirtyIds.size > 0, page)
   const [testingAll, setTestingAll] = useState(false)
   const [progress, setProgress] = useState('')
   const controller = useRef<AbortController | null>(null)
-  const selected =
-    channels.find((c) => c.id === selectedId) ??
-    channels.find((c) => c.id === settings.activeChannelId) ??
-    channels[0]
   const testAll = async () => {
     setTestingAll(true)
     controller.current = new AbortController()
@@ -85,10 +97,11 @@ export function ChannelsDialog({
         page={page}
         open={open}
         title="渠道管理"
-        description="保存多个服务商配置，通过测试后可以随时切换。"
+        description="渠道默认折叠，展开后可自定义名称、配置和测试。"
         step="channels"
         onClose={() =>
           guard(() => {
+            setExpandedIds([])
             controller.current?.abort()
             onClose()
           })
@@ -104,13 +117,7 @@ export function ChannelsDialog({
           <Button
             disabled={disabled || testingAll}
             onClick={() =>
-              guard(() => {
-                const c = newChannel()
-                void db.channels
-                  .add(c)
-                  .then(() => setSelectedId(c.id))
-                  .catch((e) => notify(friendlyError(e), true))
-              })
+              void db.channels.add(newChannel()).catch((e) => notify(friendlyError(e), true))
             }
           >
             <Plus />
@@ -131,28 +138,33 @@ export function ChannelsDialog({
           )}
         </div>
         {testingAll && <p role="status">{progress || '正在测试渠道…'}</p>}
-        <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4 md:grid-cols-[1fr_2fr] md:grid-rows-1">
-          <nav
-            aria-label="渠道列表"
-            className="flex min-w-0 gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-y-auto"
-          >
-            {channels.map((c) => (
-              <Button
-                key={c.id}
-                variant={selected?.id === c.id ? 'secondary' : 'ghost'}
-                className="min-w-0 justify-start overflow-hidden md:shrink-0"
-                aria-current={selected?.id === c.id ? 'true' : undefined}
-                disabled={testingAll}
-                onClick={() => selected?.id !== c.id && guard(() => setSelectedId(c.id))}
-              >
-                {channelIsReady(c) && <Check />}
-                <span className="truncate">{c.name}</span>
-              </Button>
-            ))}
-            {!channels.length && <p className="text-muted-foreground">从「新建渠道」开始。</p>}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <nav aria-label="渠道列表" className="min-w-0">
+            <Accordion
+              type="multiple"
+              className="accordion-panels"
+              value={expandedIds}
+              onValueChange={(next) => {
+                const close = () => setExpandedIds(next)
+                if (expandedIds.some((id) => !next.includes(id) && dirtyIds.has(id))) guard(close)
+                else close()
+              }}
+            >
+              {channels.map((channel) => (
+                <ChannelPanel
+                  key={channel.id}
+                  channel={channel}
+                  active={settings.activeChannelId === channel.id}
+                  notify={notify}
+                  disabled={disabled || testingAll}
+                  testingAll={testingAll}
+                  onDirtyChange={onDirtyChange}
+                />
+              ))}
+            </Accordion>
           </nav>
-          {!selected && (
-            <Empty className="md:col-span-2">
+          {!channels.length && (
+            <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon">
                   <SlidersHorizontal />
@@ -164,20 +176,6 @@ export function ChannelsDialog({
               </EmptyHeader>
             </Empty>
           )}
-          {selected && (
-            <ChannelEditor
-              key={selected.id + String(testingAll)}
-              channel={selected}
-              onDirtyChange={setDirty}
-              active={settings.activeChannelId === selected.id}
-              notify={notify}
-              disabled={disabled || testingAll}
-              onUse={async (channel) => {
-                await db.settings.update('app', { activeChannelId: channel.id })
-                notify(`已切换到 ${channel.name}`)
-              }}
-            />
-          )}
         </div>
       </ManagementSurface>
       <ConfirmDialog
@@ -188,5 +186,58 @@ export function ChannelsDialog({
         destructive={false}
       />
     </>
+  )
+}
+
+function ChannelPanel({
+  channel,
+  active,
+  notify,
+  disabled,
+  testingAll,
+  onDirtyChange,
+}: {
+  channel: Channel
+  active: boolean
+  notify: Notify
+  disabled: boolean
+  testingAll: boolean
+  onDirtyChange: (id: string, dirty: boolean) => void
+}) {
+  const reportDirty = useCallback(
+    (dirty: boolean) => onDirtyChange(channel.id, dirty),
+    [channel.id, onDirtyChange],
+  )
+  return (
+    <AccordionItem value={channel.id}>
+      <AccordionTrigger aria-label={channel.name} disabled={testingAll}>
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          {channelIsReady(channel) && (
+            <Check aria-hidden="true" className="size-4 shrink-0 text-success" />
+          )}
+          <span className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="truncate">{channel.name}</span>
+            <span className="truncate text-xs text-muted-foreground">
+              {channel.model || '展开填写渠道配置'}
+            </span>
+          </span>
+          {active && <Badge variant="secondary">当前</Badge>}
+        </span>
+      </AccordionTrigger>
+      <AccordionContent>
+        <ChannelEditor
+          key={String(testingAll)}
+          channel={channel}
+          active={active}
+          notify={notify}
+          disabled={disabled}
+          onDirtyChange={reportDirty}
+          onUse={async (saved) => {
+            await db.settings.update('app', { activeChannelId: saved.id })
+            notify(`已切换到 ${saved.name}`)
+          }}
+        />
+      </AccordionContent>
+    </AccordionItem>
   )
 }

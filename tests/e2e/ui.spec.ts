@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test'
-import { test } from './fixtures'
+import { test, ensureComposer, expandChannel, openAppAction, openChannels } from './fixtures'
 import {
   channelFixture,
   capabilityFixture,
@@ -86,7 +86,7 @@ async function prepareUI(page: Page, archiveCount = 2) {
     tasks: [],
     requests: [],
   }
-  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  await openAppAction(page, '存档管理')
   await page.getByLabel('导入存档文件').setInputFiles({
     name: 'ui-fixture-v4.json',
     mimeType: 'application/json',
@@ -102,7 +102,7 @@ async function prepareUI(page: Page, archiveCount = 2) {
 }
 
 async function connectUI(page: Page) {
-  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await openChannels(page)
   await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
   await expect(page.getByText(/测试通过 ·/)).toBeVisible()
   await page.getByRole('button', { name: '使用此渠道', exact: true }).click()
@@ -124,6 +124,7 @@ test('字段验证、未保存修改和关闭后的键盘焦点', async ({ page 
   await prepareUI(page)
   const opener = page.getByRole('button', { name: '渠道管理', exact: true })
   await opener.click()
+  await expandChannel(page)
   const key = page.getByRole('textbox', { name: 'API Key', exact: true })
   await key.fill('')
   await page.getByRole('button', { name: '保存渠道', exact: true }).click()
@@ -143,7 +144,9 @@ test('字段验证、未保存修改和关闭后的键盘焦点', async ({ page 
   await expect(opener).toBeFocused()
   await connectUI(page)
   await enterUI(page)
-  await expect(page.getByRole('combobox', { name: '当前渠道', exact: true })).toHaveText('阅读渠道')
+  await expect(page.getByRole('combobox', { name: '当前渠道', exact: true })).toContainText(
+    '阅读渠道',
+  )
 })
 
 test('指令可点击并保存草稿，音乐状态在面板重开后保持一致', async ({ page }) => {
@@ -313,11 +316,9 @@ test('流式回复完成后保留已展开的回答', async ({ page }) => {
     element.scrollTop = 0
     element.dispatchEvent(new Event('scroll'))
   })
+  await page.getByRole('button', { name: '更多聊天操作', exact: true }).click()
   const latest = page.getByRole('button', { name: '回到最新消息', exact: true })
   await expect(latest).toBeVisible()
-  const readingBounds = (await reading.boundingBox())!
-  const latestBounds = (await latest.boundingBox())!
-  expect(latestBounds.y).toBeGreaterThanOrEqual(readingBounds.y + readingBounds.height)
   await latest.click()
   await expect(page.getByRole('button', { name: /展开更多回答/ })).toBeInViewport()
 })
@@ -356,14 +357,14 @@ test('论坛的错误提示和未发送内容可以返回继续编辑', async ({
 
 test('多篇章搜索、创建命名和无效链接的恢复路径', async ({ page }) => {
   await prepareUI(page, 14)
-  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  await openAppAction(page, '存档管理')
   const search = page.getByRole('searchbox', { name: '搜索存档', exact: true })
   await search.fill('阅读计划 14')
   await expect(page.getByText('找到 1 个篇章', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '载入', exact: true }).click()
   await expect(page).toHaveURL(/#\/chat\/archive-14$/)
   await expect(page.getByText('篇章 14：午后的书房很安静。', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '存档管理', exact: true }).click()
+  await openAppAction(page, '存档管理')
   await page.getByRole('button', { name: '新建', exact: true }).click()
   const name = page.getByRole('textbox', { name: '存档名称', exact: true })
   await name.fill('')
@@ -373,7 +374,7 @@ test('多篇章搜索、创建命名和无效链接的恢复路径', async ({ pa
   await name.fill('周末的阅读计划')
   await name.press('Enter')
   await expect(page.getByRole('dialog')).toHaveCount(0)
-  await expect(page.locator('header p')).toHaveText('周末的阅读计划')
+  await expect(page).toHaveTitle('周末的阅读计划 · 宴雎')
   await page.evaluate(() => {
     window.location.hash = '/chat/%E0%A4%A'
   })
@@ -390,13 +391,13 @@ test('最窄屏幕、大字号、长名称和长草稿仍保留可用的阅读�
   await prepareUI(page)
   await connectUI(page)
   await enterUI(page)
-  await page.getByRole('button', { name: '人设管理', exact: true }).click()
+  await openAppAction(page, '人设管理')
   await page
     .getByRole('textbox', { name: '姓名', exact: true })
     .fill('一个喜欢在书房读书的人'.repeat(8))
   await page.getByRole('button', { name: '使用此人设', exact: true }).click()
   await page.getByRole('button', { name: '关闭', exact: true }).click()
-  await page.getByRole('button', { name: '外观设置', exact: true }).click()
+  await openAppAction(page, '外观设置')
   const font = page.getByRole('spinbutton', { name: '聊天字号 · 像素', exact: true })
   await font.fill('')
   await font.press('2')
@@ -406,6 +407,7 @@ test('最窄屏幕、大字号、长名称和长草稿仍保留可用的阅读�
   await page.getByRole('spinbutton', { name: '界面字号 · 像素', exact: true }).fill('18')
   await page.getByRole('button', { name: '关闭', exact: true }).click()
   await page.setViewportSize({ width: 320, height: 568 })
+  await ensureComposer(page)
   const input = page.getByRole('textbox', { name: '聊天输入', exact: true })
   const longDraft = '阅读以后想记下的想法。'.repeat(250)
   await input.fill(longDraft)
@@ -418,13 +420,19 @@ test('最窄屏幕、大字号、长名称和长草稿仍保留可用的阅读�
   }))
   expect(measurements.width).toBe(320)
   expect(measurements.viewport).toBeGreaterThanOrEqual(180)
-  expect(measurements.input).toBeLessThanOrEqual(140)
+  expect(measurements.input).toBeLessThanOrEqual(284)
   await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeInViewport()
   await page.reload()
+  await ensureComposer(page)
   await expect(input).toHaveValue(longDraft)
+  await page
+    .getByRole('dialog', { name: '撰写消息', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await page.getByRole('button', { name: '应用菜单', exact: true }).click()
   await expect(page.getByRole('button', { name: '人设管理', exact: true })).toBeInViewport()
   await page.setViewportSize({ width: 667, height: 375 })
-  await page.getByRole('button', { name: '人设管理', exact: true }).click()
+  await openAppAction(page, '人设管理')
   await expect(page.getByRole('button', { name: '保存人设', exact: true })).toBeInViewport()
   await expect(page.getByRole('textbox', { name: '姓名', exact: true })).toBeInViewport()
 })
@@ -437,6 +445,7 @@ test('首次进入按渠道测试、保存人设的顺序打开当前篇章', as
   const next = page.getByRole('button', { name: '继续设置人设', exact: true })
   await expect(next).toBeDisabled()
   await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await expandChannel(page, '新渠道')
   await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
   await page.getByRole('option', { name: '测试 Provider', exact: true }).click()
   await page.getByRole('textbox', { name: 'API Key', exact: true }).fill('test-key')
@@ -460,7 +469,7 @@ test('首次进入按渠道测试、保存人设的顺序打开当前篇章', as
   await page.getByRole('button', { name: '进入聊天', exact: true }).click()
   await expect(page).toHaveURL(/#\/chat\/[^?]+$/)
   await expect(page.getByRole('textbox', { name: '聊天输入', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '返回首页', exact: true }).click()
+  await openAppAction(page, '返回首页')
   await page.getByRole('button', { name: '进入聊天', exact: true }).click()
   await expect(page).toHaveURL(/#\/chat\/[^?]+$/)
 })
@@ -468,6 +477,7 @@ test('首次进入按渠道测试、保存人设的顺序打开当前篇章', as
 test('引导中的浏览器返回和页面退出都保护未保存修改', async ({ page }) => {
   await prepareUI(page)
   await page.goto('./#/setup/channels')
+  await expandChannel(page)
   const key = page.getByRole('textbox', { name: 'API Key', exact: true })
   await key.fill('尚未保存的 Key')
   await page.goBack()
@@ -476,7 +486,7 @@ test('引导中的浏览器返回和页面退出都保护未保存修改', async
   await expect(page).toHaveURL(/#\/setup\/channels$/)
   await confirmation.getByRole('button', { name: '取消', exact: true }).click()
   await expect(key).toHaveValue('尚未保存的 Key')
-  await page.getByRole('button', { name: '返回首页', exact: true }).click()
+  await openAppAction(page, '返回首页')
   await confirmation.getByRole('button', { name: '放弃修改', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Abyss & Desire', exact: true })).toBeVisible()
   await page.goto('./#/setup/persona')
@@ -486,7 +496,7 @@ test('引导中的浏览器返回和页面退出都保护未保存修改', async
   await expect(confirmation).toBeVisible()
   await confirmation.getByRole('button', { name: '取消', exact: true }).click()
   await expect(name).toHaveValue('还没有保存的姓名')
-  await page.getByRole('button', { name: '返回首页', exact: true }).click()
+  await openAppAction(page, '返回首页')
   await confirmation.getByRole('button', { name: '放弃修改', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Abyss & Desire', exact: true })).toBeVisible()
   await page.goto('./#/setup/persona')
@@ -523,7 +533,7 @@ test('封面入口即时可用，减少动态效果后仍保留外观设置与�
   await expect(page.getByRole('button', { name: '进入聊天', exact: true })).toBeInViewport()
   await page.screenshot({ path: testInfo.outputPath('cover-narrow.png'), fullPage: true })
   await page.setViewportSize(viewport)
-  await page.getByRole('button', { name: '外观设置', exact: true }).click()
+  await openAppAction(page, '外观设置')
   await page.getByRole('combobox', { name: '字体', exact: true }).click()
   await page.getByRole('option', { name: '系统字体', exact: true }).click()
   await page.getByRole('spinbutton', { name: '聊天字号 · 像素', exact: true }).fill('20')
@@ -619,13 +629,14 @@ test('唱片跟随真实播放状态，收起浮窗和切换页面后继续播�
   await expect(opener).toBeFocused()
   await expect(record).toHaveCount(0)
   await enterUI(page)
+  await expect(page.getByRole('button', { name: '展开世界与音乐', exact: true })).toHaveCount(0)
   await expect
     .poll(() => page.locator('audio').evaluate((element: HTMLAudioElement) => element.currentTime))
     .toBeGreaterThan(elapsed)
   expect(await page.locator('audio').evaluate((element: HTMLAudioElement) => element.paused)).toBe(
     false,
   )
-  await opener.click()
+  await page.getByRole('button', { name: '世界、指令与音乐', exact: true }).click()
   await expect(page.getByRole('tab', { name: '音乐', exact: true })).toHaveAttribute(
     'data-state',
     'active',
@@ -665,4 +676,180 @@ test('网络字体尚未响应时，应用也能显示并进入聊天', async ({
   } finally {
     releaseFonts()
   }
+})
+
+test('渠道默认折叠、独立展开，自定义名称保存后在模型切换与重开中保留', async ({ page }) => {
+  await prepareUI(page)
+  await openAppAction(page, '渠道管理')
+  const list = page.getByRole('navigation', { name: '渠道列表', exact: true })
+  const first = list.getByRole('button', { name: '阅读渠道', exact: true })
+  await expect(first).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByRole('textbox', { name: '渠道名称', exact: true })).toHaveCount(0)
+  await expandChannel(page, '阅读渠道')
+  const firstPanel = list.locator('[data-slot="accordion-item"]').first()
+  const name = firstPanel.getByRole('textbox', { name: '渠道名称', exact: true })
+  await name.fill('长篇创作 · 私人渠道')
+  await firstPanel.getByRole('button', { name: '保存渠道', exact: true }).click()
+  const renamed = list.getByRole('button', { name: '长篇创作 · 私人渠道', exact: true })
+  await expect(renamed).toHaveAttribute('aria-expanded', 'true')
+  await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  const second = list.getByRole('button', { name: '新渠道', exact: true })
+  await expect(second).toHaveAttribute('aria-expanded', 'false')
+  await second.click()
+  await expect(renamed).toHaveAttribute('aria-expanded', 'true')
+  await expect(second).toHaveAttribute('aria-expanded', 'true')
+  await second.click()
+  await expect(renamed).toHaveAttribute('aria-expanded', 'true')
+  await expect(second).toHaveAttribute('aria-expanded', 'false')
+  await name.fill('未保存的渠道名')
+  await renamed.click()
+  const confirmation = page.getByRole('dialog', { name: '放弃未保存的修改？', exact: true })
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(name).toHaveValue('未保存的渠道名')
+  await renamed.click()
+  await confirmation.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(renamed).toHaveAttribute('aria-expanded', 'false')
+  await expandChannel(page, '长篇创作 · 私人渠道')
+  await expect(name).toHaveValue('长篇创作 · 私人渠道')
+  await firstPanel.getByRole('combobox', { name: '模型', exact: true }).click()
+  await page.getByRole('option', { name: 'new-model · new-model', exact: true }).click()
+  await expect(name).toHaveValue('长篇创作 · 私人渠道')
+  await firstPanel.getByRole('button', { name: '保存渠道', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '渠道管理', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await openAppAction(page, '渠道管理')
+  await expect(renamed).toHaveAttribute('aria-expanded', 'false')
+  await page.reload()
+  await openAppAction(page, '渠道管理')
+  await expandChannel(page, '长篇创作 · 私人渠道')
+  await expect(name).toHaveValue('长篇创作 · 私人渠道')
+})
+
+test('桌面、移动端、窄屏与横屏的四个入口保持同一行，阅读区至少占屏幕 85%', async ({
+  page,
+}, testInfo) => {
+  await prepareUI(page)
+  await connectUI(page)
+  await enterUI(page)
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+    { width: 320, height: 568 },
+    { width: 844, height: 390 },
+  ]) {
+    await page.setViewportSize(viewport)
+    const controls = [
+      page.getByRole('combobox', { name: '当前渠道', exact: true }),
+      page.getByRole('button', { name: '打开剧情工作台', exact: true }),
+      page.getByRole('button', { name: '世界、指令与音乐', exact: true }),
+      page.getByRole('button', { name: '清空当前聊天', exact: true }),
+    ]
+    const bounds = []
+    for (const control of controls) {
+      await expect(control).toBeInViewport()
+      bounds.push((await control.boundingBox())!)
+    }
+    expect(
+      Math.max(...bounds.map((box) => box.y)) - Math.min(...bounds.map((box) => box.y)),
+    ).toBeLessThanOrEqual(1)
+    expect(bounds.every((box) => box.height >= 44)).toBe(true)
+    const reading = page.getByRole('region', { name: '聊天记录', exact: true })
+    await expect
+      .poll(async () => (await reading.boundingBox())!.height)
+      .toBeGreaterThanOrEqual(viewport.height * 0.85 - 1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width)
+    await expect(page.getByRole('button', { name: '展开世界与音乐', exact: true })).toHaveCount(0)
+    if (viewport.height > 640) {
+      await page
+        .getByRole('textbox', { name: '聊天输入', exact: true })
+        .fill('很长的阅读草稿。'.repeat(200))
+      await page.getByRole('button', { name: '应用菜单', exact: true }).focus()
+      await expect
+        .poll(async () => (await reading.boundingBox())!.height)
+        .toBeGreaterThanOrEqual(viewport.height * 0.85 - 1)
+    } else {
+      await ensureComposer(page)
+      await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeInViewport()
+      await page
+        .getByRole('dialog', { name: '撰写消息', exact: true })
+        .getByRole('button', { name: '关闭', exact: true })
+        .click()
+    }
+    await page.screenshot({
+      path: testInfo.outputPath(`chat-${viewport.width}x${viewport.height}.png`),
+    })
+  }
+})
+
+test('每条消息可以单独删除，取消、删除和刷新均保留其他聊天原文', async ({ page }) => {
+  await prepareUI(page)
+  await connectUI(page)
+  await enterUI(page)
+  await page.getByRole('textbox', { name: '聊天输入', exact: true }).fill('这条回应稍后删除。')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('article')).toHaveCount(3)
+  const records = () =>
+    page.getByRole('article').evaluateAll((elements) =>
+      elements.map((element) => ({
+        id: element.id,
+        content: element.querySelector('[data-slot="bubble-content"]')?.textContent,
+      })),
+    )
+  const original = await records()
+  const user = page.getByRole('article', { name: '你的消息', exact: true })
+  await user.getByRole('button', { name: '删除消息', exact: true }).click()
+  const confirmation = page.getByRole('dialog', { name: '删除这条消息？', exact: true })
+  await confirmation.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(confirmation).toHaveCount(0)
+  await expect.poll(records).toEqual(original)
+  await user.getByRole('button', { name: '删除消息', exact: true }).click()
+  await confirmation.getByRole('button', { name: '删除消息', exact: true }).click()
+  await expect(user).toHaveCount(0)
+  await expect(confirmation).toHaveCount(0)
+  await expect.poll(records).toEqual(original.filter((record) => record.id !== original[1].id))
+  await page.reload()
+  await expect(page.getByRole('article')).toHaveCount(2)
+  await expect(confirmation).toHaveCount(0)
+  await expect.poll(records).toEqual(original.filter((record) => record.id !== original[1].id))
+  await page
+    .getByRole('article')
+    .first()
+    .getByRole('button', { name: '删除消息', exact: true })
+    .click()
+  await confirmation.getByRole('button', { name: '删除消息', exact: true }).click()
+  await expect(page.getByRole('article')).toHaveCount(1)
+  expect(await records()).toEqual([original[2]])
+})
+
+test('移动端键盘压缩视口时保留输入焦点与草稿，收起输入后恢复阅读空间', async ({ page }) => {
+  await prepareUI(page)
+  await connectUI(page)
+  await enterUI(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const input = page.getByRole('textbox', { name: '聊天输入', exact: true })
+  await input.fill('输入中的草稿')
+  await expect(input).toBeFocused()
+  await page.setViewportSize({ width: 390, height: 390 })
+  await expect(input).toBeVisible()
+  await expect(input).toBeFocused()
+  await input.press('End')
+  await page.keyboard.insertText('。')
+  await expect(input).toHaveValue('输入中的草稿。')
+  await page.getByRole('button', { name: '应用菜单', exact: true }).focus()
+  await expect(page.getByRole('button', { name: '撰写消息', exact: true })).toBeVisible()
+  const reading = page.getByRole('region', { name: '聊天记录', exact: true })
+  await expect
+    .poll(async () => (await reading.boundingBox())!.height)
+    .toBeGreaterThanOrEqual(390 * 0.85 - 1)
+  await ensureComposer(page)
+  await expect(input).toHaveValue('输入中的草稿。')
+  await page
+    .getByRole('dialog', { name: '撰写消息', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await expect(page.getByRole('button', { name: '撰写消息', exact: true })).toBeFocused()
 })

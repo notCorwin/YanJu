@@ -227,7 +227,7 @@ export function ChannelEditor({
     <form
       ref={formRef}
       noValidate
-      className="flex min-h-0 min-w-0 flex-col"
+      className="channel-editor-height flex min-h-0 min-w-0 flex-col"
       onSubmit={(event) => {
         event.preventDefault()
         if (!busy && !saving && !disabled) void save()
@@ -246,6 +246,15 @@ export function ChannelEditor({
         <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4">
           <fieldset disabled={busy || saving || disabled} className="flex min-w-0 flex-col gap-5">
             <FieldGroup>
+              <FormField
+                label="渠道名称"
+                name="name"
+                error={errors.name}
+                value={draft.name}
+                onChange={(value) => update('name', value)}
+                placeholder="例如：日常叙事、长篇创作…"
+                autoComplete="off"
+              />
               <Field data-invalid={!!errors.providerId}>
                 <FieldLabel htmlFor={`provider-${draft.id}`}>Provider</FieldLabel>
                 <SearchableSelect
