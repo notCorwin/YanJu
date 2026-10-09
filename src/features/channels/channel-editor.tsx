@@ -270,80 +270,61 @@ export function ChannelEditor({
                 placeholder="例如：日常叙事、长篇创作…"
                 autoComplete="off"
               />
-              <Field data-invalid={!!errors.connectionMode}>
-                <FieldLabel htmlFor={`connection-mode-${draft.id}`}>连接方式</FieldLabel>
-                <Select
-                  value={draft.connectionMode}
-                  disabled={busy || saving || disabled}
-                  onValueChange={(mode: Channel['connectionMode']) => {
-                    const next: Channel = {
-                      ...value,
-                      connectionMode: mode,
-                      providerId: mode === 'catalog' ? modelCatalogProviderId(value) : '',
-                      modelProviderId: modelCatalogProviderId(value),
-                      sdk: mode === 'custom' ? '@ai-sdk/openai-compatible' : value.sdk,
-                      apiMode: mode === 'custom' ? 'chat-completions' : value.apiMode,
-                      capability: undefined,
-                      calibration: undefined,
+              <Field data-invalid={!!(errors.providerId || errors.connectionMode)}>
+                <FieldLabel htmlFor={`provider-${draft.id}`}>Provider</FieldLabel>
+                <SearchableSelect
+                  id={`provider-${draft.id}`}
+                  aria-invalid={!!(errors.providerId || errors.connectionMode)}
+                  value={custom ? 'custom' : draft.providerId ? `catalog:${draft.providerId}` : ''}
+                  disabled={busy || saving || disabled || !catalog}
+                  options={[
+                    { value: 'custom', label: '自定义端点' },
+                    ...providers.map((p) => ({ value: `catalog:${p.id}`, label: p.name })),
+                  ]}
+                  placeholder={catalog ? '选择服务商或自定义端点' : '正在加载 Models.dev…'}
+                  searchLabel="搜索提供商"
+                  searchPlaceholder="搜索提供商名称或 ID…"
+                  emptyMessage="未找到匹配的提供商。"
+                  onValueChange={(id) => {
+                    if (id === 'custom') {
+                      const next: Channel = {
+                        ...value,
+                        connectionMode: 'custom',
+                        providerId: '',
+                        modelProviderId: modelCatalogProviderId(value),
+                        sdk: '@ai-sdk/openai-compatible',
+                        apiMode: 'chat-completions',
+                        capability: undefined,
+                        calibration: undefined,
+                      }
+                      setDraft(
+                        provider && selectedModel
+                          ? selectCatalogModel(next, provider, selectedModel)
+                          : next,
+                      )
+                    } else {
+                      const next = catalog?.[id.slice('catalog:'.length)]
+                      const model =
+                        next && (next.models[draft.model] ?? Object.values(next.models)[0])
+                      if (next && model)
+                        setDraft(
+                          selectCatalogModel({ ...value, connectionMode: 'catalog' }, next, model),
+                        )
                     }
-                    setDraft(
-                      provider && selectedModel
-                        ? selectCatalogModel(next, provider, selectedModel)
-                        : next,
-                    )
                     setErrors({})
                   }}
-                >
-                  <SelectTrigger
-                    id={`connection-mode-${draft.id}`}
-                    className="w-full"
-                    aria-invalid={!!errors.connectionMode}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="catalog">Models.dev 服务商</SelectItem>
-                      <SelectItem value="custom">自定义端点</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                />
                 <FieldDescription>
                   {custom
                     ? '填写服务地址并选择它支持的 API 端点。模型可从整个 Models.dev 目录选择。'
                     : '从 Models.dev 选择服务商，使用其地址与认证方式，也可覆盖 Base URL。'}
                 </FieldDescription>
-                {errors.connectionMode && (
-                  <FieldDescription role="alert">{errors.connectionMode}</FieldDescription>
+                {(errors.providerId || errors.connectionMode) && (
+                  <FieldDescription role="alert">
+                    {errors.providerId || errors.connectionMode}
+                  </FieldDescription>
                 )}
               </Field>
-              {!custom && (
-                <Field data-invalid={!!errors.providerId}>
-                  <FieldLabel htmlFor={`provider-${draft.id}`}>Provider</FieldLabel>
-                  <SearchableSelect
-                    id={`provider-${draft.id}`}
-                    aria-invalid={!!errors.providerId}
-                    value={draft.providerId}
-                    disabled={busy || saving || disabled || !catalog}
-                    options={providers.map((p) => ({ value: p.id, label: p.name }))}
-                    placeholder={catalog ? '选择服务商' : '正在加载 Models.dev…'}
-                    searchLabel="搜索提供商"
-                    searchPlaceholder="搜索提供商名称或 ID…"
-                    emptyMessage="未找到匹配的提供商。"
-                    onValueChange={(id) => {
-                      const next = catalog?.[id]
-                      const model = next && Object.values(next.models)[0]
-                      if (next && model) {
-                        setDraft(selectCatalogModel(value, next, model))
-                        setErrors({})
-                      }
-                    }}
-                  />
-                  {errors.providerId && (
-                    <FieldDescription role="alert">{errors.providerId}</FieldDescription>
-                  )}
-                </Field>
-              )}
               <Field data-invalid={!!errors.model}>
                 <FieldLabel htmlFor={`model-${draft.id}`}>模型</FieldLabel>
                 <SearchableSelect

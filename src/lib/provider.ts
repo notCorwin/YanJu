@@ -34,7 +34,7 @@ import { runStructuredTask } from './task-runner'
 export function channelValidationErrors(channel: Channel) {
   const errors: Partial<Record<keyof Channel, string>> = {}
   if (!['catalog', 'custom'].includes(channel.connectionMode))
-    errors.connectionMode = '请选择连接方式。'
+    errors.connectionMode = '请选择 Provider 或自定义端点。'
   if (channel.connectionMode === 'catalog' && !channel.providerId)
     errors.providerId = '请选择 Models.dev 中的 Provider。'
   if (!channel.sdk || !isProviderSdk(channel.sdk)) errors.sdk = '请选择官方 @ai-sdk Provider SDK。'

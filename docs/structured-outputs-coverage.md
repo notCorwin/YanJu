@@ -6,7 +6,7 @@
 
 - `src/lib/tasks.ts` 注册 16 类任务，`task-runner.ts` 共用真实 AI SDK 的 `generateText` / `streamText`，依次使用 Structured Outputs、JSON mode 和提示词 JSON。根对象与嵌套对象严格，所有输出字段必填，未知值用可空类型表达。所有模式本地校验，先修复 JSON 语法、明确类型与可空字段，仍不合格时附加具体字段路径与约束重新生成一次；取消、截断及渠道错误保留恢复记录。
 - Provider 与模型统一从 Models.dev 获取，包含所有文本输入输出模型，以 `@ai-sdk/openai-compatible` 为主并覆盖全部官方语言模型 SDK 入口和模型级 SDK/API/协议覆盖。浏览器直接调用服务商，GitHub Pages 托管静态产物；Vertex Edge、MaaS、AWS SigV4/Mantle、Azure Foundry 保留各自认证与路由。社区 SDK 与自建兼容实现已移除。
-- 自定义端点无需选择目录 Provider，连接地址、协议与 SDK 独立于 Models.dev 模型资料来源；支持全目录搜索、相同模型 ID 的不同来源、刷新与导入导出。自定义连接不会继承目录中的云认证、地址模板与模型级路由，能力测试仅随实际连接配置和相关模型资料失效。
+- Provider 下拉列表首项为自定义端点，连接地址、协议与 SDK 独立于 Models.dev 模型资料来源；支持全目录搜索、相同模型 ID 的不同来源、刷新与导入导出。自定义连接不会继承目录中的云认证、地址模板与模型级路由，能力测试仅随实际连接配置和相关模型资料失效。
 - 七种端点（Chat Completions、Completions、Responses、Messages、Generate Content、Interactions、Google OpenAI Chat）与所有官方原生 SDK 均接入统一执行器，能力测试分别记录非流式和流式的实际模式，覆盖嵌套 schema 与本地修复；保留自动探测、模型默认温度与并发测试结果提交。Responses 的截断、拒绝、服务端失败和缺少终止事件不提交剧情，也不触发结构纠正。移除输出上限设置及输出预留预算；Anthropic 的必填容量使用 Models.dev 的模型完整输出容量，Vertex MaaS 的 SDK 默认输出限制也被移除。
 - `NarrativeReply` 同轮包含正文和 `TurnEffects`。`SourceRef` 定位消息和段落；`new:study` 等请求内临时引用分配为 `<messageId>:entity:study`，随后使用稳定程序 ID。数据由 React 展示。
 - `story.ts` 重放有效消息生成当前状态；完整消息、事件账本和状态投影在同一个事务中提交。状态跨轮延续，金额使用最小单位整数，日期由程序运算。

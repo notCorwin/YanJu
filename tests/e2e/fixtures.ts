@@ -114,6 +114,14 @@ export async function expandChannel(page: Page, name?: string | RegExp) {
   if (name !== undefined || (await trigger.count())) {
     await expect(trigger).toBeVisible()
     if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click()
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    const contentId = await trigger.getAttribute('aria-controls')
+    const content = page.locator(`[id=${JSON.stringify(contentId)}]`)
+    await expect(content).toBeVisible()
+    // The expanding panel can clip and move its actions after click's stability check.
+    await content.evaluate(async (element) => {
+      await Promise.allSettled(element.getAnimations().map((animation) => animation.finished))
+    })
   }
 }
 
