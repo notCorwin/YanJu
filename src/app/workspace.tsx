@@ -477,10 +477,12 @@ export function Workspace() {
         <main
           id="main-content"
           tabIndex={-1}
-          className="relative z-10 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-16 pb-6 sm:px-6 sm:py-8"
+          className="relative z-10 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-5 pt-16 pb-4 sm:px-6"
         >
-          <div className="my-auto flex w-full flex-col items-center gap-4 py-2 sm:gap-6">
-            <NarrativeCover onEnter={enter} />
+          <div className="flex w-full shrink-0 flex-1 flex-col justify-center pt-20 pb-8">
+            <NarrativeCover onEnter={enter} obscured={dialog !== null} />
+          </div>
+          <footer className="flex w-full shrink-0 flex-col items-center gap-2 pb-2">
             <nav
               aria-label="应用操作"
               className="flex max-w-full flex-wrap justify-center gap-1 sm:gap-3"
@@ -502,10 +504,10 @@ export function Workspace() {
               </Button>
             </nav>
             <SaveStatus notify={notify} />
-            <p className="text-center text-xs text-muted-foreground">
+            <p className="text-center text-xs text-foreground-dim">
               聊天、人设与配置保存在当前浏览器 · 可导出完整存档
             </p>
-          </div>
+          </footer>
         </main>
       )}
       <ChannelsDialog

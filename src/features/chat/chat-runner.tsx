@@ -1001,7 +1001,7 @@ export function ChatRunner({
                 <div
                   role="status"
                   aria-live="polite"
-                  className="panel-glass edge-accent flex items-center gap-3 border-(length:--border-width) border-primary-border p-4 text-ui text-primary"
+                  className="panel-glass edge-accent flex animate-status items-center gap-3 border-(length:--border-width) border-primary-border p-4 font-mono text-ui tracking-editorial text-primary"
                 >
                   <span
                     aria-hidden="true"

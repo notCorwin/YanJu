@@ -10,14 +10,14 @@ export function SceneCard({ scene }: { scene: Scene }) {
     <Card size="sm" className="edge-accent">
       <CardHeader>
         <Eyebrow>SCENE / 场景</Eyebrow>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 border-b-(length:--border-width) border-dashed pb-3 sm:grid-cols-3">
           {[
             ['时间', scene.time],
             ['地点', scene.location],
             ['在场', scene.characters?.filter(Boolean).join('、')],
           ].map(([name, value]) => (
             <div key={name} className="min-w-0 first:col-span-2 sm:first:col-span-1">
-              <p className="text-xs text-muted-foreground">{name}</p>
+              <p className="font-mono text-xs tracking-editorial text-primary-muted">{name}</p>
               <p className="wrap-anywhere text-ui">{value || '…'}</p>
             </div>
           ))}
@@ -25,9 +25,13 @@ export function SceneCard({ scene }: { scene: Scene }) {
       </CardHeader>
       {scene.quoteZh && (
         <CardContent className="flex flex-col gap-2">
-          <p className="text-chat leading-prose">{scene.quoteZh}</p>
-          <p className="font-serif italic text-sm text-muted-foreground">{scene.quoteEn}</p>
-          {scene.source && <p className="text-xs text-primary">— {scene.source}</p>}
+          <p className="text-chat leading-prose tracking-prose">{scene.quoteZh}</p>
+          <p className="font-serif italic text-sm text-primary-muted">{scene.quoteEn}</p>
+          {scene.source && (
+            <p className="text-right font-mono text-xs tracking-editorial text-foreground-dim">
+              — {scene.source}
+            </p>
+          )}
         </CardContent>
       )}
     </Card>

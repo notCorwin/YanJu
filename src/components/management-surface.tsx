@@ -37,15 +37,18 @@ export function ManagementSurface({
         aria-label={title}
         className="mx-auto flex min-h-0 w-full dialog-wide-width flex-1 flex-col gap-4 compact-height:gap-2"
       >
-        <div className="flex shrink-0 flex-col items-center gap-2 text-center compact-height:hidden">
+        <div
+          key={step}
+          className="flex shrink-0 animate-reveal flex-col items-center gap-2 py-4 text-center compact-height:hidden"
+        >
           <p className="font-mono text-xs tracking-cover text-primary">
             {step === 'channels' ? 'STEP 01 · CONNECTION' : 'STEP 02 · PERSONA'}
           </p>
-          <h1 className="font-serif text-xl italic">
+          <h1 className="font-serif text-page-title font-normal tracking-editorial italic">
             {step === 'channels' ? 'Interface Setup' : 'Your Masks'}
           </h1>
-          <p className="text-sm text-muted-foreground">{description}</p>
-          <div aria-hidden="true" className="editorial-line w-16" />
+          <p className="text-sm tracking-editorial text-muted-foreground">{description}</p>
+          <div aria-hidden="true" className="editorial-line mt-3 w-12 shadow-line" />
         </div>
         {children}
         <div className="flex shrink-0 items-center justify-between gap-2 border-t-(length:--border-width) pt-3">

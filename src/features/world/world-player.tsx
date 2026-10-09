@@ -338,12 +338,14 @@ export function WorldPlayer({
                     />
                     <div
                       className={cn(
-                        'absolute inset-3 animate-record rounded-full border-(length:--border-width) border-dashed border-primary-border',
+                        'absolute inset-3 animate-record-inner rounded-full border-(length:--border-width) border-dashed border-primary-border-soft',
                         (!playing || loading) && 'animation-paused',
                       )}
                     />
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="record-core rounded-full border-(length:--border-width) border-primary bg-primary-subtle shadow-glow" />
+                      <span className="record-core flex items-center justify-center rounded-full border-(length:--border-width) border-primary-border bg-primary-subtle shadow-glow">
+                        <span className="size-1.5 rounded-full bg-foreground" />
+                      </span>
                     </div>
                   </div>
                   <CardTitle>{tracks[index].name}</CardTitle>

@@ -348,9 +348,9 @@ export const defaults: Settings = {
   activeArchiveId: '',
   migrated: false,
   autoMusic: false,
-  fontChat: 16,
-  fontUi: 14,
-  fontFamily: 'Noto Serif SC',
+  fontChat: 14,
+  fontUi: 12,
+  fontFamily: 'Noto Serif TC',
   bgImage: '',
   bgOpacity: 15,
 }

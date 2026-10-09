@@ -1,66 +1,93 @@
 import { Button } from '@/components/ui/button'
-import { ArrowRight } from 'lucide-react'
+import type { CSSProperties } from 'react'
 
-export function NarrativeCover({ onEnter }: { onEnter: () => void }) {
+const memories = ['我身上什么味道', '我瞳孔的深度', '我嘴角笑的弧度', '我看你的眼神']
+
+export function NarrativeCover({
+  onEnter,
+  obscured = false,
+}: {
+  onEnter: () => void
+  obscured?: boolean
+}) {
   return (
     <section
       aria-label="宴雎 · 恨海情天"
-      className="mx-auto flex w-full cover-width flex-col items-center gap-6 text-center sm:gap-8"
+      data-obscured={obscured}
+      className="mx-auto w-full cover-width cover-motion animate-cover-stage text-center leading-cover"
     >
-      <div className="flex animate-reveal flex-col items-center gap-2">
-        <p className="font-mono text-xs tracking-cover text-muted-foreground">
-          A PRIVATE NARRATIVE SPACE
-        </p>
-        <h1 className="font-serif text-cover-title tracking-cover italic text-primary">
+      <div className="mb-8 flex flex-col items-center">
+        <h1 className="font-serif text-cover-title font-normal tracking-cover-title italic text-primary">
           Abyss &amp; Desire
         </h1>
-        <p className="text-sm tracking-cover text-muted-foreground">恨 海 情 天</p>
-        <div aria-hidden="true" className="editorial-line mt-2 w-16" />
+        <p className="mt-2 text-cover-copy tracking-cover-subtitle text-foreground-dim">
+          恨 海 情 天
+        </p>
+        <div aria-hidden="true" className="editorial-line mt-4.5 w-15 shadow-line" />
       </div>
-      <div className="relative grid w-full cover-height animate-float grid-cols-[1fr_auto] items-center gap-3 text-left sm:grid-cols-[1fr_auto_1fr] sm:gap-8">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 cover-glow animate-breathe"
-        />
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-8 text-center font-serif cover-watermark italic"
-        >
-          Yan Ju
-        </span>
-        <div className="relative flex animate-reveal stagger-1 flex-col gap-2 border-l-(length:--border-width) border-primary-border pl-3 sm:pl-5">
-          <p className="text-sm leading-prose">我身上什么味道</p>
-          <p className="text-sm leading-prose">我瞳孔的深度</p>
-          <p className="text-sm leading-prose">我嘴角笑的弧度</p>
-          <p className="text-sm leading-prose">我看你的眼神</p>
-          <p className="mt-2 font-mono text-xs leading-prose text-primary">
-            DO YOU STILL REMEMBER?
-          </p>
-        </div>
-        <div aria-hidden="true" className="animate-reveal stagger-2">
-          <div className="cover-portrait relative -rotate-2 overflow-hidden border-(length:--border-width) border-border-soft p-1">
-            <div className="absolute inset-1 cover-texture" />
-            <div className="absolute inset-0 cover-glass" />
-            <div className="absolute inset-0 cover-sheen animate-sweep" />
-            <span className="absolute bottom-3 inset-x-0 text-center font-mono text-xs tracking-editorial text-primary">
-              宴 雎
-            </span>
-          </div>
-        </div>
-        <div className="relative col-span-2 flex animate-reveal stagger-3 flex-col items-center gap-2 text-center sm:col-span-1 sm:items-end sm:gap-3 sm:text-right">
-          <p className="text-ui leading-prose tracking-editorial">在這恨海情天裡</p>
-          <p className="text-sm leading-prose text-muted-foreground">哪裡是我們的天上人間</p>
-          <span aria-hidden="true" className="font-mono text-primary">
-            ＋
+      <div className="relative isolate w-full cover-height animate-float">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="cover-glow-top absolute animate-breathe" />
+          <div className="cover-glow-bottom absolute animate-breathe-alt" />
+          <span className="cover-watermark absolute animate-cover-watermark font-serif italic">
+            Yan Ju
           </span>
         </div>
+        <div className="relative grid h-full grid-cols-(--cover-columns) items-center px-2 sm:px-4">
+          <div className="relative flex min-w-0 flex-col gap-1.75 text-left">
+            <span aria-hidden="true" className="cover-rule absolute animate-cover-rule" />
+            {memories.map((line, index) => (
+              <p
+                key={line}
+                data-cover-line
+                className="cover-memory relative animate-cover-copy pl-3 text-cover-copy leading-heading tracking-memory text-foreground-soft"
+                style={{ '--reveal-order': index } as CSSProperties}
+              >
+                {line}
+              </p>
+            ))}
+            <p
+              data-cover-line
+              className="mt-1.5 animate-cover-copy pl-3 font-mono text-cover-note tracking-memory text-primary-muted"
+              style={{ '--reveal-order': 4 } as CSSProperties}
+            >
+              DO YOU STILL REMEMBER?
+            </p>
+          </div>
+          <div aria-hidden="true" className="cover-portrait relative animate-cover-portrait p-0.75">
+            <div className="relative size-full cover-picture">
+              <div className="absolute inset-0 cover-texture" />
+            </div>
+            <div className="absolute inset-0 cover-glass" />
+            <span className="cover-tag absolute font-mono text-foreground-dim">SEQ. 2019</span>
+          </div>
+          <div className="relative min-w-0 text-right">
+            <p
+              data-cover-line
+              className="mb-2 animate-cover-copy text-cover-main font-normal tracking-cover-main"
+              style={{ '--reveal-order': 5 } as CSSProperties}
+            >
+              <span className="material-text">在這恨海情天裡</span>
+            </p>
+            <p
+              data-cover-line
+              className="animate-cover-copy text-cover-copy font-light tracking-cover-caption text-foreground-muted"
+              style={{ '--reveal-order': 6 } as CSSProperties}
+            >
+              哪裡是我們的天上人間
+            </p>
+            <span
+              aria-hidden="true"
+              className="cover-cross absolute animate-cover-copy"
+              style={{ '--reveal-order': 7 } as CSSProperties}
+            />
+          </div>
+        </div>
       </div>
-      <div className="flex flex-col items-center gap-4">
-        <Button size="lg" className="min-w-44" onClick={onEnter}>
-          进入聊天
-          <ArrowRight data-icon="inline-end" />
+      <div className="mt-10 flex justify-center">
+        <Button size="cover" aria-label="进入聊天" onClick={onEnter}>
+          进 入
         </Button>
-        <p className="animate-reveal stagger-4 text-xs text-muted-foreground">让故事在此刻继续。</p>
       </div>
     </section>
   )
