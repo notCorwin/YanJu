@@ -1,5 +1,5 @@
 import { errorDiagnostics } from '../../src/lib/request-trace'
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
   channelFingerprint,
   channelIsReady,
@@ -8,7 +8,9 @@ import {
   testChannelProtocols,
   friendlyError,
   channelRequest,
+  summarize,
 } from '../../src/lib/provider'
+import { db } from '../../src/lib/storage'
 import {
   forumFixture,
   compressionFixture,
@@ -37,6 +39,7 @@ function streaming(value: unknown, finishReason = 'stop'): Response {
     headers: { 'content-type': 'text/event-stream' },
   })
 }
+afterEach(() => vi.useRealTimers())
 describe('OpenAI-compatible 严格协议', () => {
   it('模型来自 Models.dev，允许 Base URL 覆盖目录默认地址', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(streaming(narrativeFixture))
@@ -91,36 +94,133 @@ describe('OpenAI-compatible 严格协议', () => {
       checks: { 'chat-completions': { nonStreaming: 'passed', streaming: 'failed' } },
     })
   })
-  it('首包等待超时结束挂起流，保留诊断且不会重复请求', async () => {
+  it('首包和后续内容等待超过一天仍可完成流式回复', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    let stream!: ReadableStreamDefaultController<Uint8Array>
     const fetcher = vi.fn<typeof fetch>().mockImplementation(
       async (_url, init) =>
         new Response(
-          new ReadableStream({
+          new ReadableStream<Uint8Array>({
             start(controller) {
+              stream = controller
               init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), {
                 once: true,
               })
             },
           }),
-          { headers: { 'content-type': 'text/event-stream', 'x-request-id': 'timeout-request' } },
+          { headers: { 'content-type': 'text/event-stream' } },
         ),
     )
-    const options = { ...request(fetcher), channel: { ...channelFixture, requestTimeoutMs: 25 } }
-    let failure: unknown
-    try {
-      await generateReply(options)
-    } catch (error) {
-      failure = error
-    }
-    expect(failure).toBeInstanceOf(Error)
-    expect(friendlyError(failure)).toContain('等待上限')
-    expect(errorDiagnostics(failure)).toMatchObject({
-      requestId: 'timeout-request',
-      httpStatus: 200,
-      corrections: 0,
-    })
+    const options = request(fetcher)
+    const result = generateReply(options)
+    const settled = vi.fn()
+    void result.then(settled, settled)
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(settled).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false)
+    const frames = sse(narrativeFixture)
+    const encoder = new TextEncoder()
+    stream.enqueue(encoder.encode(frames[0]))
+    await vi.waitFor(() => expect(options.onPartial).toHaveBeenCalled())
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(settled).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false)
+    for (const frame of frames.slice(1)) stream.enqueue(encoder.encode(frame))
+    stream.close()
+    await expect(result).resolves.toHaveProperty('reply.value', narrativeFixture)
     expect(fetcher).toHaveBeenCalledOnce()
   })
+  it.each([false, true])(
+    '长时间等待时仍可手动取消，保留诊断和部分内容（已有内容=%s）',
+    async (hasPartial) => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+      const controller = new AbortController()
+      let stream!: ReadableStreamDefaultController<Uint8Array>
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(
+        async (_url, init) =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                stream = controller
+                init?.signal?.addEventListener(
+                  'abort',
+                  () => controller.error(init.signal?.reason),
+                  {
+                    once: true,
+                  },
+                )
+              },
+            }),
+            { headers: { 'content-type': 'text/event-stream', 'x-request-id': 'waiting-request' } },
+          ),
+      )
+      const options = { ...request(fetcher), signal: controller.signal }
+      const result = generateReply(options).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      const settled = vi.fn()
+      void result.then(settled)
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+      if (hasPartial) {
+        stream.enqueue(new TextEncoder().encode(sse(narrativeFixture)[0]))
+        await vi.waitFor(() => expect(options.onPartial).toHaveBeenCalled())
+      }
+      await vi.advanceTimersByTimeAsync(86_400_000)
+      expect(settled).not.toHaveBeenCalled()
+      expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false)
+      controller.abort()
+      const failure = await result
+      expect(failure).toBeInstanceOf(Error)
+      expect(friendlyError(failure)).toContain('已停止生成')
+      expect(errorDiagnostics(failure)).toMatchObject({
+        requestId: 'waiting-request',
+        httpStatus: 200,
+        corrections: 0,
+        finishReason: 'cancelled',
+      })
+      const [record] = await db.requests.toArray()
+      expect(record.status).toBe('cancelled')
+      if (hasPartial) {
+        expect(record.partial).toBeDefined()
+        expect(record.raw).toBeTruthy()
+      }
+      expect(fetcher).toHaveBeenCalledOnce()
+    },
+  )
+  it.each([false, true])(
+    '非流式请求持续等待，直到返回结果或用户取消（取消=%s）',
+    async (cancel) => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+      const controller = new AbortController()
+      let respond!: (response: Response) => void
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(
+        (_url, init) =>
+          new Promise((resolve, reject) => {
+            respond = resolve
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            })
+          }),
+      )
+      const result = summarize(channelFixture, { messages: [] }, controller.signal, fetcher)
+      const settled = vi.fn()
+      void result.then(settled, settled)
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+      await vi.advanceTimersByTimeAsync(86_400_000)
+      expect(settled).not.toHaveBeenCalled()
+      expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false)
+      if (cancel) {
+        controller.abort()
+        await expect(result).rejects.toHaveProperty('name', 'AbortError')
+      } else {
+        respond(Response.json(completion(compressionFixture)))
+        await expect(result).resolves.toEqual(compressionFixture)
+      }
+      expect(fetcher).toHaveBeenCalledOnce()
+    },
+  )
   it.each([401, 429])('HTTP %s 失败返回可操作说明和请求编号', async (status) => {
     const fetcher = vi
       .fn<typeof fetch>()

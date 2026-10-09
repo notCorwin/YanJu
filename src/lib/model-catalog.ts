@@ -195,26 +195,9 @@ export function loadModelCatalog(refresh = false, signal?: AbortSignal): Promise
         : await cachedValue(() => caches.open('yanju-models-dev'))
     const url = MODELS_DEV_URL
     try {
-      // Bound the shared network request even if every caller has stopped waiting.
-      const controller = new AbortController()
-      const timer = setTimeout(
-        () => controller.abort(new DOMException('模型目录加载超时', 'TimeoutError')),
-        15_000,
-      )
-      let response: Response
-      let catalog: ModelCatalog
-      try {
-        response = await waitForCatalog(
-          fetch(url, { signal: controller.signal }),
-          controller.signal,
-        )
-        if (!response.ok) throw new Error(`模型目录加载失败（HTTP ${response.status}）`)
-        catalog = parseModelCatalog(
-          await waitForCatalog(response.clone().json(), controller.signal),
-        )
-      } finally {
-        clearTimeout(timer)
-      }
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`模型目录加载失败（HTTP ${response.status}）`)
+      const catalog = parseModelCatalog(await response.clone().json())
       if (cache) await cachedValue(() => cache.put(MODELS_DEV_URL, response))
       return publishCatalog(catalog)
     } catch (error) {

@@ -52,7 +52,6 @@ export interface Channel {
   contextWindow: number
   inputLimit?: number
   temperatureSupported?: boolean
-  requestTimeoutMs?: number
   createdAt: number
   capability?: ChannelCapability
   calibration?: { ratio: number; samples: number }
@@ -368,7 +367,6 @@ export const newChannel = (): Channel => ({
   apiMode: 'auto',
   temperature: null,
   contextWindow: 0,
-  requestTimeoutMs: 300000,
   createdAt: Date.now(),
 })
 export const newPersona = (): Persona => ({

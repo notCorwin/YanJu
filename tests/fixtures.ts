@@ -150,7 +150,6 @@ export const channelFixture: Channel = {
   apiMode: 'chat-completions',
   temperature: 0.9,
   contextWindow: 131072,
-  requestTimeoutMs: 300000,
   createdAt: 1,
 }
 export const catalogFingerprintFixture = catalogRouteFingerprint(

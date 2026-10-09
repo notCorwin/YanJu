@@ -257,6 +257,7 @@ async function enableChannel(
 ) {
   await openAppAction(page, '渠道管理')
   await expandChannel(page, name)
+  await expect(page.getByRole('combobox', { name: '请求等待上限' })).toHaveCount(0)
   if (options?.mode) {
     await page.getByRole('combobox', { name: 'API 端点' }).click()
     const label = {

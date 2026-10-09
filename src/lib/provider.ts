@@ -58,11 +58,6 @@ export function channelValidationErrors(channel: Channel) {
     (!Number.isFinite(channel.temperature) || channel.temperature < 0 || channel.temperature > 2)
   )
     errors.temperature = '温度应在 0–2 之间。'
-  if (
-    channel.requestTimeoutMs !== undefined &&
-    (!Number.isInteger(channel.requestTimeoutMs) || channel.requestTimeoutMs < 0)
-  )
-    errors.requestTimeoutMs = '请求等待上限须为非负整数；0 表示不限。'
   if (!Number.isInteger(channel.contextWindow) || channel.contextWindow <= 0)
     errors.contextWindow = 'Models.dev 尚未提供有效的上下文容量。'
   return errors
@@ -110,12 +105,6 @@ export async function channelRequest(
 }
 
 export function friendlyError(error: unknown) {
-  if (
-    error instanceof DOMException &&
-    error.name === 'TimeoutError' &&
-    error.message === '测试超时'
-  )
-    return '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
   const causes: { name?: unknown; message?: unknown; cause?: unknown }[] = []
   for (
     let current = error;
@@ -133,7 +122,7 @@ export function friendlyError(error: unknown) {
         ),
     )
   )
-    return '渠道在等待上限内没有返回内容，收到的部分回复已保留。可调整请求等待上限后重试。'
+    return '渠道或网络连接超时，收到的部分回复已保留，请重试。'
   if (causes.some((cause) => cause.name === 'AbortError'))
     return '已停止生成，已保留收到的内容，可重试。'
   const cause = error instanceof ChannelRequestError ? error.cause : error
@@ -147,8 +136,6 @@ export function friendlyError(error: unknown) {
   if (status === 429) return '渠道请求受限，请检查用量额度或稍后重试。'
   const message = error instanceof Error ? error.message : String(error)
   if (error instanceof ResponseLifecycleError) return message
-  if (error instanceof DOMException && error.name === 'TimeoutError')
-    return '渠道测试超过 45 秒，请检查连接或稍后重新测试。'
   if (/fetch|network|cors/i.test(message))
     return '无法从浏览器连接渠道。请检查网络和服务商的浏览器访问支持；服务商须通过 CORS 允许本站来源与认证请求头。'
   if (/temperature/i.test(message))
@@ -161,27 +148,20 @@ export function friendlyError(error: unknown) {
   return message
 }
 
-async function timedProbe<T>(operation: (signal: AbortSignal) => Promise<T>, parent?: AbortSignal) {
-  const controller = new AbortController()
-  const cancel = () => controller.abort(new DOMException('已取消', 'AbortError'))
-  parent?.addEventListener('abort', cancel, { once: true })
-  if (parent?.aborted) cancel()
-  const timer = setTimeout(
-    () => controller.abort(new DOMException('测试超时', 'TimeoutError')),
-    45000,
-  )
+async function cancellableProbe<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  signal = new AbortController().signal,
+) {
+  signal.throwIfAborted()
   let onAbort: () => void = () => {}
   const aborted = new Promise<never>((_, reject) => {
-    onAbort = () => reject(controller.signal.reason)
-    controller.signal.addEventListener('abort', onAbort, { once: true })
-    if (controller.signal.aborted) onAbort()
+    onAbort = () => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
   })
   try {
-    return await Promise.race([operation(controller.signal), aborted])
+    return await Promise.race([operation(signal), aborted])
   } finally {
-    clearTimeout(timer)
-    parent?.removeEventListener('abort', cancel)
-    controller.signal.removeEventListener('abort', onAbort)
+    signal.removeEventListener('abort', onAbort)
   }
 }
 
@@ -209,7 +189,7 @@ export async function testChannel(
         `正在测试 ${protocolLabels[protocol]} · ${streaming ? '流式' : '非流式'} JSON 输出…`,
       )
       try {
-        await timedProbe(async (abortSignal) => {
+        await cancellableProbe(async (abortSignal) => {
           // Keep both streaming stages and all protocol probes on the same catalog route.
           catalog ??= await loadModelCatalog(false, abortSignal)
           const result = await runStructuredTask({

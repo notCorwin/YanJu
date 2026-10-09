@@ -67,10 +67,6 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       inputLimit: z.number().int().positive().optional().parse(c.inputLimit),
       temperatureSupported: z.boolean().optional().parse(c.temperatureSupported),
       createdAt: z.number().int().min(0).max(8_640_000_000_000_000).parse(c.createdAt),
-      requestTimeoutMs:
-        c.requestTimeoutMs === undefined
-          ? 300000
-          : z.number().int().nonnegative().parse(c.requestTimeoutMs),
       calibration: parseSave(calibrationSchema.optional(), c.calibration),
       capability: restore ? parseSave(capabilitySchema.optional(), c.capability) : undefined,
     }

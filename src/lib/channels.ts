@@ -48,7 +48,6 @@ export function channelFingerprint(channel: Channel) {
     channel.sdk,
     channel.inputLimit,
     channel.contextWindow,
-    channel.requestTimeoutMs ?? 300000,
   ])
   return `${channel.baseUrl}|${channel.model}|${channel.apiMode}|${hash(identity)}`
 }

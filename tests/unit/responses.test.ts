@@ -111,19 +111,24 @@ describe('自动探测与能力缓存', () => {
     await expect(testChannel(autoChannel, controller.signal, never)).rejects.toThrow()
     expect(never).not.toHaveBeenCalled()
   })
-  it('45 秒超时可终止不响应取消的连接', async () => {
-    vi.useFakeTimers()
+  it('渠道测试持续等待，手动取消可终止不响应取消的连接', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
     try {
+      const controller = new AbortController()
       const signals: AbortSignal[] = []
       const fetcher = vi.fn<typeof fetch>().mockImplementation((_url, init) => {
         signals.push(init!.signal!)
         return new Promise(() => {})
       })
-      const result = testChannel(responsesChannel, undefined, fetcher)
-      await vi.advanceTimersByTimeAsync(45000)
-      const capability = await result
-      expect(capability.ok).toBe(false)
-      expect(capability.error).toContain('45 秒')
+      const result = testChannel(responsesChannel, controller.signal, fetcher)
+      const settled = vi.fn()
+      void result.then(settled, settled)
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+      await vi.advanceTimersByTimeAsync(86_400_000)
+      expect(settled).not.toHaveBeenCalled()
+      expect(signals[0].aborted).toBe(false)
+      controller.abort()
+      await expect(result).rejects.toHaveProperty('name', 'AbortError')
       expect(signals[0].aborted).toBe(true)
       expect(fetcher).toHaveBeenCalledOnce()
     } finally {
@@ -141,7 +146,6 @@ describe('自动探测与能力缓存', () => {
     for (const change of [
       { apiMode: 'responses' as const },
       { temperature: null },
-      { requestTimeoutMs: 1000 },
       { model: 'changed' },
       { apiKey: 'changed' },
       { baseUrl: 'https://another.test/v1' },

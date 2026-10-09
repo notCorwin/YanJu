@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { catalogFixture } from '../model-catalog-fixture'
-import { channelFixture } from '../fixtures'
+import { capabilityFixture, channelFixture, completion, sse } from '../fixtures'
 
 vi.unmock('../../src/lib/model-catalog')
 
@@ -44,9 +44,32 @@ describe('catalog cancellation', () => {
     expect((await loadModelCatalog()).mock.id).toBe('mock')
   })
 
-  it('times out a hung shared fetch, falls back to cache and permits a later refresh', async () => {
-    vi.useFakeTimers()
-    const fetcher = vi.fn().mockReturnValue(new Promise(() => {}))
+  it('keeps waiting for a slow catalog instead of timing out or using stale cache', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    const response = deferred<Response>()
+    const fetcher = vi.fn().mockReturnValue(response.promise)
+    const match = vi.fn(async () => Response.json(catalogFixture()))
+    vi.stubGlobal('fetch', fetcher)
+    vi.stubGlobal('caches', {
+      open: async () => ({
+        match,
+        put: async () => {},
+      }),
+    })
+    const { loadModelCatalog } = await import('../../src/lib/model-catalog')
+    const request = loadModelCatalog()
+    const settled = vi.fn()
+    void request.then(settled, settled)
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(settled).not.toHaveBeenCalled()
+    expect(match).not.toHaveBeenCalled()
+    expect(fetcher).toHaveBeenCalledOnce()
+    response.resolve(Response.json(catalogFixture()))
+    expect((await request).mock.id).toBe('mock')
+  })
+
+  it('falls back to cache on a network error and permits a later refresh', async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'))
     vi.stubGlobal('fetch', fetcher)
     vi.stubGlobal('caches', {
       open: async () => ({
@@ -55,10 +78,7 @@ describe('catalog cancellation', () => {
       }),
     })
     const { loadModelCatalog } = await import('../../src/lib/model-catalog')
-    const request = loadModelCatalog()
-    await vi.advanceTimersByTimeAsync(15000)
-    expect((await request).mock.id).toBe('mock')
-    expect(fetcher.mock.calls[0][1].signal.aborted).toBe(true)
+    expect((await loadModelCatalog()).mock.id).toBe('mock')
     fetcher.mockResolvedValueOnce(Response.json(catalogFixture()))
     await expect(loadModelCatalog(true)).resolves.toHaveProperty('mock')
     expect(fetcher).toHaveBeenCalledTimes(2)
@@ -78,7 +98,7 @@ describe('catalog cancellation', () => {
   })
 
   it('does not wait indefinitely on cache storage', async () => {
-    vi.useFakeTimers()
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(catalogFixture())))
     vi.stubGlobal('caches', { open: () => new Promise(() => {}) })
     const { loadModelCatalog } = await import('../../src/lib/model-catalog')
@@ -88,31 +108,36 @@ describe('catalog cancellation', () => {
   })
 
   it.each([true, false])(
-    'applies the channel waiting limit while loading the catalog (streaming=%s)',
+    'completes after a long catalog wait (streaming=%s)',
     async (streaming) => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
       const response = deferred<Response>()
       vi.stubGlobal(
         'fetch',
         vi.fn(() => response.promise),
       )
-      const providerFetch = vi.fn()
+      const providerFetch = vi.fn<typeof fetch>().mockResolvedValue(
+        streaming
+          ? new Response(sse(capabilityFixture).join(''), {
+              headers: { 'content-type': 'text/event-stream' },
+            })
+          : Response.json(completion(capabilityFixture)),
+      )
       const { runStructuredTask } = await import('../../src/lib/task-runner')
-      const { friendlyError } = await import('../../src/lib/provider')
       const task = runStructuredTask({
         kind: 'capability',
-        channel: { ...channelFixture, requestTimeoutMs: 25 },
+        channel: channelFixture,
         streaming,
         fetcher: providerFetch,
       })
-      const result = task.then(() => 'resolved', friendlyError)
-      const outcome = await Promise.race([
-        result,
-        new Promise<string>((resolve) => setTimeout(() => resolve('still pending'), 250)),
-      ])
-      response.resolve(Response.json(catalogFixture()))
-      await result
-      expect(outcome).toContain('等待上限')
+      const settled = vi.fn()
+      void task.then(settled, settled)
+      await vi.advanceTimersByTimeAsync(86_400_000)
+      expect(settled).not.toHaveBeenCalled()
       expect(providerFetch).not.toHaveBeenCalled()
+      response.resolve(Response.json(catalogFixture()))
+      await expect(task).resolves.toHaveProperty('value', capabilityFixture)
+      expect(providerFetch).toHaveBeenCalledOnce()
     },
   )
 

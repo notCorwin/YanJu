@@ -39,10 +39,3 @@ export function requestTrace(channel: Channel, schema: string, fetcher: typeof f
     }),
   }
 }
-export function requestTimeout(channel: Channel, streaming: boolean) {
-  const milliseconds = channel.requestTimeoutMs ?? 300_000
-  if (!milliseconds) return undefined
-  return streaming
-    ? { firstChunkMs: milliseconds, chunkMs: milliseconds }
-    : { totalMs: milliseconds }
-}

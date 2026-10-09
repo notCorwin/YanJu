@@ -506,35 +506,6 @@ export function ChannelEditor({
                   onChange={(v) => update('temperature', v)}
                 />
               )}
-              <Field>
-                <FieldLabel htmlFor={`timeout-${draft.id}`}>请求等待上限</FieldLabel>
-                <Select
-                  value={String(draft.requestTimeoutMs ?? 300000)}
-                  disabled={busy || saving || disabled}
-                  onValueChange={(v) => update('requestTimeoutMs', Number(v))}
-                >
-                  <SelectTrigger id={`timeout-${draft.id}`} className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {[
-                        [0, '不限'],
-                        [45000, '45 秒'],
-                        [300000, '5 分钟'],
-                        [900000, '15 分钟'],
-                      ].map(([ms, label]) => (
-                        <SelectItem key={ms} value={String(ms)}>
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <FieldDescription>
-                  等待首个内容或后续内容的时间；持续返回内容时继续生成。
-                </FieldDescription>
-              </Field>
             </FieldGroup>
           </fieldset>
           {busy && (

@@ -5,7 +5,7 @@ import { loadModelCatalog, catalogSelection, type ModelCatalog } from './model-c
 import { estimatedProtocol, outputModeLabels } from './channels'
 import { estimateTokens, serializeRequest } from './context'
 import { channelRequest, friendlyError } from './provider'
-import { ChannelRequestError, requestTimeout, requestTrace } from './request-trace'
+import { ChannelRequestError, requestTrace } from './request-trace'
 import { sanitizeSchemaPartial } from './schemas'
 import { repairJsonOutput, unsupportedOutputFormat, validationDetails } from './json-output'
 import { saveRequestRecord } from './storage'
@@ -80,27 +80,11 @@ export async function runStructuredTask<K extends TaskKind>(
   const executionId = crypto.randomUUID()
   const trace = requestTrace(channel, taskDefinitions[kind].name, options.fetcher)
   let catalog: ModelCatalog
-  const catalogController = new AbortController()
-  const catalogSignal = signal
-    ? AbortSignal.any([signal, catalogController.signal])
-    : catalogController.signal
-  const catalogWait = channel.requestTimeoutMs ?? 300_000
-  const catalogTimer = catalogWait
-    ? setTimeout(
-        () => catalogController.abort(new DOMException('等待内容超时', 'TimeoutError')),
-        catalogWait,
-      )
-    : undefined
   try {
-    catalog = options.catalog ?? (await loadModelCatalog(false, catalogSignal))
-    catalogSignal.throwIfAborted()
+    catalog = options.catalog ?? (await loadModelCatalog(false, signal))
+    signal?.throwIfAborted()
   } catch (error) {
-    throw new ChannelRequestError(
-      error,
-      trace.finish(catalogSignal.aborted ? 'cancelled' : 'error'),
-    )
-  } finally {
-    clearTimeout(catalogTimer)
+    throw new ChannelRequestError(error, trace.finish(signal?.aborted ? 'cancelled' : 'error'))
   }
   const selected = catalogSelection(channel, catalog)
   const checked = channel.capability?.checks?.[protocol]
@@ -180,28 +164,13 @@ export async function runStructuredTask<K extends TaskKind>(
     let usage: Usage | undefined
     let raw = ''
     let validationError: unknown
-    const requestController = new AbortController()
-    const requestSignal = signal
-      ? AbortSignal.any([signal, requestController.signal])
-      : requestController.signal
-    let waitTimer: ReturnType<typeof setTimeout> | undefined
-    const resetWait = () => {
-      clearTimeout(waitTimer)
-      const milliseconds = channel.requestTimeoutMs ?? 300_000
-      if (milliseconds && !requestSignal.aborted)
-        waitTimer = setTimeout(
-          () => requestController.abort(new DOMException('等待内容超时', 'TimeoutError')),
-          milliseconds,
-        )
-    }
     try {
-      resetWait()
       const request = {
         ...(await channelRequest(
           channel,
           trace.fetch,
           protocol,
-          requestSignal,
+          signal,
           kind === 'capability' ? catalog : undefined,
           {
             outputMode: mode,
@@ -213,9 +182,8 @@ export async function runStructuredTask<K extends TaskKind>(
         allowSystemInMessages: true,
         messages: requestMessages,
         ...(temperature === null ? {} : { temperature }),
-        abortSignal: requestSignal,
+        abortSignal: signal,
         maxRetries: 0,
-        timeout: requestTimeout(channel, streaming),
       }
       let finishReason: string
       if (!streaming) {
@@ -230,7 +198,6 @@ export async function runStructuredTask<K extends TaskKind>(
           onChunk: ({ chunk }) => {
             if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') {
               trace.chunk()
-              resetWait()
             }
           },
           onError: ({ error }) => {
@@ -238,7 +205,7 @@ export async function runStructuredTask<K extends TaskKind>(
           },
         })
         for await (const delta of stream.textStream) {
-          requestSignal.throwIfAborted()
+          signal?.throwIfAborted()
           raw += delta
           const parsed = await parsePartialJson(raw)
           if (parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value)) {
@@ -257,8 +224,7 @@ export async function runStructuredTask<K extends TaskKind>(
         usage = measuredUsage(channel, options.estimatedInput ?? estimated, await stream.usage)
         if (streamError) throw streamError
       }
-      clearTimeout(waitTimer)
-      requestSignal.throwIfAborted()
+      signal?.throwIfAborted()
       record.raw = raw
       if (finishReason === 'length') throw new Error('truncated: token limit')
       if (finishReason === 'content-filter') throw new Error('渠道未完成本次输出。')
@@ -288,12 +254,12 @@ export async function runStructuredTask<K extends TaskKind>(
       await saveRequestRecord({
         ...record,
         raw: raw || record.raw,
-        status: requestSignal.aborted ? 'cancelled' : 'failed',
+        status: signal?.aborted ? 'cancelled' : 'failed',
         usage,
         error: friendlyError(failure),
-        diagnostics: trace.finish(requestSignal.aborted ? 'cancelled' : 'error'),
+        diagnostics: trace.finish(signal?.aborted ? 'cancelled' : 'error'),
       })
-      if (!requestSignal.aborted && mode !== 'prompt' && unsupportedOutputFormat(failure)) {
+      if (!signal?.aborted && mode !== 'prompt' && unsupportedOutputFormat(failure)) {
         mode = outputModes[outputModes.indexOf(mode) + 1]
         trace.data.fallbacks = (trace.data.fallbacks ?? 0) + 1
         options.onCorrection?.(
@@ -303,7 +269,7 @@ export async function runStructuredTask<K extends TaskKind>(
         continue
       }
       if (
-        !requestSignal.aborted &&
+        !signal?.aborted &&
         validationError &&
         options.allowCorrection !== false &&
         corrections < 1
@@ -314,12 +280,7 @@ export async function runStructuredTask<K extends TaskKind>(
         options.onCorrection?.('本地修复后仍未通过校验，正在加入具体约束重新生成。', correction)
         continue
       }
-      throw new ChannelRequestError(
-        failure,
-        trace.finish(requestSignal.aborted ? 'cancelled' : 'error'),
-      )
-    } finally {
-      clearTimeout(waitTimer)
+      throw new ChannelRequestError(failure, trace.finish(signal?.aborted ? 'cancelled' : 'error'))
     }
   }
 }
