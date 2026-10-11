@@ -18,14 +18,18 @@ async function prepare(page: Page, structured = true) {
   await page.getByRole('button', { name: '新建渠道', exact: true }).click()
   await expandChannel(page, '新渠道')
   await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
-  await page.getByRole('option', { name: '测试 Provider', exact: true }).click()
+  await page.getByRole('option', { name: '自定义端点', exact: true }).click()
   await page.getByRole('combobox', { name: '模型', exact: true }).click()
-  await page.getByRole('option', { name: 'test-model · test-model', exact: true }).click()
+  await page
+    .getByRole('option', { name: 'test-model · test-model · 测试 Provider', exact: true })
+    .click()
   await page.getByLabel('API Key', { exact: true }).fill('test-key')
-  await page.getByLabel('Base URL（可选）', { exact: true }).fill('https://endpoint.example')
+  await page.getByLabel('Base URL', { exact: true }).fill('https://endpoint.example')
 }
 
 async function selectProtocol(page: Page, protocol: ApiProtocol) {
+  if (!(await page.getByRole('combobox', { name: 'API 端点', exact: true }).isVisible()))
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
   await page.getByRole('combobox', { name: 'API 端点', exact: true }).click()
   await page.getByRole('option', { name: endpointLabels[protocol], exact: true }).click()
 }
@@ -59,8 +63,13 @@ test('七种端点在纯前端使用官方 SDK 完成非流式和流式测试', 
       endpointLabels[next].replace('{model}', 'test-model'),
     )
     for (const call of recent) {
-      expect(call.body.max_tokens).toBe(next === 'messages' ? 128000 : undefined)
-      expect(call.body.max_output_tokens ?? call.body.max_completion_tokens).toBeUndefined()
+      expect(
+        call.body.max_tokens ??
+          call.body.max_output_tokens ??
+          call.body.max_completion_tokens ??
+          call.body.generationConfig?.maxOutputTokens ??
+          call.body.generation_config?.max_output_tokens,
+      ).toBe(128000)
     }
   }
   expect(calls).toHaveLength(14)

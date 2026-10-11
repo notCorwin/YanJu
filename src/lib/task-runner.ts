@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { JSONObject } from '@ai-sdk/provider'
 import { loadModelCatalog, catalogSelection, type ModelCatalog } from './model-catalog'
 import { estimatedProtocol, outputModeLabels } from './channels'
-import { estimateTokens, serializeRequest } from './context'
+import { effectiveInputLimit, estimateTokens, serializeRequest } from './context'
 import { channelRequest, friendlyError } from './provider'
 import { ChannelRequestError, requestTrace } from './request-trace'
 import { sanitizeSchemaPartial } from './schemas'
@@ -87,6 +87,11 @@ export async function runStructuredTask<K extends TaskKind>(
     throw new ChannelRequestError(error, trace.finish(signal?.aborted ? 'cancelled' : 'error'))
   }
   const selected = catalogSelection(channel, catalog)
+  const maxOutputTokens =
+    channel.maxOutputTokens ||
+    selected.model.limit.output ||
+    Math.min(8192, Math.max(1, channel.contextWindow - 1))
+  const requestChannel = { ...channel, maxOutputTokens }
   const checked = channel.capability?.checks?.[protocol]
   const provenMode =
     kind === 'capability'
@@ -127,7 +132,7 @@ export async function runStructuredTask<K extends TaskKind>(
       ),
       channel.calibration?.ratio,
     )
-    if (estimated > (channel.inputLimit ?? channel.contextWindow))
+    if (estimated > effectiveInputLimit(requestChannel))
       throw new ChannelRequestError(
         new Error('任务超出渠道上下文预算，请选择容量更大的模型、缩短输入或先压缩剧情。'),
         trace.finish('error'),
@@ -142,7 +147,7 @@ export async function runStructuredTask<K extends TaskKind>(
       channel: {
         id: channel.id,
         name: channel.name,
-        baseUrl: channel.baseUrl || selected.api || '',
+        baseUrl: channel.connectionMode === 'custom' ? channel.baseUrl : selected.api || '',
         model: channel.model,
         protocol,
       },
@@ -153,6 +158,7 @@ export async function runStructuredTask<K extends TaskKind>(
         messages: structuredClone(requestMessages),
         schema: jsonSchema,
         temperature,
+        maxOutputTokens,
         streaming,
         outputMode: mode,
       },
@@ -167,7 +173,7 @@ export async function runStructuredTask<K extends TaskKind>(
     try {
       const request = {
         ...(await channelRequest(
-          channel,
+          requestChannel,
           trace.fetch,
           protocol,
           signal,
@@ -176,12 +182,14 @@ export async function runStructuredTask<K extends TaskKind>(
             outputMode: mode,
             schema: jsonSchema as JSONObject,
             schemaName: taskDefinitions[kind].name,
+            maxOutputTokens,
           },
         )),
         instructions,
         allowSystemInMessages: true,
         messages: requestMessages,
         ...(temperature === null ? {} : { temperature }),
+        maxOutputTokens,
         abortSignal: signal,
         maxRetries: 0,
       }

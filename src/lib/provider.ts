@@ -40,11 +40,11 @@ export function channelValidationErrors(channel: Channel) {
   if (!channel.sdk || !isProviderSdk(channel.sdk)) errors.sdk = '请选择官方 @ai-sdk Provider SDK。'
   if (!channel.apiKey.trim()) errors.apiKey = '请输入渠道提供的 API Key。'
   if (!channel.model.trim() || !modelCatalogProviderId(channel))
-    errors.model = '请选择 Models.dev 中的文本模型。'
+    errors.model = '请选择 Models.dev 中的文本模型，或输入自定义模型 ID。'
   if (channel.connectionMode === 'custom' && !channel.baseUrl.trim())
     errors.baseUrl = '自定义端点需要填写 Base URL。'
   try {
-    if (channel.baseUrl && !channel.baseUrl.includes('${')) {
+    if (channel.connectionMode === 'custom' && channel.baseUrl && !channel.baseUrl.includes('${')) {
       const url = new URL(channel.baseUrl)
       if (!['https:', 'http:'].includes(url.protocol)) throw new Error()
     }
@@ -58,8 +58,14 @@ export function channelValidationErrors(channel: Channel) {
     (!Number.isFinite(channel.temperature) || channel.temperature < 0 || channel.temperature > 2)
   )
     errors.temperature = '温度应在 0–2 之间。'
-  if (!Number.isInteger(channel.contextWindow) || channel.contextWindow <= 0)
+  if (!Number.isInteger(channel.contextWindow) || channel.contextWindow < 1024)
     errors.contextWindow = 'Models.dev 尚未提供有效的上下文容量。'
+  if (
+    !Number.isInteger(channel.maxOutputTokens) ||
+    channel.maxOutputTokens < 1 ||
+    channel.maxOutputTokens >= channel.contextWindow
+  )
+    errors.maxOutputTokens = 'max_tokens 须为正整数，且小于 Context Window。'
   return errors
 }
 export function validateChannel(channel: Channel) {
@@ -91,9 +97,13 @@ export async function channelRequest(
     selected,
     {
       ...settings,
-      baseUrl: channel.baseUrl,
+      baseUrl: channel.connectionMode === 'custom' ? channel.baseUrl : '',
       sdk: channel.sdk,
       customEndpoint: channel.connectionMode === 'custom',
+      manualModelId: channel.manualModelId,
+      contextWindow: channel.contextWindow,
+      inputLimit: channel.inputLimit,
+      maxOutputTokens: channel.maxOutputTokens,
     },
   )
   signal?.throwIfAborted()
@@ -173,7 +183,18 @@ export async function testChannel(
 ): Promise<ChannelCapability> {
   validateChannel(channel)
   const protocols: ApiProtocol[] =
-    channel.apiMode === 'auto' ? ['responses', 'chat-completions'] : [channel.apiMode]
+    channel.apiMode === 'auto'
+      ? [
+          'responses',
+          'chat-completions',
+          'completions',
+          'messages',
+          'generate-content',
+          'interactions',
+          'google-chat-completions',
+          ...(channel.connectionMode === 'catalog' ? (['native'] as const) : []),
+        ]
+      : [channel.apiMode]
   const checks: ChannelCapability['checks'] = {}
   let selected: ApiProtocol | undefined
   let firstTokenMs: number | undefined
@@ -218,6 +239,7 @@ export async function testChannel(
     }
     if (!selected && check.nonStreaming === 'passed' && check.streaming === 'passed')
       selected = protocol
+    if (selected && channel.apiMode === 'auto') break
   }
   if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
   const capability: ChannelCapability = {

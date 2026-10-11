@@ -44,6 +44,26 @@ async function setup(apiMode: ApiMode = 'chat-completions') {
 }
 
 describe('catalog-bound capability proof', () => {
+  it('falls back to the preset Provider SDK after probing the seven API endpoints', async () => {
+    const { provider, tested } = await setup('auto')
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json({ error: { message: 'endpoint unavailable' } }, { status: 400 }))
+
+    const capability = await provider.testChannel(
+      { ...tested, capability: undefined },
+      undefined,
+      fetcher,
+    )
+
+    expect(capability.ok).toBe(false)
+    expect(capability.checks?.native).toMatchObject({
+      nonStreaming: 'failed',
+      streaming: 'untested',
+    })
+    expect(fetcher).toHaveBeenCalledTimes(8)
+  })
+
   it.each(['auto', 'responses', 'chat-completions', 'native'] as const)(
     'invalidates %s proof before the next request when the model API changes',
     async (mode) => {

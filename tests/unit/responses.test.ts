@@ -10,6 +10,7 @@ import {
 import { withCapability } from '../../src/lib/channels'
 import { modelMessages } from '../../src/lib/prompts'
 import type { ApiProtocol, Channel } from '../../src/lib/types'
+import { protocolResponse } from '../provider-protocol-fixtures'
 import {
   capabilityFixture,
   channelFixture,
@@ -24,7 +25,14 @@ import {
 } from '../fixtures'
 
 const responsesChannel: Channel = { ...channelFixture, apiMode: 'responses' }
-const autoChannel: Channel = { ...channelFixture, apiMode: 'auto' }
+const autoChannel: Channel = {
+  ...channelFixture,
+  connectionMode: 'custom',
+  providerId: '',
+  modelProviderId: 'mock',
+  sdk: '@ai-sdk/openai-compatible',
+  apiMode: 'auto',
+}
 const streamResponse = (frames: string[]) =>
   new Response(frames.join(''), {
     headers: { 'content-type': 'text/event-stream' },
@@ -42,20 +50,34 @@ const request = (fetcher: typeof fetch, channel = responsesChannel) => ({
 })
 function probes(enabled: ApiProtocol[], noStream: ApiProtocol[] = []) {
   return vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
-    const protocol = String(url).endsWith('/responses') ? 'responses' : 'chat-completions'
+    const path = new URL(String(url)).pathname
+    const protocol = path.endsWith('/responses')
+      ? 'responses'
+      : path.endsWith('/openai/chat/completions')
+        ? 'google-chat-completions'
+        : path.endsWith('/chat/completions')
+          ? 'chat-completions'
+          : path.endsWith('/completions')
+            ? 'completions'
+            : path.endsWith('/messages')
+              ? 'messages'
+              : path.includes('/models/')
+                ? 'generate-content'
+                : path.endsWith('/interactions')
+                  ? 'interactions'
+                  : 'google-chat-completions'
     const body = JSON.parse(String(init?.body))
     if (!enabled.includes(protocol) || (body.stream && noStream.includes(protocol)))
       return Response.json(
         { error: { message: 'endpoint unavailable', type: 'invalid_request_error' } },
         { status: 400 },
       )
-    return protocol === 'responses'
-      ? body.stream
-        ? streamResponse(responseSse(capabilityFixture))
-        : Response.json(response(capabilityFixture))
-      : body.stream
-        ? streamResponse(sse(capabilityFixture))
-        : Response.json(completion(capabilityFixture))
+    const result = protocolResponse(
+      protocol,
+      capabilityFixture,
+      body.stream === true || path.includes('streamGenerateContent'),
+    )
+    return new Response(result.body, { headers: { 'content-type': result.contentType } })
   })
 }
 
@@ -64,11 +86,11 @@ describe('自动探测与能力缓存', () => {
     {
       enabled: ['responses', 'chat-completions'] as ApiProtocol[],
       selected: 'responses',
-      calls: 4,
+      calls: 2,
     },
-    { enabled: ['responses'] as ApiProtocol[], selected: 'responses', calls: 3 },
+    { enabled: ['responses'] as ApiProtocol[], selected: 'responses', calls: 2 },
     { enabled: ['chat-completions'] as ApiProtocol[], selected: 'chat-completions', calls: 3 },
-    { enabled: [] as ApiProtocol[], selected: undefined, calls: 2 },
+    { enabled: [] as ApiProtocol[], selected: undefined, calls: 7 },
   ])('可用 $enabled 时选择 $selected', async ({ enabled, selected, calls }) => {
     const fetcher = probes(enabled)
     const progress = vi.fn()
@@ -88,6 +110,23 @@ describe('自动探测与能力缓存', () => {
     expect(result.checks?.responses).toMatchObject({ nonStreaming: 'passed', streaming: 'failed' })
     expect(fetcher).toHaveBeenCalledTimes(4)
   })
+  it.each([
+    'responses',
+    'chat-completions',
+    'completions',
+    'messages',
+    'generate-content',
+    'interactions',
+    'google-chat-completions',
+  ] as const)('自动探测可选用 %s 端点', async (protocol) => {
+    const fetcher = probes([protocol])
+    const result = await testChannel(autoChannel, undefined, fetcher)
+    expect(result.protocol).toBe(protocol)
+    expect(result.checks?.[protocol]).toMatchObject({
+      nonStreaming: 'passed',
+      streaming: 'passed',
+    })
+  })
   it.each(['responses', 'chat-completions'] as const)('手动 %s 只请求选定协议', async (apiMode) => {
     const fetcher = probes(['responses', 'chat-completions'])
     const result = await testChannel({ ...channelFixture, apiMode }, undefined, fetcher)
@@ -96,7 +135,7 @@ describe('自动探测与能力缓存', () => {
     expect(fetcher).toHaveBeenCalledTimes(2)
     for (const [, init] of fetcher.mock.calls) {
       const body = JSON.parse(String(init?.body))
-      expect(body.max_output_tokens ?? body.max_tokens).toBeUndefined()
+      expect(body.max_output_tokens ?? body.max_tokens).toBe(channelFixture.maxOutputTokens)
     }
   })
   it('取消停止探测，不返回部分成功结果或探测另一个协议', async () => {
@@ -201,7 +240,7 @@ describe('原生 Responses 结构化业务协议', () => {
     expect(result).toMatchObject({ ok: true, protocol: 'responses', protocols: true })
     expect(result.firstTokenMs).toBeGreaterThanOrEqual(0)
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0)
-    expect(fetcher).toHaveBeenCalledTimes(6)
+    expect(fetcher).toHaveBeenCalledTimes(5)
   })
   it.each(['narrative', 'forum'] as const)('%s 流式更新、完整校验和 usage', async (kind) => {
     const value = kind === 'narrative' ? narrativeFixture : forumFixture
@@ -224,7 +263,7 @@ describe('原生 Responses 结构化业务协议', () => {
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.text.format).toMatchObject({ type: 'json_schema', strict: true })
     expect(body.text.format.schema.additionalProperties).toBe(false)
-    expect(body.max_output_tokens).toBeUndefined()
+    expect(body.max_output_tokens).toBe(channelFixture.maxOutputTokens)
     expect(body.store).toBe(false)
     expect(body).not.toHaveProperty('response_format')
     expect(body).not.toHaveProperty('stream_options')

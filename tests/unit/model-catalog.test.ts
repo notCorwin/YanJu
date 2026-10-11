@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   catalogSelection,
   catalogRouteFingerprint,
+  fuzzyCatalogModel,
   parseModelCatalog,
   selectCatalogModel,
 } from '../../src/lib/model-catalog'
@@ -110,7 +111,7 @@ describe('Models.dev Provider 与模型目录', () => {
       temperature: null,
       temperatureSupported: false,
     })
-    expect(next).not.toHaveProperty('maxOutputTokens')
+    expect(next.maxOutputTokens).toBe(100000)
     expect(catalogSelection(next, catalog)).toMatchObject({
       sdk: '@ai-sdk/openai',
       api: 'https://official.example/v1',
@@ -146,5 +147,26 @@ describe('Models.dev Provider 与模型目录', () => {
       ),
     ).toThrow('Models.dev')
     expect(() => parseModelCatalog({})).toThrow('文本模型')
+  })
+  it('手动模型 ID 使用高置信度模糊匹配，未匹配时保留手填容量', () => {
+    const catalog = parseModelCatalog(catalogFixture())
+    expect(fuzzyCatalogModel(catalog.mock, 'test-model-x')?.id).toBe('test-model')
+    const similar = catalogSelection(
+      { ...channelFixture, manualModelId: true, model: 'test-model-x' },
+      catalog,
+    )
+    expect(similar.model.limit.context).toBe(131072)
+    const custom = catalogSelection(
+      {
+        ...channelFixture,
+        manualModelId: true,
+        model: 'private-model-2026',
+        contextWindow: 65536,
+        inputLimit: 60000,
+        maxOutputTokens: 4096,
+      },
+      catalog,
+    )
+    expect(custom.model.limit).toEqual({ context: 65536, input: 60000, output: 4096 })
   })
 })

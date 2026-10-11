@@ -1,7 +1,13 @@
 import { captureGameNode, prepareHistoryEdit, messageSnapshot } from './game-history'
 import { registerGameOperation } from './game-operations'
 import { z } from 'zod'
-import { calibrate, compactContext, estimateTokens, serializeRequest } from './context'
+import {
+  calibrate,
+  compactContext,
+  effectiveInputLimit,
+  estimateTokens,
+  serializeRequest,
+} from './context'
 import { validDate } from './domain-schema'
 import { tracks } from './media'
 import { withArchiveOperation } from './operations'
@@ -377,7 +383,7 @@ async function executeAuxiliaryWithOperation<K extends AuxiliaryKind>(
         ),
         channel.calibration?.ratio,
       )
-    if (estimate() > (channel.inputLimit ?? channel.contextWindow) && history.length > 2) {
+    if (estimate() > effectiveInputLimit(channel) && history.length > 2) {
       const summary = await compactContext({
         archive,
         channel,

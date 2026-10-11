@@ -37,17 +37,22 @@ function hash(value: string) {
 
 export function channelFingerprint(channel: Channel) {
   const identity = JSON.stringify([
+    'models-dev-routes-v2',
     channel.baseUrl,
     channel.apiKey,
     channel.model,
+    channel.manualModelId,
     channel.apiMode,
     channel.temperature,
+    channel.maxOutputTokens,
+    channel.maxOutputTokensOverride,
     channel.connectionMode,
     channel.providerId,
     channel.modelProviderId,
     channel.sdk,
     channel.inputLimit,
     channel.contextWindow,
+    channel.contextWindowOverride,
   ])
   return `${channel.baseUrl}|${channel.model}|${channel.apiMode}|${hash(identity)}`
 }

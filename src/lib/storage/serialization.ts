@@ -61,9 +61,13 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       baseUrl: z.string().parse(c.baseUrl),
       apiKey: z.string().parse(c.apiKey),
       model: z.string().parse(c.model),
+      manualModelId: z.boolean().optional().parse(c.manualModelId) ?? false,
       apiMode: z.union([z.literal('auto'), apiProtocolSchema]).parse(c.apiMode),
       temperature: z.number().min(0).max(2).nullable().parse(c.temperature),
+      maxOutputTokens: z.number().int().positive().optional().parse(c.maxOutputTokens) ?? 4096,
+      maxOutputTokensOverride: z.boolean().optional().parse(c.maxOutputTokensOverride) ?? false,
       contextWindow: z.number().int().nonnegative().parse(c.contextWindow),
+      contextWindowOverride: z.boolean().optional().parse(c.contextWindowOverride) ?? false,
       inputLimit: z.number().int().positive().optional().parse(c.inputLimit),
       temperatureSupported: z.boolean().optional().parse(c.temperatureSupported),
       createdAt: z.number().int().min(0).max(8_640_000_000_000_000).parse(c.createdAt),
@@ -191,6 +195,7 @@ export function normalizeImport(input: unknown, restore = false): SaveFile {
       z.object({ role: z.enum(['system', 'user', 'assistant', 'tool']), content: z.unknown() }),
     ).parse(request.messages)
     z.number().min(0).max(2).nullable().parse(request.temperature)
+    z.number().int().positive().optional().parse(request.maxOutputTokens)
     z.boolean().parse(request.streaming)
     outputModeSchema.optional().parse(request.outputMode)
     z.object({

@@ -4,6 +4,12 @@ import { catalogFixture } from '../model-catalog-fixture'
 import { capabilityFixture } from '../fixtures'
 import { protocolResponse } from '../provider-protocol-fixtures'
 
+async function openAdvanced(page: import('@playwright/test').Page) {
+  const endpoint = page.getByRole('combobox', { name: 'API 端点', exact: true })
+  if (!(await endpoint.isVisible()))
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
+}
+
 test('Provider 首项选择自定义端点，跨目录选模型并独立选择协议与 SDK，刷新后保留配置', async ({
   page,
 }) => {
@@ -76,9 +82,13 @@ test('Provider 首项选择自定义端点，跨目录选模型并独立选择�
   await expect(page.getByText('自定义端点需要填写 Base URL。', { exact: true })).toBeVisible()
   const baseUrl = page.getByLabel('Base URL', { exact: true })
   await baseUrl.fill('https://custom-gateway.example/v1/responses')
+  await openAdvanced(page)
   const endpoint = page.getByRole('combobox', { name: 'API 端点', exact: true })
   await endpoint.click()
-  await page.getByRole('option', { name: '/v1/responses', exact: true }).click()
+  const responsesOption = page.getByRole('option', { name: '/v1/responses', exact: true })
+  await responsesOption.focus()
+  await page.keyboard.press('Enter')
+  await expect(endpoint).toContainText('/v1/responses')
   await modelSelect.click()
   await page.getByRole('combobox', { name: '搜索模型', exact: true }).fill('azure test-model')
   await page
@@ -102,6 +112,7 @@ test('Provider 首项选择自定义端点，跨目录选模型并独立选择�
   await expect(modelSelect).toHaveText('云端同名模型 · test-model · 云端模型资料')
   await expect(baseUrl).toHaveValue('https://custom-gateway.example/v1/responses')
   await expect(page.getByRole('button', { name: '使用此渠道', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: '高级设置', exact: true }).click()
   await endpoint.click()
   await page.getByRole('option', { name: 'Provider SDK 默认端点', exact: true }).click()
   await page.getByRole('combobox', { name: 'Provider SDK', exact: true }).click()
@@ -115,9 +126,49 @@ test('Provider 首项选择自定义端点，跨目录选模型并独立选择�
   await page.getByRole('option', { name: '测试 Provider', exact: true }).click()
   await expect(providerSelect).toHaveText('测试 Provider')
   await expect(modelSelect).toHaveText('test-model · test-model')
-  await expect(page.getByLabel('Base URL（可选）', { exact: true })).toHaveValue('')
+  await expect(page.getByLabel('Base URL', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '使用此渠道', exact: true })).toBeDisabled()
   await providerSelect.click()
   await page.getByRole('option', { name: '自定义端点', exact: true }).click()
   await expect(modelSelect).toHaveText('test-model · test-model · 测试 Provider')
+})
+
+test('目录外 Model ID 可保存，手动 Context Window 与 max_tokens 会用于请求', async ({ page }) => {
+  await page.route('https://models.dev/api.json', (route) =>
+    route.fulfill({ json: catalogFixture() }),
+  )
+  const requests: Record<string, unknown>[] = []
+  await page.route('https://manual-gateway.example/**', async (route) => {
+    const request = route.request()
+    const body = request.postDataJSON()
+    requests.push(body)
+    const result = protocolResponse('chat-completions', capabilityFixture, body.stream === true)
+    await route.fulfill({
+      headers: { 'access-control-allow-origin': '*', 'content-type': result.contentType },
+      body: result.body,
+    })
+  })
+  await page.goto('./')
+  await openChannels(page)
+  await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await expandChannel(page, '新渠道')
+  await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
+  await page.getByRole('option', { name: '自定义端点', exact: true }).click()
+  await page.getByLabel('API Key', { exact: true }).fill('manual-test-key')
+  await page.getByLabel('Base URL', { exact: true }).fill('https://manual-gateway.example/v1')
+  await page.getByRole('button', { name: '高级设置', exact: true }).click()
+  await page.getByRole('button', { name: '输入目录外的 Model ID', exact: true }).click()
+  await page.getByLabel('自定义 Model ID', { exact: true }).fill('private-model-2026')
+  await page.getByLabel('Context Window', { exact: true }).fill('65536')
+  await page.getByLabel('max_tokens', { exact: true }).fill('2048')
+  await page.getByRole('combobox', { name: 'API 端点', exact: true }).click()
+  await page.getByRole('option', { name: '/v1/chat/completions', exact: true }).click()
+  await page.locator('form').getByRole('button', { name: '保存渠道', exact: true }).click()
+  await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
+  await expect(page.getByText(/测试通过 ·/)).toBeVisible()
+  expect(requests).toHaveLength(2)
+  for (const body of requests) {
+    expect(body.model).toBe('private-model-2026')
+    expect(body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens).toBe(2048)
+  }
 })

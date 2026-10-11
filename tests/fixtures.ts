@@ -147,9 +147,13 @@ export const channelFixture: Channel = {
   baseUrl: 'https://mock.example/v1',
   apiKey: 'test-key-not-real',
   model: 'test-model',
+  manualModelId: false,
   apiMode: 'chat-completions',
   temperature: 0.9,
+  maxOutputTokens: 8192,
+  maxOutputTokensOverride: false,
   contextWindow: 131072,
+  contextWindowOverride: false,
   createdAt: 1,
 }
 export const catalogFingerprintFixture = catalogRouteFingerprint(

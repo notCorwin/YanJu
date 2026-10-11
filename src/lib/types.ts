@@ -47,9 +47,13 @@ export interface Channel {
   baseUrl: string
   apiKey: string
   model: string
+  manualModelId?: boolean
   apiMode: ApiMode
   temperature: number | null
+  maxOutputTokens: number
+  maxOutputTokensOverride?: boolean
   contextWindow: number
+  contextWindowOverride?: boolean
   inputLimit?: number
   temperatureSupported?: boolean
   createdAt: number
@@ -294,6 +298,7 @@ export interface RequestRecord {
     messages: ModelMessage[]
     schema: unknown
     temperature: number | null
+    maxOutputTokens?: number
     streaming: boolean
     outputMode?: OutputMode
   }
@@ -364,9 +369,13 @@ export const newChannel = (): Channel => ({
   baseUrl: '',
   apiKey: '',
   model: '',
+  manualModelId: false,
   apiMode: 'auto',
   temperature: null,
+  maxOutputTokens: 4096,
+  maxOutputTokensOverride: false,
   contextWindow: 0,
+  contextWindowOverride: false,
   createdAt: Date.now(),
 })
 export const newPersona = (): Persona => ({

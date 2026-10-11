@@ -53,7 +53,13 @@ describe('所有端点共用的 JSON 生成流程', () => {
       else if (['generate-content', 'interactions'].includes(protocol))
         expect(headers.get('x-goog-api-key')).toBe(channel.apiKey)
       else expect(headers.get('authorization')).toBe(`Bearer ${channel.apiKey}`)
-      expect(body.max_tokens).toBe(protocol === 'messages' ? 128000 : undefined)
+      expect(
+        body.max_tokens ??
+          body.max_output_tokens ??
+          body.max_completion_tokens ??
+          body.generationConfig?.maxOutputTokens ??
+          body.generation_config?.max_output_tokens,
+      ).toBe(channel.maxOutputTokens)
       return reply(
         protocol,
         capabilityFixture,
@@ -151,13 +157,13 @@ describe('所有端点共用的 JSON 生成流程', () => {
     expect(urls[0]).toBe(`https://mock.example${suffix}`)
     for (const [, init] of fetcher.mock.calls) {
       const body = JSON.parse(String(init?.body))
-      expect(body.max_tokens).toBe(protocol === 'messages' ? 128000 : undefined)
       expect(
-        body.max_output_tokens ??
+        body.max_tokens ??
+          body.max_output_tokens ??
           body.max_completion_tokens ??
           body.generationConfig?.maxOutputTokens ??
           body.generation_config?.max_output_tokens,
-      ).toBeUndefined()
+      ).toBe(channelFixture.maxOutputTokens)
     }
   })
 
@@ -234,6 +240,9 @@ describe('所有端点共用的 JSON 生成流程', () => {
     catalog.mock.npm = sdk
     const channel = {
       ...channelFixture,
+      connectionMode: 'custom' as const,
+      providerId: '',
+      modelProviderId: 'mock',
       sdk,
       apiMode: 'native' as const,
       baseUrl: `https://override.example${path}`,
@@ -279,6 +288,9 @@ describe('所有端点共用的 JSON 生成流程', () => {
         ...channelFixture,
         sdk: '@ai-sdk/anthropic-aws',
         apiMode: 'native' as const,
+        contextWindow: 262144,
+        inputLimit: 131072,
+        maxOutputTokens: 128000,
         apiKey: JSON.stringify({
           workspaceId: 'workspace-test',
           ...(auth === 'api-key'

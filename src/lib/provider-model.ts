@@ -29,6 +29,10 @@ export interface ModelSettings {
   baseUrl?: string
   sdk?: string
   customEndpoint?: boolean
+  manualModelId?: boolean
+  contextWindow?: number
+  inputLimit?: number
+  maxOutputTokens?: number
   outputMode?: OutputMode
   schema?: JSONObject
   schemaName?: string
@@ -105,7 +109,17 @@ export async function createProviderModel(
   protocol?: ApiProtocol,
   settings: ModelSettings = {},
 ): Promise<LanguageModelV4> {
-  const selected = catalogSelection({ providerId, model: modelId }, catalog)
+  const selected = catalogSelection(
+    {
+      providerId,
+      model: modelId,
+      manualModelId: settings.manualModelId,
+      contextWindow: settings.contextWindow,
+      inputLimit: settings.inputLimit,
+      maxOutputTokens: settings.maxOutputTokens,
+    },
+    catalog,
+  )
   const custom = settings.customEndpoint === true
   const chosenSdk =
     custom && protocol && protocol !== 'native'
@@ -221,22 +235,25 @@ export async function createProviderModel(
     const requiredCapacity =
       native.provider.endsWith('.messages') || sdk === '@ai-sdk/google-vertex/anthropic'
     // Optional ceilings inserted by SDK defaults must not limit generation.
-    for (const name of [
-      'max_tokens',
-      'max_completion_tokens',
-      'max_output_tokens',
-      'maxOutputTokens',
-    ])
-      if (!(requiredCapacity && name === 'max_tokens')) delete body[name]
-    for (const config of [body.generationConfig, body.generation_config, body.inferenceConfig])
-      if (config)
-        for (const name of ['maxTokens', 'maxOutputTokens', 'max_output_tokens'])
-          delete config[name]
-    // The Messages wire protocol requires a ceiling; only the catalog's full capacity is used.
+    if (!settings.maxOutputTokens) {
+      for (const name of [
+        'max_tokens',
+        'max_completion_tokens',
+        'max_output_tokens',
+        'maxOutputTokens',
+      ])
+        if (!(requiredCapacity && name === 'max_tokens')) delete body[name]
+      for (const config of [body.generationConfig, body.generation_config, body.inferenceConfig])
+        if (config)
+          for (const name of ['maxTokens', 'maxOutputTokens', 'max_output_tokens'])
+            delete config[name]
+    }
+    // Messages requires a ceiling; respect the user cap without exceeding the catalog maximum.
     if (requiredCapacity) {
-      if (!model.limit.output)
-        throw new Error('Models.dev 尚未提供此 Messages 模型必填的输出容量，请刷新模型目录。')
-      body.max_tokens = model.limit.output
+      const outputLimit = model.limit.output ?? settings.maxOutputTokens
+      if (!outputLimit)
+        throw new Error('Messages 端点需要输出上限，请在高级设置中填写 max_tokens。')
+      body.max_tokens = Math.min(settings.maxOutputTokens ?? outputLimit, outputLimit)
       if (outputMode === 'json' && settings.schema && sdk !== '@ai-sdk/anthropic-aws')
         body.output_config = { format: { type: 'json_object' } }
     }
@@ -379,8 +396,11 @@ export async function createProviderModel(
           ...params,
           maxOutputTokens:
             native.provider.endsWith('.messages') || sdk === '@ai-sdk/google-vertex/anthropic'
-              ? model.limit.output
-              : undefined,
+              ? Math.min(
+                  settings.maxOutputTokens ?? model.limit.output ?? 4096,
+                  model.limit.output ?? Number.MAX_SAFE_INTEGER,
+                )
+              : (settings.maxOutputTokens ?? params.maxOutputTokens),
           responseFormat:
             outputMode === 'prompt'
               ? undefined

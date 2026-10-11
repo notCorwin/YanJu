@@ -30,6 +30,12 @@ export const RETAIN_TURNS = 4
 export const shouldCompact = (inputTokens: number, inputLimit: number) =>
   inputTokens >= inputLimit * COMPRESSION_THRESHOLD
 
+export function effectiveInputLimit(channel: Channel) {
+  const contextWindow = Math.max(1, channel.contextWindow)
+  const output = Math.max(0, channel.maxOutputTokens || Math.min(4096, contextWindow - 1))
+  return Math.max(1, Math.min(channel.inputLimit ?? contextWindow, contextWindow - output))
+}
+
 /** A conservative mixed CJK/Latin estimate, calibrated per model from provider usage. */
 export function estimateTokens(text: string, ratio = 1) {
   let wide = 0
@@ -94,8 +100,8 @@ export function contextBudget(
   const estimated = estimateTokens(serialized, channel.calibration?.ratio)
   return {
     estimated,
-    percent: estimated / (channel.inputLimit ?? channel.contextWindow),
-    mustCompress: shouldCompact(estimated, channel.inputLimit ?? channel.contextWindow),
+    percent: estimated / effectiveInputLimit(channel),
+    mustCompress: shouldCompact(estimated, effectiveInputLimit(channel)),
   }
 }
 export function calibrate(channel: Channel, actual: number | undefined, estimated: number) {
@@ -166,8 +172,7 @@ export async function compactContext(options: CompressionOptions): Promise<Summa
       'CompressionResult',
     ),
   )
-  const batchBudget =
-    Math.floor((channel.inputLimit ?? channel.contextWindow) * COMPRESSION_TARGET) - overhead
+  const batchBudget = Math.floor(effectiveInputLimit(channel) * COMPRESSION_TARGET) - overhead
   if (batchBudget < 256)
     throw new Error('渠道上下文容量不足以执行压缩，请选择上下文容量更大的模型。')
 

@@ -258,23 +258,29 @@ async function enableChannel(
   await openAppAction(page, '渠道管理')
   await expandChannel(page, name)
   await expect(page.getByRole('combobox', { name: '请求等待上限' })).toHaveCount(0)
+  if (options?.mode || options?.defaultTemperature) await openAdvanced(page)
   if (options?.mode) {
     await page.getByRole('combobox', { name: 'API 端点' }).click()
     const label = {
-      auto: '自动探测（Responses / Chat Completions）',
+      auto: '自动探测所有支持的端点',
       responses: '/v1/responses',
       'chat-completions': '/v1/chat/completions',
     }[options.mode]
     await page.getByRole('option', { name: label, exact: true }).click()
   }
   if (options?.defaultTemperature) {
-    await page.getByRole('combobox', { name: '温度设置' }).click()
-    await page.getByRole('option', { name: '模型默认', exact: true }).click()
+    await page.getByRole('combobox', { name: 'Temperature' }).click()
+    await page.getByRole('option', { name: '系统默认', exact: true }).click()
   }
   await page.locator('form').getByRole('button', { name: '测试渠道', exact: true }).click()
   await expect(page.getByText(/测试通过 ·/)).toBeVisible()
   await page.getByRole('button', { name: '使用此渠道' }).click()
   await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
+}
+async function openAdvanced(page: Page) {
+  const endpoint = page.getByRole('combobox', { name: 'API 端点', exact: true })
+  if (!(await endpoint.isVisible()))
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
 }
 async function prepareResponses(
   page: Page,
@@ -1150,7 +1156,7 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v4 存档往返
   const { requests, chatRequests } = await prepareResponses(page)
   await enableChannel(page, '测试渠道', { mode: 'auto', defaultTemperature: true })
   expect(requests).toHaveLength(2)
-  expect(chatRequests).toHaveLength(2)
+  expect(chatRequests).toHaveLength(0)
   await enter(page)
   await page.getByRole('textbox', { name: '聊天输入' }).fill('一起读书吧。')
   await page.getByRole('button', { name: '发送消息', exact: true }).click()
@@ -1189,11 +1195,12 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v4 存档往返
         !('temperature' in r),
     ),
   ).toBe(true)
-  expect(chatRequests).toHaveLength(2)
+  expect(chatRequests).toHaveLength(0)
   await openChannels(page)
   await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
+  await openAdvanced(page)
   await expect(page.getByRole('combobox', { name: 'API 端点' })).toContainText('自动探测')
-  await expect(page.getByRole('combobox', { name: '温度设置' })).toContainText('模型默认')
+  await expect(page.getByRole('combobox', { name: 'Temperature' })).toContainText('系统默认')
   await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
   await openAppAction(page, '存档管理')
   const downloadPromise = page.waitForEvent('download')
@@ -1213,8 +1220,10 @@ test('自动优先 Responses，叙事、论坛、摘要续聊及 v4 存档往返
   await expect(page.getByText('存档导入完成。渠道须重新测试。')).toBeVisible()
   await openChannels(page)
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
+  await expect(page.getByText(/当前协议：/)).toHaveCount(0)
+  await openAdvanced(page)
   await expect(page.getByRole('combobox', { name: 'API 端点' })).toContainText('自动探测')
-  await expect(page.getByRole('combobox', { name: '温度设置' })).toContainText('模型默认')
+  await expect(page.getByRole('combobox', { name: 'Temperature' })).toContainText('系统默认')
 })
 
 test('手动协议、取消重测保留结果，配置修改使缓存失效', async ({ page }) => {
@@ -1240,6 +1249,7 @@ test('手动协议、取消重测保留结果，配置修改使缓存失效', as
   release()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeEnabled()
   await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
+  await openAdvanced(page)
   await page.getByRole('combobox', { name: 'API 端点' }).click()
   await page.getByRole('option', { name: '/v1/chat/completions', exact: true }).click()
   await expect(page.getByRole('button', { name: '使用此渠道' })).toBeDisabled()
@@ -1434,10 +1444,9 @@ test('完整协议能力测试覆盖真实流式结构，不写入聊天存档',
 test('自动选定 Responses 后完整协议测试仍覆盖叙事论坛摘要并保留诊断', async ({ page }) => {
   const { requests, chatRequests } = await prepareResponses(page)
   await openChannels(page)
+  await openAdvanced(page)
   await page.getByRole('combobox', { name: 'API 端点' }).click()
-  await page
-    .getByRole('option', { name: '自动探测（Responses / Chat Completions）', exact: true })
-    .click()
+  await page.getByRole('option', { name: '自动探测所有支持的端点', exact: true }).click()
   await page.getByRole('button', { name: '完整协议测试', exact: true }).click()
   await expect(page.getByText(/测试通过 · 完整协议/)).toBeVisible()
   await expect(page.getByText(/当前协议：Responses/)).toBeVisible()
@@ -1448,7 +1457,7 @@ test('自动选定 Responses 后完整协议测试仍覆盖叙事论坛摘要并
     'ForumReply',
     'CompressionResult',
   ])
-  expect(chatRequests).toHaveLength(2)
+  expect(chatRequests).toHaveLength(0)
   expect(requests.every((body) => body.text.format.strict && body.store === false)).toBe(true)
   await page.getByRole('button', { name: '使用此渠道' }).click()
   await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()

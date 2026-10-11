@@ -38,6 +38,44 @@ export type CatalogProvider = Omit<z.infer<typeof providerSchema>, 'models'> & {
 }
 export type ModelCatalog = Record<string, CatalogProvider>
 
+function similarity(left: string, right: string) {
+  const a = left.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
+  const b = right.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!a || !b) return 0
+  if (a === b) return 1
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = previous[0]
+    previous[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const above = previous[j]
+      previous[j] = Math.min(
+        previous[j] + 1,
+        previous[j - 1] + 1,
+        diagonal + Number(a[i - 1] !== b[j - 1]),
+      )
+      diagonal = above
+    }
+  }
+  const edit = previous[b.length]
+  const prefix =
+    a.startsWith(b) || b.startsWith(a)
+      ? Math.min(a.length, b.length) / Math.max(a.length, b.length)
+      : 0
+  return Math.max(1 - edit / Math.max(a.length, b.length), prefix)
+}
+
+export function fuzzyCatalogModel(provider: CatalogProvider | undefined, modelId: string) {
+  if (!provider || modelId.trim().length < 4) return undefined
+  return Object.values(provider.models)
+    .map((model) => ({
+      model,
+      score: Math.max(similarity(model.id, modelId), similarity(model.name, modelId)),
+    }))
+    .filter(({ score }) => score >= 0.82)
+    .sort((left, right) => right.score - left.score)[0]?.model
+}
+
 /** Availability comes from the provider-specific entry, including model-level SDK/API overrides. */
 export function parseModelCatalog(input: unknown): ModelCatalog {
   const catalog: ModelCatalog = {}
@@ -63,7 +101,18 @@ export function parseModelCatalog(input: unknown): ModelCatalog {
 }
 
 type CatalogReference = Pick<Channel, 'providerId' | 'model'> &
-  Partial<Pick<Channel, 'connectionMode' | 'modelProviderId' | 'sdk'>>
+  Partial<
+    Pick<
+      Channel,
+      | 'connectionMode'
+      | 'modelProviderId'
+      | 'sdk'
+      | 'manualModelId'
+      | 'contextWindow'
+      | 'inputLimit'
+      | 'maxOutputTokens'
+    >
+  >
 
 export function modelCatalogProviderId(channel: CatalogReference) {
   return channel.connectionMode === 'custom' ? (channel.modelProviderId ?? '') : channel.providerId
@@ -71,7 +120,21 @@ export function modelCatalogProviderId(channel: CatalogReference) {
 
 export function catalogSelection(channel: CatalogReference, catalog: ModelCatalog) {
   const provider = catalog[modelCatalogProviderId(channel)]
-  const model = provider?.models[channel.model]
+  const model =
+    provider?.models[channel.model] ??
+    (channel.manualModelId ? fuzzyCatalogModel(provider, channel.model) : undefined) ??
+    (channel.manualModelId && provider
+      ? {
+          id: channel.model,
+          name: channel.model,
+          modalities: { input: ['text'], output: ['text'] },
+          limit: {
+            context: channel.contextWindow ?? 65_536,
+            input: channel.inputLimit,
+            output: channel.maxOutputTokens,
+          },
+        }
+      : undefined)
   if (!provider || !model) throw new Error('请从 Models.dev 选择文本模型及其目录资料。')
   return {
     provider,
@@ -91,11 +154,13 @@ export function catalogRouteFingerprint(channel: CatalogReference, catalog: Mode
     ...(channel.connectionMode === 'custom'
       ? ['custom', provider.id, model.id]
       : [provider.id, provider.npm, provider.env, model.id, sdk, api, model.provider?.shape]),
+    channel.model,
     model.structured_output,
     model.temperature,
     model.limit.context,
     model.limit.input,
     model.limit.output,
+    channel.manualModelId === true,
   ])
 }
 
@@ -112,11 +177,12 @@ export function selectCatalogModel(
     modelProviderId: provider.id,
     sdk: custom ? channel.sdk || '@ai-sdk/openai-compatible' : sdk,
     model: model.id,
+    manualModelId: false,
     name:
       channel.name.trim() && channel.name !== '新渠道'
         ? channel.name
         : `${custom ? '自定义端点' : provider.name} · ${model.name}`,
-    baseUrl: custom || channel.providerId === provider.id ? channel.baseUrl : '',
+    baseUrl: custom ? channel.baseUrl : '',
     apiMode: custom
       ? channel.apiMode
       : ['@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(provider.npm) ||
@@ -133,8 +199,11 @@ export function selectCatalogModel(
                 : 'native',
     contextWindow: model.limit.context,
     inputLimit: model.limit.input || model.limit.context,
+    maxOutputTokens: model.limit.output || Math.min(8192, Math.max(1, model.limit.context - 1)),
+    maxOutputTokensOverride: false,
+    contextWindowOverride: false,
     temperatureSupported: model.temperature === true,
-    temperature: model.temperature === true ? channel.temperature : null,
+    temperature: model.temperature === true ? (channel.temperature ?? 0.9) : null,
     capability: undefined,
     calibration: undefined,
   }

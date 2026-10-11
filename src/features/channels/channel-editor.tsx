@@ -1,4 +1,10 @@
 import { ConfirmDialog, FormField, IconButton } from '@/components/shared'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -20,6 +26,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
+  currentModelCatalog,
+  fuzzyCatalogModel,
   loadModelCatalog,
   modelCatalogProviderId,
   selectCatalogModel,
@@ -62,11 +70,16 @@ export function ChannelEditor({
   onDirtyChange: (dirty: boolean) => void
 }) {
   const [draft, setDraft] = useState<
-    Omit<Channel, 'temperature'> & { temperature: number | string | null }
+    Omit<Channel, 'temperature' | 'contextWindow' | 'maxOutputTokens'> & {
+      temperature: number | string | null
+      contextWindow: number | string
+      maxOutputTokens: number | string
+    }
   >(channel)
   const [catalog, setCatalog] = useState<ModelCatalog>()
   const [catalogError, setCatalogError] = useState('')
   const [loadingCatalog, setLoadingCatalog] = useState(false)
+  const initialChannel = useRef(channel)
   const refreshCatalog = async () => {
     setLoadingCatalog(true)
     try {
@@ -74,26 +87,59 @@ export function ChannelEditor({
       setCatalogError('')
     } catch (error) {
       setCatalogError(friendlyError(error))
+      setCatalog(currentModelCatalog())
     } finally {
       setLoadingCatalog(false)
     }
   }
   useEffect(() => {
     let mounted = true
-    void loadModelCatalog()
+    const controller = new AbortController()
+    const savedChannel = initialChannel.current
+    setLoadingCatalog(true)
+    void loadModelCatalog(true, controller.signal)
       .then((value) => {
-        if (mounted) setCatalog(value)
+        if (!mounted) return
+        setCatalog(value)
+        const source = value[modelCatalogProviderId(savedChannel)]
+        const model =
+          source?.models[savedChannel.model] ??
+          (savedChannel.manualModelId ? fuzzyCatalogModel(source, savedChannel.model) : undefined)
+        if (model) {
+          setDraft((previous) => ({
+            ...previous,
+            contextWindow: savedChannel.contextWindowOverride
+              ? previous.contextWindow
+              : model.limit.context,
+            inputLimit: model.limit.input || model.limit.context,
+            maxOutputTokens: savedChannel.maxOutputTokensOverride
+              ? previous.maxOutputTokens
+              : model.limit.output || Math.min(8192, Math.max(1, model.limit.context - 1)),
+            temperatureSupported: model.temperature === true,
+            temperature: model.temperature === true ? previous.temperature : null,
+          }))
+        }
       })
       .catch((error) => {
-        if (mounted) setCatalogError(friendlyError(error))
+        if (mounted && !controller.signal.aborted) {
+          setCatalogError(friendlyError(error))
+          setCatalog(currentModelCatalog())
+        }
+      })
+      .finally(() => {
+        if (mounted) setLoadingCatalog(false)
       })
     return () => {
       mounted = false
+      controller.abort()
     }
-  }, [])
+  }, [channel.id])
   const custom = draft.connectionMode === 'custom'
-  const provider = catalog?.[modelCatalogProviderId(draft)]
-  const selectedModel = provider?.models[draft.model]
+  const provider =
+    catalog?.[draft.connectionMode === 'custom' ? (draft.modelProviderId ?? '') : draft.providerId]
+  const selectedModel =
+    provider?.models[draft.model] ??
+    (draft.manualModelId ? fuzzyCatalogModel(provider, draft.model) : undefined)
   const providers = Object.values(catalog ?? {}).sort((a, b) => a.name.localeCompare(b.name))
   const modelOptions = (custom ? providers : provider ? [provider] : [])
     .flatMap((source) =>
@@ -106,12 +152,15 @@ export function ChannelEditor({
     )
     .sort((a, b) => a.label.localeCompare(b.label))
   const [errors, setErrors] = useState<Partial<Record<keyof Channel, string>>>({})
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showKey, setShowKey] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
   const value: Channel = {
     ...draft,
     temperature: draft.temperature === null ? null : Number(draft.temperature),
+    contextWindow: Number(draft.contextWindow),
+    maxOutputTokens: Number(draft.maxOutputTokens),
   }
   const dirty =
     JSON.stringify({ ...draft, capability: undefined, calibration: undefined }) !==
@@ -130,6 +179,8 @@ export function ChannelEditor({
     setDraft((d) => ({
       ...d,
       [key]: value,
+      ...(key === 'contextWindow' ? { contextWindowOverride: true } : {}),
+      ...(key === 'maxOutputTokens' ? { maxOutputTokensOverride: true } : {}),
       capability: key === 'name' ? d.capability : undefined,
       calibration: key === 'name' ? d.calibration : undefined,
     }))
@@ -142,25 +193,50 @@ export function ChannelEditor({
       apiKey: value.apiKey.trim(),
       model: value.model.trim(),
     }
-    const resolved =
-      provider && selectedModel
-        ? {
-            ...selectCatalogModel(next, provider, selectedModel),
-            apiMode: next.apiMode,
-            sdk: next.sdk,
-            baseUrl: next.baseUrl,
-            name: next.name,
-          }
-        : next
+    const resolved = {
+      ...next,
+      baseUrl: next.connectionMode === 'custom' ? next.baseUrl : '',
+    }
+    if (provider && selectedModel && !next.manualModelId) {
+      Object.assign(resolved, {
+        ...selectCatalogModel(resolved, provider, selectedModel),
+        apiMode: next.apiMode,
+        sdk: next.sdk,
+        baseUrl: next.connectionMode === 'custom' ? next.baseUrl : '',
+        name: next.name,
+        contextWindow: next.contextWindow,
+        contextWindowOverride: next.contextWindowOverride,
+        inputLimit: next.inputLimit,
+        maxOutputTokens: next.maxOutputTokens,
+        maxOutputTokensOverride: next.maxOutputTokensOverride,
+        temperature: next.temperature,
+        temperatureSupported: next.temperatureSupported,
+      })
+    }
     if (channelFingerprint(resolved) === channelFingerprint(next)) {
       resolved.capability = next.capability
       resolved.calibration = next.calibration
     }
     const issues = channelValidationErrors(resolved)
     if (!custom && !provider) issues.providerId = '请选择 Models.dev 中的 Provider。'
-    if (!selectedModel) issues.model = '请选择 Models.dev 中的文本模型。'
+    if (!selectedModel && !next.manualModelId)
+      issues.model = '请选择 Models.dev 中的文本模型，或输入自定义模型 ID。'
     setErrors(issues)
     if (Object.keys(issues).length) {
+      if (
+        Object.keys(issues).some((key) =>
+          [
+            'model',
+            'apiMode',
+            'sdk',
+            'baseUrl',
+            'temperature',
+            'maxOutputTokens',
+            'contextWindow',
+          ].includes(key),
+        )
+      )
+        setAdvancedOpen(true)
       requestAnimationFrame(() =>
         formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
       )
@@ -293,7 +369,7 @@ export function ChannelEditor({
                         providerId: '',
                         modelProviderId: modelCatalogProviderId(value),
                         sdk: '@ai-sdk/openai-compatible',
-                        apiMode: 'chat-completions',
+                        apiMode: 'auto',
                         capability: undefined,
                         calibration: undefined,
                       }
@@ -317,7 +393,7 @@ export function ChannelEditor({
                 <FieldDescription>
                   {custom
                     ? '填写服务地址并选择它支持的 API 端点。模型可从整个 Models.dev 目录选择。'
-                    : '从 Models.dev 选择服务商，使用其地址与认证方式，也可覆盖 Base URL。'}
+                    : '从 Models.dev 选择服务商，自动使用其预置地址、SDK 和认证方式。'}
                 </FieldDescription>
                 {(errors.providerId || errors.connectionMode) && (
                   <FieldDescription role="alert">
@@ -327,26 +403,28 @@ export function ChannelEditor({
               </Field>
               <Field data-invalid={!!errors.model}>
                 <FieldLabel htmlFor={`model-${draft.id}`}>模型</FieldLabel>
-                <SearchableSelect
-                  id={`model-${draft.id}`}
-                  aria-invalid={!!errors.model}
-                  value={
-                    custom ? JSON.stringify([draft.modelProviderId, draft.model]) : draft.model
-                  }
-                  disabled={busy || saving || disabled || !catalog || (!custom && !provider)}
-                  options={modelOptions}
-                  placeholder="选择模型"
-                  searchLabel="搜索模型"
-                  searchPlaceholder="搜索模型名称或 ID…"
-                  emptyMessage="未找到匹配的模型。"
-                  onValueChange={(id) => {
-                    const option = modelOptions.find((option) => option.value === id)
-                    if (option) {
-                      setDraft(selectCatalogModel(value, option.provider, option.model))
-                      setErrors({})
+                {!draft.manualModelId && (
+                  <SearchableSelect
+                    id={`model-${draft.id}`}
+                    aria-invalid={!!errors.model}
+                    value={
+                      custom ? JSON.stringify([draft.modelProviderId, draft.model]) : draft.model
                     }
-                  }}
-                />
+                    disabled={busy || saving || disabled || !catalog || (!custom && !provider)}
+                    options={modelOptions}
+                    placeholder="选择模型"
+                    searchLabel="搜索模型"
+                    searchPlaceholder="搜索模型名称或 ID…"
+                    emptyMessage="未找到匹配的模型。"
+                    onValueChange={(id) => {
+                      const option = modelOptions.find((option) => option.value === id)
+                      if (option) {
+                        setDraft(selectCatalogModel(value, option.provider, option.model))
+                        setErrors({})
+                      }
+                    }}
+                  />
+                )}
                 <FieldDescription>
                   {custom
                     ? '列表中的服务商名称仅标明模型资料来源。请求发送至自定义 Base URL，调用方式由 API 端点决定。'
@@ -402,110 +480,224 @@ export function ChannelEditor({
                 }
                 autoComplete="off"
               />
-              <FormField
-                label={custom ? 'Base URL' : 'Base URL（可选）'}
-                name="baseUrl"
-                error={errors.baseUrl}
-                value={draft.baseUrl}
-                placeholder={
-                  custom
-                    ? 'https://example.com/v1'
-                    : (selectedModel?.provider?.api ?? provider?.api ?? '使用 Provider 默认地址')
-                }
-                help={
-                  custom
-                    ? '填写此服务的地址、API 前缀或完整端点。'
-                    : '留空使用 Models.dev 或官方 SDK 的默认地址；可填写 API 前缀或完整端点地址。'
-                }
-                onChange={(v) => update('baseUrl', v)}
-                autoComplete="off"
-              />
-              <Field data-invalid={!!errors.apiMode}>
-                <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 端点</FieldLabel>
-                <Select
-                  value={draft.apiMode}
-                  disabled={busy || saving || disabled}
-                  onValueChange={(v) => update('apiMode', v as ApiMode)}
-                >
-                  <SelectTrigger
-                    id={`api-mode-${draft.id}`}
-                    className="w-full"
-                    aria-invalid={!!errors.apiMode}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="auto">自动探测（Responses / Chat Completions）</SelectItem>
-                      {apiProtocols.map((protocol) => (
-                        <SelectItem key={protocol} value={protocol}>
-                          {endpointLabels[protocol]}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <FieldDescription>
-                  自动依次尝试 Structured Outputs、JSON mode 和提示词 JSON；所有结果都在本地校验。
-                </FieldDescription>
-                {errors.apiMode && (
-                  <FieldDescription role="alert">{errors.apiMode}</FieldDescription>
-                )}
-              </Field>
-              {draft.apiMode === 'native' && (
-                <Field data-invalid={!!errors.sdk}>
-                  <FieldLabel htmlFor={`sdk-${draft.id}`}>Provider SDK</FieldLabel>
-                  <SearchableSelect
-                    id={`sdk-${draft.id}`}
-                    value={draft.sdk}
-                    aria-invalid={!!errors.sdk}
-                    options={supportedSdks.map((sdk) => ({ value: sdk, label: sdk }))}
-                    searchLabel="搜索官方 SDK"
-                    searchPlaceholder="搜索 @ai-sdk 提供商…"
-                    placeholder="选择官方 SDK"
-                    emptyMessage="未找到匹配的 SDK。"
-                    onValueChange={(sdk) => update('sdk', sdk)}
-                  />
-                  <FieldDescription>
-                    选择官方 SDK 的原生端点；兼容服务统一使用 @ai-sdk/openai-compatible。
-                  </FieldDescription>
-                  {errors.sdk && <FieldDescription role="alert">{errors.sdk}</FieldDescription>}
-                </Field>
-              )}
-              <Field>
-                <FieldLabel htmlFor={`temperature-mode-${draft.id}`}>温度设置</FieldLabel>
-                <Select
-                  value={draft.temperature === null ? 'default' : 'custom'}
-                  disabled={busy || saving || disabled || !selectedModel?.temperature}
-                  onValueChange={(value) => update('temperature', value === 'default' ? null : 0.9)}
-                >
-                  <SelectTrigger id={`temperature-mode-${draft.id}`} className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="default">模型默认</SelectItem>
-                      <SelectItem value="custom">自定义温度</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <FieldDescription>
-                  模型默认会省略温度参数，适用于不接受自定义温度的模型。
-                </FieldDescription>
-              </Field>
-              {draft.temperature !== null && selectedModel?.temperature && (
+              {custom && (
                 <FormField
-                  label="温度"
-                  name="temperature"
-                  error={errors.temperature}
-                  type="number"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={draft.temperature}
-                  onChange={(v) => update('temperature', v)}
+                  label="Base URL"
+                  name="baseUrl"
+                  error={errors.baseUrl}
+                  value={draft.baseUrl}
+                  placeholder="https://example.com/v1"
+                  help="填写此服务的地址、API 前缀或完整端点。"
+                  onChange={(v) => update('baseUrl', v)}
+                  autoComplete="off"
                 />
               )}
+              <Accordion
+                type="single"
+                collapsible
+                value={advancedOpen ? 'advanced' : ''}
+                onValueChange={(value) => setAdvancedOpen(value === 'advanced')}
+              >
+                <AccordionItem value="advanced">
+                  <AccordionTrigger>高级设置</AccordionTrigger>
+                  <AccordionContent>
+                    <FieldGroup>
+                      {draft.manualModelId ? (
+                        <>
+                          <FormField
+                            label="自定义 Model ID"
+                            name="model"
+                            error={errors.model}
+                            value={draft.model}
+                            onChange={(model) => {
+                              const match = fuzzyCatalogModel(provider, model)
+                              setDraft((previous) => ({
+                                ...previous,
+                                model,
+                                manualModelId: true,
+                                ...(match
+                                  ? {
+                                      contextWindow: previous.contextWindowOverride
+                                        ? previous.contextWindow
+                                        : match.limit.context,
+                                      inputLimit: match.limit.input || match.limit.context,
+                                      maxOutputTokens: previous.maxOutputTokensOverride
+                                        ? previous.maxOutputTokens
+                                        : match.limit.output ||
+                                          Math.min(8192, match.limit.context - 1),
+                                      temperatureSupported: match.temperature === true,
+                                      temperature:
+                                        match.temperature === true
+                                          ? (previous.temperature ?? 0.9)
+                                          : null,
+                                    }
+                                  : {}),
+                                capability: undefined,
+                                calibration: undefined,
+                              }))
+                              setErrors((previous) => ({ ...previous, model: undefined }))
+                            }}
+                            help={
+                              selectedModel
+                                ? `Models.dev 的相近匹配：${selectedModel.id}；容量可在下方覆盖。`
+                                : '未找到相近模型时，请在下方手动填写 Context Window 与 max_tokens。'
+                            }
+                            autoComplete="off"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() =>
+                              setDraft((previous) => ({ ...previous, manualModelId: false }))
+                            }
+                          >
+                            从 Models.dev 选择
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={!catalog || (!custom && !provider)}
+                          onClick={() => {
+                            setDraft((previous) => ({
+                              ...previous,
+                              manualModelId: true,
+                              modelProviderId: custom
+                                ? previous.modelProviderId || providers[0]?.id || ''
+                                : previous.providerId,
+                              capability: undefined,
+                              calibration: undefined,
+                            }))
+                          }}
+                        >
+                          输入目录外的 Model ID
+                        </Button>
+                      )}
+                      <Field data-invalid={!!errors.apiMode}>
+                        <FieldLabel htmlFor={`api-mode-${draft.id}`}>API 端点</FieldLabel>
+                        <Select
+                          value={draft.apiMode}
+                          disabled={busy || saving || disabled}
+                          onValueChange={(v) => update('apiMode', v as ApiMode)}
+                        >
+                          <SelectTrigger
+                            id={`api-mode-${draft.id}`}
+                            className="w-full"
+                            aria-invalid={!!errors.apiMode}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="auto">自动探测所有支持的端点</SelectItem>
+                              {apiProtocols.map((protocol) => (
+                                <SelectItem key={protocol} value={protocol}>
+                                  {endpointLabels[protocol]}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FieldDescription>
+                          自动依次探测七类 API 端点；预置 Provider 在末尾回退到 SDK 默认端点。每个端点尝试 Structured Outputs、JSON mode 和提示词 JSON，所有结果均在本地校验。
+                        </FieldDescription>
+                        {errors.apiMode && (
+                          <FieldDescription role="alert">{errors.apiMode}</FieldDescription>
+                        )}
+                      </Field>
+                      {draft.apiMode === 'native' && (
+                        <Field data-invalid={!!errors.sdk}>
+                          <FieldLabel htmlFor={`sdk-${draft.id}`}>Provider SDK</FieldLabel>
+                          <SearchableSelect
+                            id={`sdk-${draft.id}`}
+                            value={draft.sdk}
+                            aria-invalid={!!errors.sdk}
+                            options={supportedSdks.map((sdk) => ({ value: sdk, label: sdk }))}
+                            searchLabel="搜索官方 SDK"
+                            searchPlaceholder="搜索 @ai-sdk 提供商…"
+                            placeholder="选择官方 SDK"
+                            emptyMessage="未找到匹配的 SDK。"
+                            onValueChange={(sdk) => update('sdk', sdk)}
+                          />
+                          <FieldDescription>
+                            兼容服务统一使用 @ai-sdk/openai-compatible。
+                          </FieldDescription>
+                          {errors.sdk && (
+                            <FieldDescription role="alert">{errors.sdk}</FieldDescription>
+                          )}
+                        </Field>
+                      )}
+                      <FormField
+                        label="Context Window"
+                        name="contextWindow"
+                        error={errors.contextWindow}
+                        type="number"
+                        min={1024}
+                        step={1}
+                        value={draft.contextWindow}
+                        onChange={(v) => update('contextWindow', v)}
+                        help="已按 Models.dev 模型资料填充；仅影响本地上下文预算。"
+                      />
+                      <FormField
+                        label="max_tokens"
+                        name="maxOutputTokens"
+                        error={errors.maxOutputTokens}
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={draft.maxOutputTokens}
+                        onChange={(v) => update('maxOutputTokens', v)}
+                        help="已按 Models.dev 输出上限填充，并作为每次生成的输出上限。"
+                      />
+                      <Field>
+                        <FieldLabel htmlFor={`temperature-mode-${draft.id}`}>
+                          Temperature
+                        </FieldLabel>
+                        <Select
+                          value={draft.temperature === null ? 'default' : 'custom'}
+                          disabled={
+                            busy ||
+                            saving ||
+                            disabled ||
+                            (!selectedModel?.temperature && !draft.manualModelId)
+                          }
+                          onValueChange={(mode) =>
+                            update('temperature', mode === 'default' ? null : 0.9)
+                          }
+                        >
+                          <SelectTrigger id={`temperature-mode-${draft.id}`} className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="default">系统默认</SelectItem>
+                              <SelectItem value="custom">自定义</SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FieldDescription>
+                          不支持温度参数的模型会自动使用模型默认值。
+                        </FieldDescription>
+                      </Field>
+                      {draft.temperature !== null &&
+                        (selectedModel?.temperature || draft.manualModelId) && (
+                          <FormField
+                            label="Temperature"
+                            name="temperature"
+                            error={errors.temperature}
+                            type="number"
+                            min={0}
+                            max={2}
+                            step={0.1}
+                            value={draft.temperature}
+                            onChange={(v) => update('temperature', v)}
+                          />
+                        )}
+                    </FieldGroup>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
             </FieldGroup>
           </fieldset>
           {busy && (

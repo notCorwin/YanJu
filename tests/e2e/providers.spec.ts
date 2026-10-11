@@ -321,13 +321,15 @@ test('GitHub Pages 浏览器运行原生 SDK、云服务认证和 Gateway 的完
     const calls = requests.slice(start)
     expect(calls, provider.id).toHaveLength(2)
     for (const call of calls) {
-      expect(call.body.max_tokens, provider.id).toBe(
-        ['anthropic', 'vertex-anthropic', 'azure-anthropic'].includes(provider.id)
-          ? 128000
-          : undefined,
-      )
-      expect(call.body.max_output_tokens, provider.id).toBeUndefined()
-      expect(call.body.max_completion_tokens, provider.id).toBeUndefined()
+      expect(
+        call.body.max_tokens ??
+          call.body.max_output_tokens ??
+          call.body.max_completion_tokens ??
+          call.body.generationConfig?.maxOutputTokens ??
+          call.body.generation_config?.max_output_tokens ??
+          call.body.inferenceConfig?.maxTokens,
+        provider.id,
+      ).toBe(128000)
     }
     expect(errors, provider.id).toEqual([])
   }

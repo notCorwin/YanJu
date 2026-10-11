@@ -41,11 +41,18 @@ function streaming(value: unknown, finishReason = 'stop'): Response {
 }
 afterEach(() => vi.useRealTimers())
 describe('OpenAI-compatible 严格协议', () => {
-  it('模型来自 Models.dev，允许 Base URL 覆盖目录默认地址', async () => {
+  it('目录 Provider 固定使用 Models.dev 地址，自定义端点可指定 Base URL', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(streaming(narrativeFixture))
     await generateReply({
       ...request(fetcher),
-      channel: { ...channelFixture, baseUrl: 'https://custom.invalid/v1' },
+      channel: {
+        ...channelFixture,
+        connectionMode: 'custom',
+        providerId: '',
+        modelProviderId: 'mock',
+        sdk: '@ai-sdk/openai-compatible',
+        baseUrl: 'https://custom.invalid/v1',
+      },
     })
     expect(String(fetcher.mock.calls[0][0])).toBe('https://custom.invalid/v1/chat/completions')
     await expect(channelRequest({ ...channelFixture, model: 'custom-model' })).rejects.toThrow(
@@ -273,7 +280,7 @@ describe('OpenAI-compatible 严格协议', () => {
     expect(result.usage?.input).toBe(12000)
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
     expect(body.stream_options.include_usage).toBe(true)
-    expect(body.max_tokens).toBeUndefined()
+    expect(body.max_tokens).toBe(channelFixture.maxOutputTokens)
   })
   it('非空校验失败只追加一次同 schema 纠正', async () => {
     const broken = { ...narrativeFixture, diary: { ...narrativeFixture.diary, text: '' } }

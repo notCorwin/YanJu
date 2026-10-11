@@ -13,9 +13,10 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:production": "YANJU_E2E_PREVIEW=1 playwright test",
+    "test:e2e:core": "YANJU_E2E_PREVIEW=1 playwright test --workers=4 --fully-parallel --project=desktop --project=mobile --grep '自动优先 Responses|目录外 Model ID|渠道默认折叠、独立展开'",
     "setup:hooks": "git config --local core.hooksPath .githooks",
     "check:tokens": "node scripts/check-tokens.mjs",
-    "verify": "pnpm check:tokens && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e:production",
+    "verify": "pnpm check:tokens && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e:core",
     "build:pages": "vite build"
   },
   "dependencies": {

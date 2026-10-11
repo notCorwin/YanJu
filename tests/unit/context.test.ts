@@ -1,6 +1,12 @@
 import { catalogFingerprintFixture } from '../fixtures'
 import { describe, it, expect, vi } from 'vitest'
-import { calibrate, compactContext, contextBudget, shouldCompact } from '../../src/lib/context'
+import {
+  calibrate,
+  compactContext,
+  contextBudget,
+  effectiveInputLimit,
+  shouldCompact,
+} from '../../src/lib/context'
 import { channelFingerprint } from '../../src/lib/channels'
 import { modelMessages } from '../../src/lib/prompts'
 import type { Archive, Channel } from '../../src/lib/types'
@@ -59,6 +65,24 @@ describe('上下文预算与压缩事务', () => {
     expect(shouldCompact(8500, 10000)).toBe(true)
     expect(shouldCompact(7000, 10000)).toBe(false)
     expect(shouldCompact(7000, 10000)).toBe(false)
+  })
+  it('输出上限从模型 Context Window 中预留', () => {
+    expect(
+      effectiveInputLimit({
+        ...channelFixture,
+        contextWindow: 65536,
+        inputLimit: 60000,
+        maxOutputTokens: 4096,
+      }),
+    ).toBe(60000)
+    expect(
+      effectiveInputLimit({
+        ...channelFixture,
+        contextWindow: 65536,
+        inputLimit: 64000,
+        maxOutputTokens: 4096,
+      }),
+    ).toBe(61440)
   })
   it('预算计入角色、人设、schema、历史和摘要', () => {
     const channel = { ...channelFixture, contextWindow: 32768 }
