@@ -7,12 +7,12 @@
 - `src/lib/tasks.ts` 注册 16 类任务，`task-runner.ts` 共用真实 AI SDK 的 `generateText` / `streamText`，依次使用 Structured Outputs、JSON mode 和提示词 JSON。根对象与嵌套对象严格，所有输出字段必填，未知值用可空类型表达。所有模式本地校验，先修复 JSON 语法、明确类型与可空字段，仍不合格时附加具体字段路径与约束重新生成一次；取消、截断及渠道错误保留恢复记录。
 - Provider 与模型统一从 Models.dev 获取，包含所有文本输入输出模型，以 `@ai-sdk/openai-compatible` 为主并覆盖全部官方语言模型 SDK 入口和模型级 SDK/API/协议覆盖。浏览器直接调用服务商，GitHub Pages 托管静态产物；Vertex Edge、MaaS、AWS SigV4/Mantle、Azure Foundry 保留各自认证与路由。社区 SDK 与自建兼容实现已移除。
 - Provider 下拉列表首项为自定义端点；预置 Provider 固定使用 Models.dev 地址、SDK 与认证，自定义连接独立设置 Base URL、协议与 SDK。支持全目录搜索、手动 Model ID、模糊匹配模型资料、刷新与导入导出。能力测试仅随实际连接配置和相关模型资料失效。
-- 七种端点（Chat Completions、Completions、Responses、Messages、Generate Content、Interactions、Google OpenAI Chat）与所有官方原生 SDK 均接入统一执行器，能力测试分别记录非流式和流式的实际模式，覆盖嵌套 schema 与本地修复；自动探测依次检查七种端点，预置 Provider 最后回退到 SDK 默认端点，并保留并发测试结果提交。Context Window 与 max_tokens 在高级设置中从 Models.dev 填入并可覆盖；请求限制输出长度，上下文预算预留相应容量。Responses 的截断、拒绝、服务端失败和缺少终止事件不提交剧情，也不触发结构纠正。
+- 七种端点（Chat Completions、Completions、Responses、Messages、Generate Content、Interactions、Google OpenAI Chat）与所有官方原生 SDK 均接入统一执行器，能力测试分别记录非流式和流式的实际模式，覆盖嵌套 schema 与本地修复；自动探测优先模型资料对应的协议，再检查其他候选端点，并保留并发测试结果提交。Context Window 与 max_tokens 在高级设置中从 Models.dev 填入并可覆盖；手动覆盖在刷新与切换模型时保留。请求限制输出长度，上下文预算预留相应容量。Responses 的截断、拒绝、服务端失败和缺少终止事件不提交剧情，也不触发结构纠正。
 - `NarrativeReply` 同轮包含正文和 `TurnEffects`。`SourceRef` 定位消息和段落；`new:study` 等请求内临时引用分配为 `<messageId>:entity:study`，随后使用稳定程序 ID。数据由 React 展示。
 - `story.ts` 重放有效消息生成当前状态；完整消息、事件账本和状态投影在同一个事务中提交。状态跨轮延续，金额使用最小单位整数，日期由程序运算。
 - 每次请求保存冻结事实、输入、schema、部分及完整输出、纠正、usage 和错误。普通续聊及纠正保留可重放前缀；摘要压缩不会修改已提交事实。
 - IndexedDB 为 `yanju-v4`，OPFS 为 `yanju-v4/save.json`，存档 `version=4`。导入校验后原子替换并重建投影。原库与原文件保留原位。
-- 历史编辑、改写和重说成功后建立新路线，原路线未来保留；失败不切换游玩节点。任务应用校验篇章版本，重复应用幂等，多窗口冲突拒绝覆盖。
+- 历史编辑默认保留后续消息、当前路线与草稿，仅替换目标并重建状态；可选择从修改位置建立新路线，原路线未来保留。改写和重说成功后建立新路线；失败不切换游玩节点。任务应用校验篇章版本，重复应用幂等，多窗口冲突拒绝覆盖。
 - `GameSession` 保存游玩节点，`Branch` 保留路线最新节点；`HistoryNode` 引用不可变消息、任务、篇章设定和完整状态快照。节点与投影在同一事务提交，草稿与中断回合另存恢复状态。每条路线的最近 20 个自动存档只限制快捷列表，全部历史仍可回退。
 - 分享包仅携带剧情资料；导入重映射引用并创建独立篇章。删除路线保留手动及快速存档，指定开局和恢复草稿参与历史清理的引用保留。OPFS 不可用时仍可使用全部本地存档与路线功能。
 
@@ -80,6 +80,8 @@
 | 7    | 背景与语音描述        | 工作台→媒体                    | MediaCue                                              | 可编辑 tasks.output、JSON 下载      | 背景和逐段语音描述                         | 保存复验目标与段落，空内容禁止导出                | W/E       | 通过 |
 
 ## 本地验收记录
+
+2026-10-12，LLM Cosplay 需求验收：本地 CI 通过 331 项单元测试、14 项桌面与移动端核心生产流程，以及 Design Tokens、ESLint、TypeScript 和构建检查，总耗时 43.1 秒。另通过 6 项 Provider／输出降级回归与 4 项移动 Safari 回归。新增覆盖包含页面进入时目录刷新、全目录 Model ID 匹配、温度与容量覆盖、七端点自动探测、有限 JSON 修复与再生成、保留后续记录的逐条历史编辑、状态重建及备份分享。API 使用真实 SDK 配合模拟服务，不调用真实账户。
 
 ### 全站视觉与引导验收
 

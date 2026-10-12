@@ -41,6 +41,35 @@ async function openChannelEditor(page: Page) {
   return provider
 }
 
+test('每次进入渠道页面刷新目录，折叠和空列表也获取最新 Provider', async ({ page }) => {
+  let loads = 0
+  await page.route('https://models.dev/api.json', (route) => {
+    loads++
+    const catalog = catalogFixture()
+    catalog.mock.name = `最新提供商 ${loads}`
+    return route.fulfill({ json: catalog })
+  })
+  await page.goto('./')
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await expect.poll(() => loads).toBe(1)
+  await expect(page.getByRole('status').filter({ hasText: '正在刷新 Models.dev' })).toHaveCount(0)
+  await page
+    .getByRole('dialog', { name: '渠道管理', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await page.getByRole('button', { name: '渠道管理', exact: true }).click()
+  await expect.poll(() => loads).toBe(2)
+  await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await expandChannel(page, '新渠道')
+  await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
+  await expect(page.getByRole('option', { name: '最新提供商 2', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '刷新模型目录', exact: true }).click()
+  await expect.poll(() => loads).toBe(3)
+  await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
+  await expect(page.getByRole('option', { name: '最新提供商 3', exact: true })).toBeVisible()
+})
+
 test('提供商按名称和 ID 搜索，关闭后恢复完整列表与焦点', async ({ page }) => {
   const provider = await openChannelEditor(page)
   await provider.click()

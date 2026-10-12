@@ -50,6 +50,7 @@ export interface Channel {
   manualModelId?: boolean
   apiMode: ApiMode
   temperature: number | null
+  temperatureOverride?: boolean
   maxOutputTokens: number
   maxOutputTokensOverride?: boolean
   contextWindow: number
@@ -116,6 +117,7 @@ export interface Archive {
   persona?: Persona
   navigationEpoch?: number
   deletedMessageIds?: string[]
+  editedMessageIds?: string[]
 }
 export interface StoryContent {
   character: string

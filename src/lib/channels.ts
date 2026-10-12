@@ -44,6 +44,7 @@ export function channelFingerprint(channel: Channel) {
     channel.manualModelId,
     channel.apiMode,
     channel.temperature,
+    channel.temperatureOverride,
     channel.maxOutputTokens,
     channel.maxOutputTokensOverride,
     channel.connectionMode,

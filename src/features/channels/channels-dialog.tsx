@@ -12,11 +12,12 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/
 import { ChannelEditor } from '@/features/channels/channel-editor'
 import { useUnsavedChanges } from '@/hooks/use-unsaved-changes'
 import { channelFingerprint } from '@/lib/channels'
+import { currentModelCatalog, loadModelCatalog } from '@/lib/model-catalog'
 import type { Notify } from '@/lib/notify'
 import { channelIsReady, friendlyError, testChannel } from '@/lib/provider'
 import { commitChannelCapability, db } from '@/lib/storage'
 import { newChannel, type Channel, type ChannelCapability, type Settings } from '@/lib/types'
-import { Check, Plus, SlidersHorizontal } from 'lucide-react'
+import { Check, LoaderCircle, Plus, SlidersHorizontal } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export function ChannelsDialog({
@@ -40,6 +41,26 @@ export function ChannelsDialog({
 }) {
   const [expandedIds, setExpandedIds] = useState<string[]>([])
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(() => new Set())
+  const [catalogLoading, setCatalogLoading] = useState(false)
+  const [catalogError, setCatalogError] = useState('')
+  const [catalogRefresh, setCatalogRefresh] = useState(0)
+  useEffect(() => {
+    if (!open) return
+    const controller = new AbortController()
+    setCatalogLoading(true)
+    setCatalogError('')
+    void loadModelCatalog(true, controller.signal)
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          setCatalogError(
+            `${friendlyError(error)}${currentModelCatalog() ? ' 正在使用上次成功加载的目录。' : ''}`,
+          )
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCatalogLoading(false)
+      })
+    return () => controller.abort()
+  }, [open, catalogRefresh])
   const onDirtyChange = useCallback((id: string, dirty: boolean) => {
     setDirtyIds((previous) => {
       if (previous.has(id) === dirty) return previous
@@ -115,6 +136,14 @@ export function ChannelsDialog({
       >
         <div className="flex flex-wrap gap-2">
           <Button
+            variant="outline"
+            disabled={catalogLoading || disabled || testingAll}
+            onClick={() => setCatalogRefresh((previous) => previous + 1)}
+          >
+            {catalogLoading && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+            刷新模型目录
+          </Button>
+          <Button
             disabled={disabled || testingAll}
             onClick={() =>
               void db.channels.add(newChannel()).catch((e) => notify(friendlyError(e), true))
@@ -137,6 +166,12 @@ export function ChannelsDialog({
             </Button>
           )}
         </div>
+        {catalogLoading && <p role="status">正在刷新 Models.dev…</p>}
+        {catalogError && (
+          <p role="alert" className="text-sm text-destructive">
+            {catalogError}
+          </p>
+        )}
         {testingAll && <p role="status">{progress || '正在测试渠道…'}</p>}
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <nav aria-label="渠道列表" className="min-w-0">

@@ -279,7 +279,7 @@ export function applyMessage(story: StoryState, message: StoredMessage) {
   } else if (message.effects) applyEffects(story, message.effects, message, [])
 }
 
-/** Remove only unavailable references originating in deleted turns from the projection.
+/** Remove only unavailable references originating in edited/deleted turns from the projection.
  * Original later messages stay untouched; newly generated replies still use strict applyMessage.
  */
 function projectAfterDeletion(
@@ -360,7 +360,10 @@ export function rebuildStory(
 ): { story: StoryState; events: StoryEvent[] } {
   const story = initialStory(archive.id, archive.userName, archive.content)
   const events: StoryEvent[] = []
-  const deleted = new Set(archive.deletedMessageIds ?? [])
+  const deleted = new Set([
+    ...(archive.deletedMessageIds ?? []),
+    ...(archive.editedMessageIds ?? []),
+  ])
   for (const message of [...messages].sort((a, b) => a.sequence - b.sequence)) {
     const projected = projectAfterDeletion(story, message, deleted)
     applyMessage(story, projected)

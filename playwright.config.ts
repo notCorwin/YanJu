@@ -9,7 +9,12 @@ export default defineConfig({
   workers: 1,
   timeout: 60000,
   expect: { timeout: 10000 },
-  use: { baseURL, trace: 'retain-on-failure' },
+  use: {
+    baseURL,
+    headless: true,
+    trace: 'retain-on-failure',
+    reducedMotion: process.env.YANJU_E2E_CORE === '1' ? 'reduce' : 'no-preference',
+  },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     {
@@ -17,8 +22,16 @@ export default defineConfig({
       testMatch: ['**/provider-cors.spec.ts', '**/providers.spec.ts', '**/output-fallback.spec.ts'],
       use: { ...devices['Desktop Firefox'] },
     },
-    { name: 'mobile', use: { ...devices['iPhone 13'], defaultBrowserType: 'chromium' } },
-    { name: 'mobile-safari', use: { ...devices['iPhone 13'] } },
+    {
+      name: 'mobile',
+      use: {
+        ...devices['iPhone 13'],
+        defaultBrowserType: 'chromium',
+        deviceScaleFactor:
+          process.env.YANJU_E2E_CORE === '1' ? 1 : devices['iPhone 13'].deviceScaleFactor,
+      },
+    },
+    { name: 'mobile-safari', workers: 1, use: { ...devices['iPhone 13'] } },
   ],
   webServer: {
     command: `pnpm ${process.env.YANJU_E2E_PREVIEW === '1' ? 'preview' : 'dev'} --port ${port} --strictPort`,

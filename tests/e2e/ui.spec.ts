@@ -825,6 +825,46 @@ test('每条消息可以单独删除，取消、删除和刷新均保留其他�
   expect(await records()).toEqual([original[2]])
 })
 
+test('历史 User 和 Assistant 可逐条编辑，默认保留后续消息并在刷新后恢复', async ({ page }) => {
+  await prepareUI(page)
+  await connectUI(page)
+  await enterUI(page)
+  await page.getByRole('textbox', { name: '聊天输入', exact: true }).fill('等待修改的回应')
+  await page.getByRole('button', { name: '发送消息', exact: true }).click()
+  await expect(page.getByRole('button', { name: '停止生成', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('article')).toHaveCount(3)
+  const lastId = await page.getByRole('article').last().getAttribute('id')
+  const lastText = await page
+    .getByRole('article')
+    .last()
+    .locator('[data-slot="bubble-content"]')
+    .textContent()
+  const dialog = page.getByRole('dialog', { name: '编辑消息', exact: true })
+  for (const [article, content] of [
+    [page.getByRole('article', { name: '你的消息', exact: true }), '修改后的用户回应'],
+    [page.getByRole('article').first(), '修改后的开场'],
+  ] as const) {
+    await article.getByRole('button', { name: '编辑消息', exact: true }).click()
+    await expect(dialog.getByRole('combobox', { name: '保存方式', exact: true })).toHaveText(
+      '保留后续消息',
+    )
+    await dialog.getByRole('textbox', { name: '消息内容', exact: true }).fill(content)
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(article).toContainText(content)
+    await expect(page.getByRole('article')).toHaveCount(3)
+    await expect(
+      page.locator(`[id="${lastId}"]`).locator('[data-slot="bubble-content"]'),
+    ).toHaveText(lastText!)
+  }
+  await page.reload()
+  await expect(page.getByRole('article')).toHaveCount(3)
+  await expect(page.getByRole('article').first()).toContainText('修改后的开场')
+  await expect(page.getByRole('article', { name: '你的消息', exact: true })).toContainText(
+    '修改后的用户回应',
+  )
+})
+
 test('移动端键盘压缩视口时保留输入焦点与草稿，收起输入后恢复阅读空间', async ({ page }) => {
   await prepareUI(page)
   await connectUI(page)

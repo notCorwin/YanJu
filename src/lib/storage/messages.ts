@@ -93,7 +93,11 @@ export async function appendMessage(
   return message
 }
 
-export async function editMessage(id: string, content: string) {
+export async function editMessage(
+  id: string,
+  content: string,
+  mode: 'branch' | 'preserve' = 'branch',
+) {
   await db.transaction(
     'rw',
     [...db.gameTables, db.archives, db.messages, db.storyStates, db.storyEvents],
@@ -160,11 +164,14 @@ export async function editMessage(id: string, content: string) {
           .parse(JSON.parse(content))
         next = { ...next, ...material }
       } else if (message.role === 'assistant') next = { ...next, kind: message.kind }
-      const base = await prepareHistoryEdit(archive, id)
-      rebuildStory(base, [
-        ...(await archiveMessages(archive.id)).filter((m) => m.sequence < next.sequence),
-        next,
-      ])
+      const base = mode === 'branch' ? await prepareHistoryEdit(archive, id) : archive
+      applyMessage(
+        rebuildStory(
+          base,
+          (await archiveMessages(archive.id)).filter((m) => m.sequence < next.sequence),
+        ).story,
+        structuredClone(next),
+      )
       await db.messages.put(next)
       const all = await archiveMessages(archive.id)
       const coveredIndex = all.findIndex((m) => m.id === archive.summary?.coveredThroughId)
@@ -172,8 +179,12 @@ export async function editMessage(id: string, content: string) {
         base,
         !!archive.summary && all.findIndex((m) => m.id === id) <= coveredIndex,
       )
-      const tail = all.filter((m) => m.sequence > message.sequence)
-      await db.messages.bulkDelete(tail.map((m) => m.id))
+      if (mode === 'branch') {
+        const tail = all.filter((m) => m.sequence > message.sequence)
+        await db.messages.bulkDelete(tail.map((m) => m.id))
+      } else {
+        updated.editedMessageIds = [...new Set([...(base.editedMessageIds ?? []), id])]
+      }
       await db.archives.put(updated)
       await refreshStory(db, updated)
       await captureGameNode(db, updated, '编辑剧情', true)

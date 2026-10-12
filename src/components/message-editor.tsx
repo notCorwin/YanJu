@@ -392,6 +392,8 @@ export function MessageEditor({
           ? message.rawContent || message.content
           : JSON.stringify(message.rawContent || message.content, null, 2)
   const [text, setText] = useState(original)
+  const [saveMode, setSaveMode] = useState<'preserve' | 'branch'>('preserve')
+  const saveModeId = useId()
   const [tab, setTab] = useState(message.reply?.kind === 'forum' ? 'post' : 'blocks')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -426,9 +428,9 @@ export function MessageEditor({
     setSaving(true)
     setError('')
     try {
-      await withArchiveOperation(message.archiveId, () => editMessage(message.id, text))
+      await withArchiveOperation(message.archiveId, () => editMessage(message.id, text, saveMode))
       onSaved()
-      // A historical edit mounts the selected route again, replacing the original opener.
+      // Branch edits remount the route; restore focus after the selected message returns.
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           document
@@ -487,8 +489,8 @@ export function MessageEditor({
             <DialogTitle>编辑消息</DialogTitle>
             <DialogDescription>
               {message.reply
-                ? '按分区修改回复，保存时会检查内容。相关摘要会在需要时重新整理。'
-                : '修改后保留消息的时间和所属存档，相关摘要会在需要时重新整理。'}
+                ? '按分区修改回复，保存时会检查内容。默认只修改当前消息，保留后续聊天。'
+                : '默认只修改当前消息，保留其他消息、时间和所属存档。'}
             </DialogDescription>
           </DialogHeader>
           {error && (
@@ -520,6 +522,24 @@ export function MessageEditor({
               }
             }}
           >
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor={saveModeId}>保存方式</FieldLabel>
+              <Select
+                value={saveMode}
+                onValueChange={(mode) => setSaveMode(mode as 'preserve' | 'branch')}
+                disabled={disabled || saving}
+              >
+                <SelectTrigger id={saveModeId}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="preserve">保留后续消息</SelectItem>
+                    <SelectItem value="branch">从此处创建路线</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
             {message.reply ? (
               <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1">
                 <TabsList className="w-full shrink-0 justify-start overflow-x-auto">

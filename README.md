@@ -34,7 +34,7 @@
 
 请求没有等待时长上限：模型目录加载、渠道测试、流式生成和非流式生成都会持续等待结果；用户可主动停止生成或取消测试。等待首个内容或后续内容时，应用不会因等待时间过长而自动取消。
 
-Provider、模型、默认 API 地址、上下文容量与温度能力来自 [Models.dev](https://models.dev)。目录包含所有支持文本输入与输出的模型。渠道名称、Base URL、API Key 和 Temperature 手动填写，其余渠道配置使用下拉列表。可手动刷新目录；网络不可用时使用上次成功加载的浏览器缓存。测试结果绑定实际连接配置和所选模型资料，发生相关变更后须重新测试。
+Provider、模型、默认 API 地址、上下文容量与温度能力来自 [Models.dev](https://models.dev)。每次进入渠道页面都会重新请求最新目录，包括全部渠道折叠或尚未新建渠道时；已展开的编辑器共享最新资料。也可手动刷新目录；网络不可用时提示错误并使用上次成功加载的浏览器缓存。测试结果绑定实际连接配置和所选模型资料，发生相关变更后须重新测试。
 
 Provider 下拉列表首项固定为「自定义端点」，其余服务商来自 Models.dev。选择目录服务商时，地址、SDK 和认证绑定 Models.dev 资料。选择「自定义端点」时，填写 Base URL、API Key 并选择服务支持的 API 端点；选择原生端点时另选官方 SDK。模型可从整个 Models.dev 目录搜索，也可在高级设置中输入目录外 Model ID；目录外 ID 会尝试匹配相近模型资料，未匹配的模型可手动设置上下文与输出上限。渠道每次打开都会刷新模型目录。相同模型 ID 在不同目录来源下分别保留资料。
 
@@ -48,11 +48,11 @@ Provider 下拉列表首项固定为「自定义端点」，其余服务商来�
 - `/v1beta/interactions`
 - `/v1beta/openai/chat/completions`
 
-也可选择官方 Provider SDK 的默认端点；OpenAI 自动探测优先 Responses，再尝试 Chat Completions。Base URL 可填写 origin、API 前缀或完整端点地址。Responses 与 Interactions 请求设置 `store: false`，应用在本地管理上下文。
+端点默认自动探测：先尝试模型资料对应的协议，再检查其他候选端点，非流式和流式 JSON 校验均通过后才选定。OpenAI 和自定义兼容服务优先 Responses；Anthropic、Google 与云服务优先对应协议或官方 SDK，以保留认证。高级设置可固定七类端点或官方 Provider SDK 的默认端点。自定义 Base URL 可填写 origin、API 前缀或完整端点地址，跨协议探测会规范化 `/v1` 与 `/v1beta` 并保留代理前缀。Responses 与 Interactions 请求设置 `store: false`，应用在本地管理上下文。
 
-输出依次尝试 Structured Outputs、JSON mode 和提示词 JSON；模型明确不支持 Structured Outputs 时直接从 JSON mode 开始。所有模式都经过本地 Schema 与业务校验。格式或字段问题先尝试语法修复、类型转换与可空字段补全；必要正文缺失等问题会携带具体字段路径与新约束重新生成。非流式与流式测试分别记录有效输出模式，正式任务复用相应模式。
+输出依次尝试 Structured Outputs、JSON mode 和提示词 JSON；模型明确不支持 Structured Outputs 时直接从 JSON mode 开始。所有模式都经过本地 JSON 解析、Schema 与业务校验。每个结果最多尝试一次本地语法修复、类型转换与可空字段补全；仍失败时携带具体字段路径与新约束重新生成，最多一次。输出模式最多降级两次；认证、限流、网络错误不会触发格式降级。非流式与流式测试分别记录有效输出模式，正式任务复用相应模式。
 
-API 端点、模型 SDK、Context Window、`max_tokens` 和 Temperature 收在默认折叠的高级设置中。Context Window 与输出上限从 Models.dev 自动填入，可手动覆盖；输出上限作为每次生成的上限，并从上下文预算中预留。Temperature 默认使用系统建议值，用户可在高级设置中修改。
+API 端点、模型 SDK、Context Window、`max_tokens` 和 Temperature 收在默认折叠的高级设置中。Context Window 与输出上限从 Models.dev 自动填入，可手动覆盖；手动覆盖值在刷新目录与切换模型后保留。自定义 Model ID 会跨目录查找精确或高置信度相近模型资料。输出上限作为每次生成的上限，并从上下文预算中预留。Temperature 默认依据模型资料设置；所有模型均允许手动覆盖，覆盖值在刷新和切换模型后保留，连接测试和正式请求都采用实际设置。
 
 服务商必须允许当前站点来源及认证、内容请求头的 CORS 请求，浏览器也需要能够访问目标网络。SDK 支持和模型目录标记不等于实际账户可用，请以应用内渠道测试结果为准。
 
@@ -111,7 +111,7 @@ IndexedDB 是工作数据库，自动保存当前进度、草稿和生成中的�
 | 分享当前进度   | 默认携带当前路线及前史，也可选择全部路线和存档位。                     |
 | 导出全部       | 下载个人工作区备份，包含渠道配置、凭据和请求资料。支持替换与合并导入。 |
 
-历史编辑、工作台改写和重说成功后建立新路线。校验或生成失败保留原进度。回退、读档或切换路线会先取消生成，保留收到的部分内容；迟到结果不能覆盖载入后的剧情。中断内容需主动重试，导入和刷新不会自动发送请求。
+任意历史 User 或 Assistant 消息均可编辑或删除。编辑默认只修改目标消息，保留后续聊天、当前路线和草稿，重建剧情状态；也可在「保存方式」中选择「从此处创建路线」，保留原路线并从修改位置继续。工作台改写和重说成功后建立新路线。已有存档保留修改前版本；校验或生成失败保留原进度。回退、读档或切换路线会先取消生成，保留收到的部分内容；迟到结果不能覆盖载入后的剧情。中断内容需主动重试，导入和刷新不会自动发送请求。
 
 分享文件是版本 1 的 `yanju-game` JSON 剧情包，包含篇章设定、人设、必要状态、消息版本与本地素材，排除渠道、模型、凭据、请求日志、用量和诊断信息。接收者导入为独立篇章，已有资料和渠道保留；没有渠道也可先阅读。个人全量备份采用版本 4，与分享包用途不同，不支持旧格式迁移。
 
@@ -121,13 +121,13 @@ OPFS 不可用时，自动保存、存档位、回退、路线和 JSON 导入导
 
 ### 环境与启动
 
-需要 **Node.js 26.11.1+** 和 **pnpm 12.10.1**。Node 版本记录在 [.nvmrc](.nvmrc)，包管理器与脚本记录在 [package.json](package.json)。使用 nvm 时可执行 `nvm install`、`nvm use`。
+需要 **Node.js 26.11.1+** 和 **pnpm 12.11.2**。Node 版本记录在 [.nvmrc](.nvmrc)，包管理器与脚本记录在 [package.json](package.json)。使用 nvm 时可执行 `nvm install`、`nvm use`。
 
 ```sh
 git clone https://github.com/notCorwin/YanJu.git
 cd YanJu
 
-npm install --global pnpm@12.10.1
+npm install --global pnpm@12.11.2
 pnpm install --frozen-lockfile
 pnpm dev
 ```
@@ -136,17 +136,17 @@ pnpm dev
 
 ### 常用命令
 
-| 命令                           | 用途                                              |
-| ------------------------------ | ------------------------------------------------- |
-| `pnpm dev`                     | 启动开发服务器。                                  |
-| `pnpm build`                   | 执行 TypeScript 编译检查，生成 `dist/` 静态产物。 |
-| `pnpm preview`                 | 本地预览已有生产构建。                            |
-| `pnpm check:tokens`            | 检查组件和样式是否遵循统一 Design Tokens。        |
-| `pnpm lint` / `pnpm typecheck` | 运行 ESLint / TypeScript 检查。                   |
-| `pnpm test`                    | 运行 Vitest 单元测试。                            |
-| `pnpm test:e2e`                | 通过独立开发服务运行 Playwright。                 |
-| `pnpm test:e2e:production`     | 通过独立生产预览服务运行 Playwright，需先构建。   |
-| `pnpm verify`                  | 顺序执行全部本地验收。                            |
+| 命令                           | 用途                                                      |
+| ------------------------------ | --------------------------------------------------------- |
+| `pnpm dev`                     | 启动开发服务器。                                          |
+| `pnpm build`                   | 执行 TypeScript 编译检查，生成 `dist/` 静态产物。         |
+| `pnpm preview`                 | 本地预览已有生产构建。                                    |
+| `pnpm check:tokens`            | 检查组件和样式是否遵循统一 Design Tokens。                |
+| `pnpm lint` / `pnpm typecheck` | 运行 ESLint / TypeScript 检查。                           |
+| `pnpm test`                    | 运行 Vitest 单元测试。                                    |
+| `pnpm test:e2e`                | 通过独立开发服务运行 Playwright。                         |
+| `pnpm test:e2e:production`     | 通过独立生产预览服务运行 Playwright，需先构建。           |
+| `pnpm verify`                  | 并行运行本地 CI，再执行核心生产浏览器验收，总上限 60 秒。 |
 
 ### 技术栈与目录
 
@@ -183,8 +183,8 @@ scripts/              # 本地检查脚本
 
 - **统一视觉规范**：优先复用 [shadcn/ui 组件](src/components/ui)。[tokens.css](src/styles/tokens.css) 是颜色、字体、间距、圆角、边框、阴影和动效的唯一来源；样式主要通过 Tailwind 语义类实现，外观设置只修改根 Token。
 - **严格任务协议**：[tasks.ts](src/lib/tasks.ts) 注册 16 类任务，核心回复 schema 位于 [schemas.ts](src/lib/schemas.ts)。共用执行器、预算、请求记录和恢复流程；所有输出先本地校验与修复，仍不合格时最多重新生成一次并追加具体约束；不支持的输出格式自动回退，取消、截断和网络错误不自动重发。
-- **完整提交与来源**：完整回复通过校验后，与剧情事件和状态在同一个 IndexedDB 事务中提交。实体使用稳定 ID，事实携带消息及段落来源；历史编辑会使后续剧情失效并重建状态。
-- **本地上下文管理**：估算计入设定、人设、schema、摘要和有效历史，并用实际 usage 校正。输入预算达到 85% 时自动压缩，目标为 70% 以下；保留最近完整对话及全部原文，压缩失败保留原摘要。应用不提供可选输出上限设置。
+- **完整提交与来源**：完整回复通过校验后，与剧情事件和状态在同一个 IndexedDB 事务中提交。实体使用稳定 ID，事实携带消息及段落来源；历史编辑默认保留后续原文并重建状态。
+- **本地上下文管理**：估算计入设定、人设、schema、摘要和有效历史，并用实际 usage 校正。输入预算达到 85% 时自动压缩，目标为 70% 以下；保留最近完整对话及全部原文，压缩失败保留原摘要。高级设置中的输出上限计入上下文预留。
 - **技术选型**：使用最新稳定技术栈，依赖以锁文件为准；不要求旧版迁移或向后兼容。新增能力同步维护[覆盖矩阵](docs/structured-outputs-coverage.md)及相应测试。
 
 ## 本地验收
@@ -197,9 +197,9 @@ pnpm setup:hooks
 pnpm verify
 ```
 
-`verify` 依次运行 Design Token 检查、ESLint、TypeScript、Vitest、生产构建和 Playwright。浏览器测试覆盖桌面 Chrome、移动 Chromium、移动 Safari，并使用 Firefox 验证渠道协议与跨域预检。测试使用模拟模型和真实 SDK 协议，无需真实 API Key。
+`verify` 并行运行 Design Token 检查、ESLint、全部 Vitest 单元测试及包含 TypeScript 检查的生产构建，再开始桌面 Chrome 与移动 Chromium 的核心浏览器验收。业务单元测试使用 Node 与存储接口模拟，界面由真实浏览器验证；ESLint 按文件内容缓存。CI 总上限为 60 秒，超限会停止后台进程；核心交互验收使用减少动态效果模式、两组浏览器并发与 1 倍像素比例，保留移动视口和触摸输入。额外的 `test:e2e:production` 提供完整浏览器回归，包括移动 Safari 和 Firefox 协议与跨域预检及实际设备像素比例；Safari 测试串行执行以隔离浏览器的 OPFS 数据。所有浏览器测试均为 Headless，使用模拟模型和真实 SDK 协议，无需真实 API Key。
 
-Playwright 启动当前工作目录的独立服务，不复用已有服务。默认端口为 `5173`，被占用时可指定其他端口：
+Playwright 启动当前工作目录的独立服务，不复用已有服务。`verify` 自动选择空闲端口；单独运行浏览器测试时默认为 `5173`。也可指定端口：
 
 ```sh
 YANJU_E2E_PORT=5174 pnpm verify

@@ -27,11 +27,12 @@ import {
 } from '@/components/ui/select'
 import {
   currentModelCatalog,
+  findCatalogModel,
   fuzzyCatalogModel,
-  loadModelCatalog,
+  modelParameters,
   modelCatalogProviderId,
   selectCatalogModel,
-  type ModelCatalog,
+  subscribeModelCatalog,
 } from '@/lib/model-catalog'
 import {
   channelFingerprint,
@@ -52,7 +53,7 @@ import {
 import { commitChannelCapability, db } from '@/lib/storage'
 import { apiProtocols, type ApiMode, type Channel, type ChannelCapability } from '@/lib/types'
 import { Check, Eye, EyeOff, FlaskConical, LoaderCircle, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 export function ChannelEditor({
   channel,
@@ -76,64 +77,28 @@ export function ChannelEditor({
       maxOutputTokens: number | string
     }
   >(channel)
-  const [catalog, setCatalog] = useState<ModelCatalog>()
-  const [catalogError, setCatalogError] = useState('')
-  const [loadingCatalog, setLoadingCatalog] = useState(false)
-  const initialChannel = useRef(channel)
-  const refreshCatalog = async () => {
-    setLoadingCatalog(true)
-    try {
-      setCatalog(await loadModelCatalog(true))
-      setCatalogError('')
-    } catch (error) {
-      setCatalogError(friendlyError(error))
-      setCatalog(currentModelCatalog())
-    } finally {
-      setLoadingCatalog(false)
-    }
-  }
+  const catalog = useSyncExternalStore(subscribeModelCatalog, currentModelCatalog)
   useEffect(() => {
-    let mounted = true
-    const controller = new AbortController()
-    const savedChannel = initialChannel.current
-    setLoadingCatalog(true)
-    void loadModelCatalog(true, controller.signal)
-      .then((value) => {
-        if (!mounted) return
-        setCatalog(value)
-        const source = value[modelCatalogProviderId(savedChannel)]
-        const model =
-          source?.models[savedChannel.model] ??
-          (savedChannel.manualModelId ? fuzzyCatalogModel(source, savedChannel.model) : undefined)
-        if (model) {
-          setDraft((previous) => ({
-            ...previous,
-            contextWindow: savedChannel.contextWindowOverride
-              ? previous.contextWindow
-              : model.limit.context,
-            inputLimit: model.limit.input || model.limit.context,
-            maxOutputTokens: savedChannel.maxOutputTokensOverride
-              ? previous.maxOutputTokens
-              : model.limit.output || Math.min(8192, Math.max(1, model.limit.context - 1)),
-            temperatureSupported: model.temperature === true,
-            temperature: model.temperature === true ? previous.temperature : null,
-          }))
-        }
-      })
-      .catch((error) => {
-        if (mounted && !controller.signal.aborted) {
-          setCatalogError(friendlyError(error))
-          setCatalog(currentModelCatalog())
-        }
-      })
-      .finally(() => {
-        if (mounted) setLoadingCatalog(false)
-      })
-    return () => {
-      mounted = false
-      controller.abort()
-    }
-  }, [channel.id])
+    if (!catalog) return
+    setDraft((previous) => {
+      const source = catalog[modelCatalogProviderId(previous)]
+      const model =
+        source?.models[previous.model] ??
+        (previous.manualModelId ? fuzzyCatalogModel(source, previous.model) : undefined)
+      if (!model) return previous
+      return {
+        ...previous,
+        ...modelParameters(model),
+        ...(previous.contextWindowOverride ? { contextWindow: previous.contextWindow } : {}),
+        ...(previous.maxOutputTokensOverride ? { maxOutputTokens: previous.maxOutputTokens } : {}),
+        temperature: previous.temperatureOverride
+          ? previous.temperature
+          : model.temperature === true
+            ? previous.temperature
+            : null,
+      }
+    })
+  }, [catalog])
   const custom = draft.connectionMode === 'custom'
   const provider =
     catalog?.[draft.connectionMode === 'custom' ? (draft.modelProviderId ?? '') : draft.providerId]
@@ -179,6 +144,7 @@ export function ChannelEditor({
     setDraft((d) => ({
       ...d,
       [key]: value,
+      ...(key === 'temperature' ? { temperatureOverride: value !== null } : {}),
       ...(key === 'contextWindow' ? { contextWindowOverride: true } : {}),
       ...(key === 'maxOutputTokens' ? { maxOutputTokensOverride: true } : {}),
       capability: key === 'name' ? d.capability : undefined,
@@ -434,22 +400,6 @@ export function ChannelEditor({
                 </FieldDescription>
                 {errors.model && <FieldDescription role="alert">{errors.model}</FieldDescription>}
               </Field>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={loadingCatalog || busy || saving || disabled}
-                onClick={() => void refreshCatalog()}
-              >
-                {loadingCatalog && (
-                  <LoaderCircle data-icon="inline-start" className="animate-spin" />
-                )}
-                刷新模型目录
-              </Button>
-              {catalogError && (
-                <p role="alert" className="text-sm text-destructive">
-                  {catalogError}
-                </p>
-              )}
               <FormField
                 label="API Key"
                 help={
@@ -510,24 +460,28 @@ export function ChannelEditor({
                             error={errors.model}
                             value={draft.model}
                             onChange={(model) => {
-                              const match = fuzzyCatalogModel(provider, model)
+                              const found =
+                                custom && catalog
+                                  ? findCatalogModel(catalog, model, draft.modelProviderId)
+                                  : undefined
+                              const match = found?.model ?? fuzzyCatalogModel(provider, model)
                               setDraft((previous) => ({
                                 ...previous,
                                 model,
                                 manualModelId: true,
+                                ...(found ? { modelProviderId: found.provider.id } : {}),
                                 ...(match
                                   ? {
-                                      contextWindow: previous.contextWindowOverride
-                                        ? previous.contextWindow
-                                        : match.limit.context,
-                                      inputLimit: match.limit.input || match.limit.context,
-                                      maxOutputTokens: previous.maxOutputTokensOverride
-                                        ? previous.maxOutputTokens
-                                        : match.limit.output ||
-                                          Math.min(8192, match.limit.context - 1),
-                                      temperatureSupported: match.temperature === true,
-                                      temperature:
-                                        match.temperature === true
+                                      ...modelParameters(match),
+                                      ...(previous.contextWindowOverride
+                                        ? { contextWindow: previous.contextWindow }
+                                        : {}),
+                                      ...(previous.maxOutputTokensOverride
+                                        ? { maxOutputTokens: previous.maxOutputTokens }
+                                        : {}),
+                                      temperature: previous.temperatureOverride
+                                        ? previous.temperature
+                                        : match.temperature === true
                                           ? (previous.temperature ?? 0.9)
                                           : null,
                                     }
@@ -600,7 +554,8 @@ export function ChannelEditor({
                           </SelectContent>
                         </Select>
                         <FieldDescription>
-                          自动依次探测七类 API 端点；预置 Provider 在末尾回退到 SDK 默认端点。每个端点尝试 Structured Outputs、JSON mode 和提示词 JSON，所有结果均在本地校验。
+                          优先探测模型资料对应的端点，再检查其他候选端点。所有端点均验证非流式和流式
+                          JSON，通过后自动选定；也可手动指定端点。
                         </FieldDescription>
                         {errors.apiMode && (
                           <FieldDescription role="alert">{errors.apiMode}</FieldDescription>
@@ -656,12 +611,7 @@ export function ChannelEditor({
                         </FieldLabel>
                         <Select
                           value={draft.temperature === null ? 'default' : 'custom'}
-                          disabled={
-                            busy ||
-                            saving ||
-                            disabled ||
-                            (!selectedModel?.temperature && !draft.manualModelId)
-                          }
+                          disabled={busy || saving || disabled}
                           onValueChange={(mode) =>
                             update('temperature', mode === 'default' ? null : 0.9)
                           }
@@ -677,23 +627,22 @@ export function ChannelEditor({
                           </SelectContent>
                         </Select>
                         <FieldDescription>
-                          不支持温度参数的模型会自动使用模型默认值。
+                          系统依据模型资料设置默认值，也可手动覆盖。不支持温度参数的端点可能拒绝自定义值。
                         </FieldDescription>
                       </Field>
-                      {draft.temperature !== null &&
-                        (selectedModel?.temperature || draft.manualModelId) && (
-                          <FormField
-                            label="Temperature"
-                            name="temperature"
-                            error={errors.temperature}
-                            type="number"
-                            min={0}
-                            max={2}
-                            step={0.1}
-                            value={draft.temperature}
-                            onChange={(v) => update('temperature', v)}
-                          />
-                        )}
+                      {draft.temperature !== null && (
+                        <FormField
+                          label="Temperature"
+                          name="temperature"
+                          error={errors.temperature}
+                          type="number"
+                          min={0}
+                          max={2}
+                          step={0.1}
+                          value={draft.temperature}
+                          onChange={(v) => update('temperature', v)}
+                        />
+                      )}
                     </FieldGroup>
                   </AccordionContent>
                 </AccordionItem>

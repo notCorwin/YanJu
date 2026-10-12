@@ -10,6 +10,47 @@ async function openAdvanced(page: import('@playwright/test').Page) {
     await page.getByRole('button', { name: '高级设置', exact: true }).click()
 }
 
+test('高级温度允许覆盖模型资料中的不支持标记，测试请求和刷新保留自定义值', async ({ page }) => {
+  const catalog = catalogFixture()
+  catalog.mock.models['test-model'].temperature = false
+  await page.route('https://models.dev/api.json', (route) => route.fulfill({ json: catalog }))
+  const temperatures: unknown[] = []
+  await page.route('https://mock.example/v1/**', async (route) => {
+    const body = route.request().postDataJSON()
+    temperatures.push(body.temperature)
+    const protocol = route.request().url().endsWith('/responses') ? 'responses' : 'chat-completions'
+    const result = protocolResponse(protocol, capabilityFixture, body.stream === true)
+    await route.fulfill({ headers: { 'content-type': result.contentType }, body: result.body })
+  })
+  await page.goto('./')
+  await openChannels(page)
+  await page.getByRole('button', { name: '新建渠道', exact: true }).click()
+  await expandChannel(page, '新渠道')
+  await page.getByRole('combobox', { name: 'Provider', exact: true }).click()
+  await page.getByRole('option', { name: '测试 Provider', exact: true }).click()
+  await page.getByLabel('API Key', { exact: true }).fill('test-key')
+  await openAdvanced(page)
+  const mode = page.getByRole('combobox', { name: 'Temperature', exact: true })
+  await expect(mode).toHaveText('系统默认')
+  await mode.click()
+  await page.getByRole('option', { name: '自定义', exact: true }).click()
+  await page.getByRole('spinbutton', { name: 'Temperature', exact: true }).fill('0.6')
+  await page.getByRole('button', { name: '测试渠道', exact: true }).click()
+  await expect(page.getByText(/测试通过 ·/)).toBeVisible()
+  expect(temperatures).toEqual([0.6, 0.6])
+  await page
+    .getByRole('dialog', { name: '渠道管理', exact: true })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click()
+  await page.reload()
+  await openChannels(page)
+  await openAdvanced(page)
+  await expect(mode).toHaveText('自定义')
+  await expect(page.getByRole('spinbutton', { name: 'Temperature', exact: true })).toHaveValue(
+    '0.6',
+  )
+})
+
 test('Provider 首项选择自定义端点，跨目录选模型并独立选择协议与 SDK，刷新后保留配置', async ({
   page,
 }) => {

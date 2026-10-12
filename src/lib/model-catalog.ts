@@ -76,6 +76,40 @@ export function fuzzyCatalogModel(provider: CatalogProvider | undefined, modelId
     .sort((left, right) => right.score - left.score)[0]?.model
 }
 
+/** Custom gateways can use any catalog's metadata without inheriting its route. */
+export function findCatalogModel(catalog: ModelCatalog, modelId: string, preferredId = '') {
+  const providers = Object.values(catalog).sort(
+    (a, b) => Number(b.id === preferredId) - Number(a.id === preferredId),
+  )
+  for (const provider of providers) {
+    const model = provider.models[modelId.trim()]
+    if (model) return { provider, model }
+  }
+  return providers
+    .flatMap((provider) => {
+      const model = fuzzyCatalogModel(provider, modelId)
+      return model
+        ? [
+            {
+              provider,
+              model,
+              score: Math.max(similarity(model.id, modelId), similarity(model.name, modelId)),
+            },
+          ]
+        : []
+    })
+    .sort((a, b) => b.score - a.score)[0]
+}
+
+export function modelParameters(model: CatalogModel) {
+  return {
+    contextWindow: model.limit.context,
+    inputLimit: model.limit.input || model.limit.context,
+    maxOutputTokens: Math.min(model.limit.output || 8192, Math.max(1, model.limit.context - 1)),
+    temperatureSupported: model.temperature === true,
+  }
+}
+
 /** Availability comes from the provider-specific entry, including model-level SDK/API overrides. */
 export function parseModelCatalog(input: unknown): ModelCatalog {
   const catalog: ModelCatalog = {}
@@ -114,7 +148,9 @@ type CatalogReference = Pick<Channel, 'providerId' | 'model'> &
     >
   >
 
-export function modelCatalogProviderId(channel: CatalogReference) {
+export function modelCatalogProviderId(
+  channel: Pick<CatalogReference, 'connectionMode' | 'providerId' | 'modelProviderId'>,
+) {
   return channel.connectionMode === 'custom' ? (channel.modelProviderId ?? '') : channel.providerId
 }
 
@@ -183,27 +219,15 @@ export function selectCatalogModel(
         ? channel.name
         : `${custom ? '自定义端点' : provider.name} · ${model.name}`,
     baseUrl: custom ? channel.baseUrl : '',
-    apiMode: custom
-      ? channel.apiMode
-      : ['@ai-sdk/google-vertex', '@ai-sdk/azure'].includes(provider.npm) ||
-          !['@ai-sdk/openai', '@ai-sdk/openai-compatible'].includes(sdk)
-        ? 'native'
-        : model.provider?.shape === 'responses'
-          ? 'responses'
-          : ['completions', 'chat-completions'].includes(model.provider?.shape ?? '')
-            ? 'chat-completions'
-            : sdk === '@ai-sdk/openai'
-              ? 'auto'
-              : sdk === '@ai-sdk/openai-compatible'
-                ? 'chat-completions'
-                : 'native',
-    contextWindow: model.limit.context,
-    inputLimit: model.limit.input || model.limit.context,
-    maxOutputTokens: model.limit.output || Math.min(8192, Math.max(1, model.limit.context - 1)),
-    maxOutputTokensOverride: false,
-    contextWindowOverride: false,
-    temperatureSupported: model.temperature === true,
-    temperature: model.temperature === true ? (channel.temperature ?? 0.9) : null,
+    apiMode: custom ? channel.apiMode : 'auto',
+    ...modelParameters(model),
+    ...(channel.contextWindowOverride ? { contextWindow: channel.contextWindow } : {}),
+    ...(channel.maxOutputTokensOverride ? { maxOutputTokens: channel.maxOutputTokens } : {}),
+    temperature: channel.temperatureOverride
+      ? channel.temperature
+      : model.temperature === true
+        ? 0.9
+        : null,
     capability: undefined,
     calibration: undefined,
   }
@@ -264,20 +288,24 @@ export function loadModelCatalog(refresh = false, signal?: AbortSignal): Promise
         : await cachedValue(() => caches.open('yanju-models-dev'))
     const url = MODELS_DEV_URL
     try {
-      const response = await fetch(url)
+      const response = await fetch(url, { cache: 'no-store' })
       if (!response.ok) throw new Error(`模型目录加载失败（HTTP ${response.status}）`)
       const catalog = parseModelCatalog(await response.clone().json())
       if (cache) await cachedValue(() => cache.put(MODELS_DEV_URL, response))
       return publishCatalog(catalog)
     } catch (error) {
-      if (refresh) throw error
       const cached =
-        cache &&
-        (await cachedValue(async () => {
-          const response = await cache.match(MODELS_DEV_URL)
-          return response ? parseModelCatalog(await response.json()) : undefined
-        }))
+        current ??
+        (cache &&
+          (await cachedValue(async () => {
+            const response = await cache.match(MODELS_DEV_URL)
+            return response ? parseModelCatalog(await response.json()) : undefined
+          })))
       if (!cached) throw error
+      if (refresh) {
+        publishCatalog(cached)
+        throw error
+      }
       return publishCatalog(cached)
     }
   })().finally(() => {

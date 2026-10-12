@@ -2,6 +2,7 @@ import { createProviderModel, type ModelSettings } from './provider-model'
 import { isProviderSdk } from './provider-registry'
 import {
   catalogRouteFingerprint,
+  catalogSelection,
   loadModelCatalog,
   modelCatalogProviderId,
   type ModelCatalog,
@@ -175,6 +176,40 @@ async function cancellableProbe<T>(
   }
 }
 
+function probeProtocols(channel: Channel, catalog: ModelCatalog): ApiProtocol[] {
+  if (channel.apiMode !== 'auto') return [channel.apiMode]
+  const { provider, sdk, model } = catalogSelection(channel, catalog)
+  const preferred: ApiProtocol =
+    channel.connectionMode === 'custom'
+      ? 'responses'
+      : ['@ai-sdk/azure', '@ai-sdk/amazon-bedrock', '@ai-sdk/google-vertex'].some((cloud) =>
+            provider.npm.startsWith(cloud),
+          )
+        ? 'native'
+        : sdk === '@ai-sdk/google'
+          ? 'generate-content'
+          : ['@ai-sdk/anthropic', '@ai-sdk/minimax'].includes(sdk)
+            ? 'messages'
+            : !['@ai-sdk/openai', '@ai-sdk/openai-compatible'].includes(sdk)
+              ? 'native'
+              : ['completions', 'chat-completions'].includes(model.provider?.shape ?? '')
+                ? 'chat-completions'
+                : 'responses'
+  return [
+    ...new Set<ApiProtocol>([
+      preferred,
+      'responses',
+      'chat-completions',
+      'completions',
+      'messages',
+      'generate-content',
+      'interactions',
+      'google-chat-completions',
+      ...(channel.connectionMode === 'catalog' ? ['native' as const] : []),
+    ]),
+  ]
+}
+
 export async function testChannel(
   channel: Channel,
   signal?: AbortSignal,
@@ -182,24 +217,12 @@ export async function testChannel(
   onProgress?: (detail: string) => void,
 ): Promise<ChannelCapability> {
   validateChannel(channel)
-  const protocols: ApiProtocol[] =
-    channel.apiMode === 'auto'
-      ? [
-          'responses',
-          'chat-completions',
-          'completions',
-          'messages',
-          'generate-content',
-          'interactions',
-          'google-chat-completions',
-          ...(channel.connectionMode === 'catalog' ? (['native'] as const) : []),
-        ]
-      : [channel.apiMode]
+  const startedAt = Date.now()
+  const catalog = await loadModelCatalog(false, signal)
+  const protocols = probeProtocols(channel, catalog)
   const checks: ChannelCapability['checks'] = {}
   let selected: ApiProtocol | undefined
   let firstTokenMs: number | undefined
-  let catalog: ModelCatalog | undefined
-  const startedAt = Date.now()
   for (const protocol of protocols) {
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
     const check: ProtocolCapability = { nonStreaming: 'untested', streaming: 'untested' }
@@ -212,7 +235,6 @@ export async function testChannel(
       try {
         await cancellableProbe(async (abortSignal) => {
           // Keep both streaming stages and all protocol probes on the same catalog route.
-          catalog ??= await loadModelCatalog(false, abortSignal)
           const result = await runStructuredTask({
             kind: 'capability',
             channel,
@@ -222,8 +244,7 @@ export async function testChannel(
             input: { test: 'nested strict schema' },
             signal: abortSignal,
             fetcher,
-            temperature:
-              channel.temperature === null ? null : streaming ? channel.temperature : 0.3,
+            temperature: channel.temperature,
           })
           if (streaming) firstTokenMs ??= result.diagnostics.firstTokenMs
           if (streaming) check.streamingOutputMode = result.diagnostics.outputMode
@@ -275,7 +296,8 @@ export async function summarize(
     input,
     signal,
     instructions: compressionInstructions,
-    temperature: channel.temperature === null ? null : 0.3,
+    temperature:
+      channel.temperature === null || channel.temperatureOverride ? channel.temperature : 0.3,
     streaming: false,
     fetcher,
     archiveId,

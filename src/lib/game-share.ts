@@ -37,6 +37,7 @@ const cleanArchive = (a: Archive): Archive => ({
   keywords: a.keywords,
   summary: a.summary,
   deletedMessageIds: a.deletedMessageIds,
+  editedMessageIds: a.editedMessageIds,
 })
 const cleanMessage = (m: StoredMessage): StoredMessage => ({
   id: m.id,

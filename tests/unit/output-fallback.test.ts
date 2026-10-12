@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { runStructuredTask } from '../../src/lib/task-runner'
 import { testChannel, channelValidationErrors } from '../../src/lib/provider'
-import { parseModelCatalog } from '../../src/lib/model-catalog'
+import { loadModelCatalog, parseModelCatalog } from '../../src/lib/model-catalog'
 import { catalogFixture } from '../model-catalog-fixture'
 import { channelFixture, capabilityFixture, narrativeFixture } from '../fixtures'
 import { protocolResponse } from '../provider-protocol-fixtures'
@@ -449,5 +449,98 @@ describe('所有端点共用的 JSON 生成流程', () => {
     expect(
       endpointBaseURL('https://example.com/v1beta/models/a:generateContent', 'interactions'),
     ).toBe('https://example.com/v1beta')
+  })
+
+  it.each(supportedProtocols)(
+    '从 Google 完整地址自动切换至 %s 时规范化版本与代理前缀',
+    (protocol) => {
+      const google = ['generate-content', 'interactions', 'google-chat-completions'].includes(
+        protocol,
+      )
+      expect(
+        endpointBaseURL('https://gateway.example/proxy/v1beta/openai/chat/completions', protocol),
+      ).toBe(
+        `https://gateway.example/proxy/${google ? 'v1beta' : 'v1'}${protocol === 'google-chat-completions' ? '/openai' : ''}`,
+      )
+    },
+  )
+
+  it.each([false, true])(
+    '持续无效 JSON 在一次本地修复和一次再生成后停止（流式 %s）',
+    async (streaming) => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => reply('chat-completions', { ready: true }, streaming))
+      await expect(
+        runStructuredTask({ kind: 'capability', channel: channelFixture, streaming, fetcher }),
+      ).rejects.toThrow(/probe/)
+      expect(fetcher).toHaveBeenCalledTimes(2)
+      const body = JSON.parse(String(fetcher.mock.calls[1][1]?.body))
+      expect(body.messages.at(-1).content).toContain('probe')
+    },
+  )
+
+  it('自动模式遍历全部七类端点，并能从 Google 完整地址发现可用的兼容端点', async () => {
+    const calls: string[] = []
+    const channel = {
+      ...channelFixture,
+      connectionMode: 'custom' as const,
+      providerId: '',
+      apiMode: 'auto' as const,
+      baseUrl: 'https://gateway.example/v1beta/models/test-model:generateContent',
+      capability: undefined,
+    }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      const path = new URL(String(url)).pathname
+      calls.push(path)
+      if (path !== '/v1beta/openai/chat/completions')
+        return Response.json({ error: { message: 'endpoint not found' } }, { status: 404 })
+      return reply(
+        'google-chat-completions',
+        capabilityFixture,
+        JSON.parse(String(init?.body)).stream === true,
+      )
+    })
+    const capability = await testChannel(channel, undefined, fetcher)
+    expect(capability).toMatchObject({ ok: true, protocol: 'google-chat-completions' })
+    expect(calls).toEqual([
+      '/v1/responses',
+      '/v1/chat/completions',
+      '/v1/completions',
+      '/v1/messages',
+      '/v1beta/models/test-model:generateContent',
+      '/v1beta/interactions',
+      '/v1beta/openai/chat/completions',
+      '/v1beta/openai/chat/completions',
+    ])
+  })
+
+  it.each([
+    ['@ai-sdk/anthropic', 'messages'],
+    ['@ai-sdk/google', 'generate-content'],
+    ['@ai-sdk/openai-compatible', 'chat-completions'],
+  ] as const)('预置 %s 自动优先探测模型资料对应的 %s', async (sdk, protocol) => {
+    const catalog = fixtureCatalog()
+    catalog.mock.npm = sdk
+    if (protocol === 'chat-completions')
+      catalog.mock.models['test-model'].provider = { shape: 'completions' }
+    vi.mocked(loadModelCatalog).mockResolvedValueOnce(catalog)
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (url, init) =>
+        reply(
+          protocol,
+          capabilityFixture,
+          JSON.parse(String(init?.body)).stream === true ||
+            String(url).includes('streamGenerateContent'),
+        ),
+      )
+    const capability = await testChannel(
+      { ...channelFixture, sdk, apiMode: 'auto', capability: undefined },
+      undefined,
+      fetcher,
+    )
+    expect(capability).toMatchObject({ ok: true, protocol })
+    expect(fetcher).toHaveBeenCalledTimes(2)
   })
 })

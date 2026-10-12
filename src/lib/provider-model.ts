@@ -70,12 +70,15 @@ export function endpointBaseURL(value: string, protocol: ApiProtocol) {
   let path = url.pathname
     .replace(/\/+$/, '')
     .replace(/\/(?:chat\/completions|completions|responses|messages|interactions)$/, '')
-    .replace(/\/models\/[^/]+:(?:streamGenerateContent|generateContent)$/, '')
+    .replace(/\/models\/.+:(?:streamGenerateContent|generateContent)$/, '')
   if (['generate-content', 'interactions', 'google-chat-completions'].includes(protocol)) {
     path = path.replace(/\/openai$/, '').replace(/\/v1$/, '/v1beta')
     if (!path) path = '/v1beta'
     if (protocol === 'google-chat-completions') path += '/openai'
-  } else if (!path) path = '/v1'
+  } else {
+    path = path.replace(/\/openai$/, '').replace(/\/v1beta$/, '/v1')
+    if (!path) path = '/v1'
+  }
   url.pathname = path
   url.hash = ''
   return url.toString().replace(/\/$/, '')

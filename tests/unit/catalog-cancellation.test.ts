@@ -97,6 +97,21 @@ describe('catalog cancellation', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
+  it('refresh bypasses HTTP cache, reports offline failure and exposes the persisted catalog on a cold start', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetcher)
+    vi.stubGlobal('caches', {
+      open: async () => ({
+        match: async () => Response.json(catalogFixture()),
+        put: async () => {},
+      }),
+    })
+    const { loadModelCatalog, currentModelCatalog } = await import('../../src/lib/model-catalog')
+    await expect(loadModelCatalog(true)).rejects.toThrow('Failed to fetch')
+    expect(currentModelCatalog()).toHaveProperty('mock')
+    expect(fetcher).toHaveBeenCalledWith('https://models.dev/api.json', { cache: 'no-store' })
+  })
+
   it('does not wait indefinitely on cache storage', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(catalogFixture())))

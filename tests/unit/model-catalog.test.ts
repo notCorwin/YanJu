@@ -3,6 +3,7 @@ import {
   catalogSelection,
   catalogRouteFingerprint,
   fuzzyCatalogModel,
+  findCatalogModel,
   parseModelCatalog,
   selectCatalogModel,
 } from '../../src/lib/model-catalog'
@@ -61,10 +62,10 @@ describe('Models.dev Provider 与模型目录', () => {
     expect(catalogRouteFingerprint(next, catalog)).not.toBe(fingerprint)
   })
 
-  it('Models.dev 的 completions shape 固定使用 Chat Completions', () => {
+  it('预置模型默认自动探测端点，包括目录中的 completions shape', () => {
     const provider = parseModelCatalog(catalogFixture()).mock
     const model = { ...provider.models['test-model'], provider: { shape: 'completions' } }
-    expect(selectCatalogModel(channelFixture, provider, model).apiMode).toBe('chat-completions')
+    expect(selectCatalogModel(channelFixture, provider, model).apiMode).toBe('auto')
   })
   it('保留所有文本模型，包括没有 Structured Outputs 标记的模型', () => {
     const source = catalogFixture()
@@ -105,7 +106,7 @@ describe('Models.dev Provider 与模型目录', () => {
     const next = selectCatalogModel(channelFixture, catalog.mock, catalog.mock.models['test-model'])
     expect(next).toMatchObject({
       sdk: '@ai-sdk/openai',
-      apiMode: 'responses',
+      apiMode: 'auto',
       contextWindow: 1000000,
       inputLimit: 900000,
       temperature: null,
@@ -129,14 +130,14 @@ describe('Models.dev Provider 与模型目录', () => {
     }).mock
     expect(
       selectCatalogModel(channelFixture, provider, provider.models['test-model']).apiMode,
-    ).toBe('native')
+    ).toBe('auto')
     expect(
       selectCatalogModel(
         channelFixture,
         { ...provider, npm: 'ai-gateway-provider' },
         { ...model, provider: { npm: '@ai-sdk/openai', shape: 'responses' } },
       ).apiMode,
-    ).toBe('responses')
+    ).toBe('auto')
   })
 
   it('拒绝不存在的 Provider 或模型，并拒绝空目录', () => {
@@ -168,5 +169,52 @@ describe('Models.dev Provider 与模型目录', () => {
       catalog,
     )
     expect(custom.model.limit).toEqual({ context: 65536, input: 60000, output: 4096 })
+  })
+
+  it('自定义 Model ID 在整个目录查找精确或相近资料，保留手动容量覆盖', () => {
+    const source = catalogFixture()
+    const catalog = parseModelCatalog({
+      ...source,
+      other: {
+        ...source.mock,
+        id: 'other',
+        models: {
+          flagship: { ...source.mock.models['test-model'], id: 'flagship', name: 'Flagship' },
+        },
+      },
+    })
+    expect(findCatalogModel(catalog, 'flagship', 'mock')?.provider.id).toBe('other')
+    expect(findCatalogModel(catalog, 'flagship-v2', 'mock')).toBeUndefined()
+    expect(findCatalogModel(catalog, 'test-model-x', 'other')?.model.id).toBe('test-model')
+    const selected = selectCatalogModel(
+      {
+        ...channelFixture,
+        contextWindowOverride: true,
+        maxOutputTokensOverride: true,
+        contextWindow: 50000,
+        maxOutputTokens: 3000,
+      },
+      catalog.mock,
+      catalog.mock.models['second-model'],
+    )
+    expect(selected).toMatchObject({
+      contextWindow: 50000,
+      maxOutputTokens: 3000,
+      contextWindowOverride: true,
+      maxOutputTokensOverride: true,
+    })
+  })
+
+  it('不支持温度的模型默认省略参数，但仍允许用户覆盖并在切换模型后保留', () => {
+    const provider = parseModelCatalog(catalogFixture()).mock
+    const model = { ...provider.models['test-model'], temperature: false }
+    expect(selectCatalogModel(channelFixture, provider, model).temperature).toBeNull()
+    expect(
+      selectCatalogModel(
+        { ...channelFixture, temperature: 0.6, temperatureOverride: true },
+        provider,
+        model,
+      ),
+    ).toMatchObject({ temperature: 0.6, temperatureOverride: true })
   })
 })
