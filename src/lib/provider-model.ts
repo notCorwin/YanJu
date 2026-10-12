@@ -33,6 +33,7 @@ export interface ModelSettings {
   contextWindow?: number
   inputLimit?: number
   maxOutputTokens?: number
+  maxOutputTokensOverride?: boolean
   outputMode?: OutputMode
   schema?: JSONObject
   schemaName?: string
@@ -131,6 +132,10 @@ export async function createProviderModel(
   // Catalog model metadata must never select a custom gateway's route or authentication.
   const provider = custom ? { id: 'custom', npm: chosenSdk, env: [] } : selected.provider
   const model = custom ? { ...selected.model, provider: undefined } : selected.model
+  const outputLimit =
+    settings.maxOutputTokensOverride && settings.maxOutputTokens
+      ? settings.maxOutputTokens
+      : (model.limit.output ?? settings.maxOutputTokens)
   let sdk = protocolSdks[protocol ?? 'native'] ?? chosenSdk
   // These official SDKs retain cloud authentication while using the same wire protocol.
   if (
@@ -253,7 +258,6 @@ export async function createProviderModel(
     }
     // Messages requires a ceiling; respect the user cap without exceeding the catalog maximum.
     if (requiredCapacity) {
-      const outputLimit = model.limit.output ?? settings.maxOutputTokens
       if (!outputLimit)
         throw new Error('Messages 端点需要输出上限，请在高级设置中填写 max_tokens。')
       body.max_tokens = Math.min(settings.maxOutputTokens ?? outputLimit, outputLimit)
@@ -400,8 +404,8 @@ export async function createProviderModel(
           maxOutputTokens:
             native.provider.endsWith('.messages') || sdk === '@ai-sdk/google-vertex/anthropic'
               ? Math.min(
-                  settings.maxOutputTokens ?? model.limit.output ?? 4096,
-                  model.limit.output ?? Number.MAX_SAFE_INTEGER,
+                  settings.maxOutputTokens ?? outputLimit ?? 4096,
+                  outputLimit ?? Number.MAX_SAFE_INTEGER,
                 )
               : (settings.maxOutputTokens ?? params.maxOutputTokens),
           responseFormat:

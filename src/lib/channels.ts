@@ -37,7 +37,7 @@ function hash(value: string) {
 
 export function channelFingerprint(channel: Channel) {
   const identity = JSON.stringify([
-    'models-dev-routes-v2',
+    'models-dev-routes-v3',
     channel.baseUrl,
     channel.apiKey,
     channel.model,

@@ -8,6 +8,7 @@ import { protocolResponse } from '../provider-protocol-fixtures'
 import { apiProtocols, type ApiProtocol } from '../../src/lib/types'
 import { db, exportSave, normalizeImport } from '../../src/lib/storage'
 import { endpointBaseURL } from '../../src/lib/provider-model'
+import { effectiveInputLimit } from '../../src/lib/context'
 
 const reply = (protocol: ApiProtocol, value: unknown, streaming: boolean) => {
   const r = protocolResponse(protocol, value, streaming)
@@ -22,6 +23,38 @@ const fixtureCatalog = () => {
 const supportedProtocols = apiProtocols.filter((p) => p !== 'native')
 
 describe('所有端点共用的 JSON 生成流程', () => {
+  it('手动 Context Window 覆盖旧目录预算，仍预留用户设置的输出容量', () => {
+    const channel = {
+      ...channelFixture,
+      contextWindow: 65536,
+      inputLimit: 8192,
+      maxOutputTokens: 4096,
+      contextWindowOverride: true,
+    }
+    expect(effectiveInputLimit(channel)).toBe(61440)
+    expect(effectiveInputLimit({ ...channel, contextWindowOverride: false })).toBe(8192)
+  })
+
+  it('Messages 请求采用明确覆盖的 max_tokens，不被相近模型的旧容量截断', async () => {
+    const catalog = fixtureCatalog()
+    catalog.mock.models['test-model'].limit.output = 1024
+    const channel = {
+      ...channelFixture,
+      apiMode: 'messages' as const,
+      maxOutputTokens: 4096,
+      maxOutputTokensOverride: true,
+    }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      expect(JSON.parse(String(init?.body)).max_tokens).toBe(4096)
+      return reply('messages', capabilityFixture, false)
+    })
+    expect(
+      (await runStructuredTask({ kind: 'capability', channel, catalog, streaming: false, fetcher }))
+        .value,
+    ).toEqual(capabilityFixture)
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
   it.each(supportedProtocols)('自定义 %s 不继承模型目录中的云路由与认证', async (protocol) => {
     const catalog = fixtureCatalog()
     catalog.mock.npm = '@ai-sdk/azure'

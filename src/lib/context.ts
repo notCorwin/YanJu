@@ -33,7 +33,10 @@ export const shouldCompact = (inputTokens: number, inputLimit: number) =>
 export function effectiveInputLimit(channel: Channel) {
   const contextWindow = Math.max(1, channel.contextWindow)
   const output = Math.max(0, channel.maxOutputTokens || Math.min(4096, contextWindow - 1))
-  return Math.max(1, Math.min(channel.inputLimit ?? contextWindow, contextWindow - output))
+  const inputLimit = channel.contextWindowOverride
+    ? contextWindow
+    : (channel.inputLimit ?? contextWindow)
+  return Math.max(1, Math.min(inputLimit, contextWindow - output))
 }
 
 /** A conservative mixed CJK/Latin estimate, calibrated per model from provider usage. */

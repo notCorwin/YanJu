@@ -105,6 +105,7 @@ export async function channelRequest(
       contextWindow: channel.contextWindow,
       inputLimit: channel.inputLimit,
       maxOutputTokens: channel.maxOutputTokens,
+      maxOutputTokensOverride: channel.maxOutputTokensOverride,
     },
   )
   signal?.throwIfAborted()
